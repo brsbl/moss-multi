@@ -234,13 +234,34 @@ test.describe('a network drop off loopback (invariants 1 and 3, T8.2)', () => {
     expect(proxy.sockets[0].close).toBe('closed at the proxy');
     expect(proxy.sockets[0].code ?? null).toBeNull();
   });
-  test('on loopback the same drop fails, and off loopback a refusal, a second drop or two sockets at once still fail', () => {
+  test('on loopback the same drop fails, and off loopback a refusal, an unrecovered second drop or two sockets at once still fail', () => {
     expect(socketProblems([socket(0, 100, 1006), synced(200)], new Map())).not.toEqual([]);
     expect(socketProblems([socket(0, 100, 4408), synced(200)], new Map(), OFF)).not.toEqual([]);
-    expect(socketProblems([socket(0, 100, 1006), socket(200, 300, 1006, { synced: true }), synced(400)], new Map(), OFF)).not.toEqual([]);
-    // A second drop fails even when the page opens no third socket.
-    expect(socketProblems([socket(0, 100, 1006), socket(200, 300, 1006, { synced: true })], new Map(), OFF)).not.toEqual([]);
+    // A second drop that no later socket recovered fails, even when the page opens no third socket.
+    expect(socketProblems([socket(0, 100, 1006), socket(200, 300, 1006, { synced: true })], new Map(), OFF)).toEqual([
+      'd: a socket dropped (1006) and no later socket of its document reached sync',
+    ]);
     expect(socketProblems([socket(0, 300, 1006), synced(200)], new Map(), OFF)).not.toEqual([]);
+  });
+  test('off loopback, 2 recovered drops pass and are both reported; 3 fail, as does any drop that never recovered (T8.F)', async () => {
+    const { networkDrops } = await import('../lib/invariants.ts');
+    const two = [socket(0, 100, 1006), socket(200, 300, 1006, { synced: true, syncedAt: 250 }), socket(400, null, null, { synced: true, syncedAt: 1_400 })];
+    expect(socketProblems(two, new Map(), OFF)).toEqual([]);
+    expect(networkDrops(two)).toEqual([
+      { docId: 'd', at: 100, recovered: true, recoveryMs: 150 },
+      { docId: 'd', at: 300, recovered: true, recoveryMs: 1_100 },
+    ]);
+    // Their browser failure lines are the drops invariant 3 judged, not console errors.
+    const lines = two.slice(0, 2).map((s) => ({ type: 'error', text: `WebSocket connection to '${s.url}' failed: x`, url: '', at: s.closedAt ?? 0 }));
+    expect(errorProblems({ console: lines, pageErrors: [], http: [], sockets: two }, [], 'j01', OFF)).toEqual([]);
+    // A third, in another document: the run's allowance is passed in this one leg.
+    const other = (openedAt: number, closedAt: number | null, code: number | null, extra: Partial<SocketEntry> = {}) => socket(openedAt, closedAt, code, { document: 'doc-b', ...extra });
+    const three = [...two, other(500, 600, 1006), other(700, null, null, { synced: true, syncedAt: 800 })];
+    expect(socketProblems(three, new Map(), OFF)).toEqual(['3 recovered network drops (1006), 2 allowed in a run']);
+    expect(networkDrops(three)).toHaveLength(3);
+    const lost = [socket(0, 100, 1006), socket(200, null)];
+    expect(socketProblems(lost, new Map(), OFF)).toEqual(['d: a socket dropped (1006) and no later socket of its document reached sync']);
+    expect(networkDrops(lost)).toEqual([{ docId: 'd', at: 100, recovered: false, recoveryMs: null }]);
   });
   test("off loopback only the recovered drop's own log line, while it lived, is left to invariant 3", () => {
     const dropped = socket(0, 100, 1006);

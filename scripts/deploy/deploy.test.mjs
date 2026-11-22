@@ -502,9 +502,9 @@ describe('deploy-staging.yml target', () => {
 
   it('target=staging runs the staging workflow the pilot leaves unchanged', () => {
     const running = runningFor(WORKFLOW, 'staging');
-    expect(Object.keys(running)).toEqual(['preflight', 'deploy', 'canary']);
+    expect(Object.keys(running)).toEqual(['preflight', 'deploy', 'canary', 'drops']);
     expect(running.preflight.steps).toHaveLength(WORKFLOW.jobs.preflight.steps.length);
-    expect(Object.keys(runningFor(WORKFLOW, 'staging', 'full'))).toEqual(['preflight', 'deploy', 'canary', 'sp9', 'tail', 'suite']);
+    expect(Object.keys(runningFor(WORKFLOW, 'staging', 'full'))).toEqual(['preflight', 'deploy', 'canary', 'sp9', 'tail', 'suite', 'drops']);
     // deploy-staging.yml at t/T8.2 a6de39be (T8.2's canary, SP9 probe and full suite) through stagingView: the same jobs,
     // steps, triggers, env and concurrency. A deliberate change to the staging jobs updates this hash.
     expect(sha256(stagingView(WORKFLOW))).toBe('51e99934ea5d3232993df31992ead0142b62c617991e23d8193adcd5ecf34463');
@@ -899,30 +899,32 @@ describe('the deployed-build assertion', () => {
 
 describe('staging growth (A§21) @p:R15', () => {
   // `wrangler d1 execute --json` for the count query deploy-staging.yml runs before a full suite.
-  const counted = (docs, users, bytes) => JSON.stringify([{ results: [{ docs, users }], success: true, meta: { size_after: bytes } }]);
+  const counted = (docs, users, bytes) => JSON.stringify([{ results: [{ docs, users, suiteDocs: docs - 2, suiteUsers: users - 3 }], success: true, meta: { size_after: bytes } }]);
 
   it('reads the counts and the database size', () => {
-    expect(readGrowth(counted(4252, 6958, 18_710_528))).toEqual({ docs: 4252, users: 6958, d1Bytes: 18_710_528 });
+    expect(readGrowth(counted(4252, 6958, 18_710_528))).toEqual({ docs: 4252, users: 6958, suiteDocs: 4250, suiteUsers: 6955, d1Bytes: 18_710_528 });
     expect(() => readGrowth('[]')).toThrow(/count/);
     expect(() => readGrowth(counted('x', 1, 1))).toThrow(/count/);
   });
 
   it('refuses a full suite that would carry staging past its cap, and says what the owner decides', () => {
-    expect(growthProblems({ docs: 4252, users: 6958, d1Bytes: 18_710_528 })).toEqual([]);
-    const near = growthProblems({ docs: GROWTH_CAP.docs - PER_FULL_RUN.docs + 1, users: 0, d1Bytes: 0 });
+    expect(growthProblems({ suiteDocs: 4252, suiteUsers: 6958, d1Bytes: 18_710_528 })).toEqual([]);
+    const near = growthProblems({ suiteDocs: GROWTH_CAP.suiteDocs - PER_FULL_RUN.suiteDocs + 1, suiteUsers: 0, d1Bytes: 0 });
     expect(near).toHaveLength(1);
-    expect(near[0]).toMatch(/docs/);
+    expect(near[0]).toMatch(/suiteDocs/);
     expect(near[0]).toMatch(/owner/);
-    expect(growthProblems({ docs: 0, users: GROWTH_CAP.users, d1Bytes: GROWTH_CAP.d1Bytes })).toHaveLength(2);
+    expect(growthProblems({ suiteDocs: 0, suiteUsers: GROWTH_CAP.suiteUsers, d1Bytes: GROWTH_CAP.d1Bytes })).toHaveLength(2);
   });
 
-  it("counts the Worker's Durable Objects with stored data, which the prune never resets, and caps them too", async () => {
-    const zero = { docs: 0, users: 0, d1Bytes: 0, docObjects: 0, principalObjects: 0 };
+  it("counts the Worker's Durable Objects with stored data, which the prune never resets: DocDOs are capped, PrincipalDOs reported", async () => {
+    const zero = { docs: 0, users: 0, suiteDocs: 0, suiteUsers: 0, d1Bytes: 0, docObjects: 0, principalObjects: 0 };
     expect(growthProblems(zero)).toEqual([]);
     const docs = growthProblems({ ...zero, docObjects: GROWTH_CAP.docObjects - PER_FULL_RUN.docObjects + 1 });
     expect(docs).toHaveLength(1);
     expect(docs[0]).toMatch(/docObjects/);
-    expect(growthProblems({ ...zero, principalObjects: GROWTH_CAP.principalObjects })).toHaveLength(1);
+    // Every sign-in can add a PrincipalDO, so outsiders can grow them: reported past a ceiling, never refused.
+    expect(growthProblems({ ...zero, principalObjects: growth.GROWTH_CEILING.principalObjects + 1 })).toEqual([]);
+    expect(growth.growthNotices({ ...zero, principalObjects: growth.GROWTH_CEILING.principalObjects + 1 })).toHaveLength(1);
     // Cloudflare's object list for each namespace of the staging Worker, paged by cursor.
     const calls = [];
     const fetcher = async (url) => {
@@ -1104,13 +1106,14 @@ describe('the staging prune (A§21, T8.2) @p:R15', () => {
   it('selects only per-run principals older than the cutoff, by their run provenance, never the canary pool or the demo accounts', () => {
     const { count, select } = pruneSql(NOW);
     for (const sql of [count, select]) {
-      // A staging run's token (`staging-<run id>`, the suite and canary RUN_ID) or this run's seed token, never a bare `mm-`.
-      expect(sql).toContain("email GLOB 'mm-staging-[0-9]*-*@example.invalid'");
-      expect(sql).toContain("email GLOB 'mm-s[0-9]*-[0-9]*-[cw][1-8]-[0-9]*@example.invalid'");
+      // A staging run's token (`staging-<run id>`, the suite and canary RUN_ID) or this run's seed token, never a bare
+      // `mm-`, by the exact predicate the plan applies (staging-guards.test.mjs runs both on SQLite).
+      expect(sql).toContain("GLOB 'mm-staging-[0-9]*'");
+      expect(sql).toContain("GLOB 'mm-s[0-9]*'");
       expect(sql).not.toMatch(/LIKE/);
       expect(sql).toContain(`created_at < ${NOW - 2 * 60 * 60 * 1000}`);
     }
-    expect(select).toMatch(new RegExp(`ORDER BY created_at LIMIT ${PRUNE_CAP + 1}$`));
+    expect(select).toMatch(new RegExp(`ORDER BY created_at, id LIMIT ${PRUNE_CAP + 1}$`));
   });
 
   it("counts first, deletes at most the cap, and deletes each principal's grants, links, invites and user row (its docs cascade)", () => {
@@ -1129,15 +1132,15 @@ describe('the staging prune (A§21, T8.2) @p:R15', () => {
     expect(prunePlan(counted(0, 0), selected([]))).toMatchObject({ ids: [], sql: '' });
   });
 
-  it('refuses a row outside the selection, and an id that is not a plain id', () => {
+  it('skips, never deletes nor throws on, a row outside the selection or an id that is not a plain id', () => {
     for (const email of [
       'canary-ada@example.invalid', 'demo-ada@example.invalid', 'mm-x-ada-1@example.com', 'owner@gmail.com',
       // An `mm-` account without a staging run's provenance: a demo or diagnostic account, never selected.
       'mm-x-ada-1@example.invalid', 'mm-demo-ada@example.invalid',
     ]) {
-      expect(() => prunePlan(counted(1, 0), selected([row(1, email)])), email).toThrow(/refusing/);
+      expect(prunePlan(counted(1, 0), selected([row(1, email)])), email).toMatchObject({ ids: [], sql: '' });
     }
-    expect(() => prunePlan(counted(1, 0), selected([{ id: "u1') OR 1=1 --", email: 'mm-staging-1-w0-ada-1@example.invalid' }]))).toThrow(/refusing/);
+    expect(prunePlan(counted(1, 0), selected([{ id: "u1') OR 1=1 --", email: 'mm-staging-1-w0-ada-1@example.invalid' }]))).toMatchObject({ ids: [], sql: '' });
     // The canary job's own minted principals (RUN_ID staging-<run id>) and a suite shard's are per-run.
     const plan = prunePlan(counted(2, 0), selected([row(1, 'mm-staging-38656278214-w0-ada-1@example.invalid'), row(2)]));
     expect(plan.ids).toEqual(['u1', 'u2']);
