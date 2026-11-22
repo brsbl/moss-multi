@@ -578,14 +578,13 @@ test("j16-review proposals (T9.34): marks keep the note's ink, a mark opens its 
   await mark.hover({ force: true });
   const preview = mark.locator('[data-suggest-preview]');
   await expect(preview).toBeVisible();
-  const tip = await preview.evaluate((element) => {
+  // A repaint can swap the wedge mid-read (WebKit then reports an empty style): read it again until it is attached.
+  const readTip = () => preview.evaluate((element) => {
     const style = getComputedStyle(element);
     const wedge = element.parentElement!.getBoundingClientRect();
-    return { fontSize: style.fontSize, radius: style.borderTopLeftRadius, bottom: element.getBoundingClientRect().bottom, wedgeTop: wedge.top };
+    return { fontSize: style.fontSize, radius: style.borderTopLeftRadius, above: element.getBoundingClientRect().bottom < wedge.top };
   });
-  expect(tip.fontSize, "Moss's tooltip text").toBe('10px');
-  expect(tip.radius).toBe('6px');
-  expect(tip.bottom, 'the preview sits above the marked line').toBeLessThan(tip.wedgeTop);
+  await expect.poll(readTip, { message: "Moss's tooltip material, above the marked line" }).toEqual({ fontSize: '10px', radius: '6px', above: true });
 
   // A click on the mark opens that one suggestion at the mark, as Moss's comment thread opens at its text.
   await mark.click({ force: true });
