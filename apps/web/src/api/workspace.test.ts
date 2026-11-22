@@ -73,6 +73,26 @@ it('orders owned vaults first, follows a visible doc vault, and honors an explic
   expect(revoked.docs.map((row) => row.id)).not.toContain(doc);
 });
 
+it('names the vault a trashed note restores into only when that vault is the caller’s own and not on screen', async () => {
+  // Ben's own vault "Trip", trashed with a note in it; a note of Ada's he co-owns, in a vault of hers he cannot see.
+  const trip = await insertFolder(d1.db, ben, null);
+  await d1.db.prepare('UPDATE folders SET name = ? WHERE id = ?').bind('Trip', trip).run();
+  const inTrip = await insertDoc(d1.db, ben, { folderId: trip, deleted: true });
+  await d1.db.prepare('UPDATE folders SET deleted_at = ? WHERE id = ?').bind(Date.now(), trip).run();
+  const hidden = await insertFolder(d1.db, ada, null);
+  const coOwned = await insertDoc(d1.db, ada, { folderId: hidden, deleted: true });
+  await insertGrant(d1.db, { docId: coOwned }, ben, 'owner');
+  const atHome = await insertDoc(d1.db, ben, { deleted: true });
+  type Trashed = { id: string; trashedAt?: number; vaultName?: string };
+  const rows = (await list(`?vault=${ben.homeId}`)).docs as Trashed[];
+  const row = (id: string) => rows.find((doc) => doc.id === id);
+  expect(row(inTrip), 'the note of his trashed vault names it').toMatchObject({ vaultName: 'Trip' });
+  expect(row(atHome)?.trashedAt, 'a trashed note of the vault on screen is listed').toBeTypeOf('number');
+  expect(row(atHome), 'and needs no vault name').not.toHaveProperty('vaultName');
+  expect(row(coOwned)?.trashedAt, 'the co-owned note is listed').toBeTypeOf('number');
+  expect(row(coOwned), 'never the name of a vault he cannot see').not.toHaveProperty('vaultName');
+});
+
 it('lists 150 shared notes and 150 folders, owned and granted, with a fixed number of bound parameters', async () => {
   const cal = await signedUpUser(env, 'discovery-cal');
   const listAs = async (db: D1Database) => {

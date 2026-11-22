@@ -10,7 +10,8 @@ import type { Locator } from '@playwright/test';
 import type { Actor, Actors } from '../lib/actors.ts';
 import {
   APP_STATE_ATTR, BODY_BINDING_ATTR, CONNECTION_BANNER_ATTR, DOC_STATE_ATTR, EDITOR_PANE_ATTR, INPUT_REFUSAL_ATTR, NAMES, SIDEBAR_ROW_ATTR,
-  SYNC_UNACKED_ATTR, TERMINAL_REASON_ATTR, TITLE_BINDING_ATTR, TRASH_ROW_ATTR, paneSelector,
+  MODE_ROW_ATTR, REMOTE_CARET_ATTR, REVIEW_BAND_ATTR, ROLE_BAND_ATTR, SUGGESTIONS_BUTTON_ATTR, SYNC_UNACKED_ATTR, TERMINAL_REASON_ATTR,
+  TITLE_BINDING_ATTR, TRASH_ROW_ATTR, paneSelector,
 } from '../lib/contract.ts';
 import { grant, grantDoc } from '../lib/grants.ts';
 import { declares } from '../lib/invariants.ts';
@@ -366,6 +367,48 @@ test('j05-trash: a note trashed while open and then restored comes back live in 
   await actors.checkpoint('restored-in-place');
 });
 
+test('j05-trash: a note trashed under open windows says so once: the owner’s other window offers Restore, a suggester’s does not, and neither keeps suggestion or presence chrome @p:note-5', async ({ actors }) => {
+  const benPrincipal = await actors.principal('ben');
+  const ada = await openShell(actors, 'ada');
+  const docId = await ui.createNote(ada);
+  await ui.typeTitle(ada, docId, TITLE, { enter: true });
+  await ui.typeBody(ada, docId, BODY);
+  await expect(ui.pane(ada, docId)).toHaveAttribute(SYNC_UNACKED_ATTR, '0', { timeout: BIND_TIMEOUT });
+  await grantDoc(ada, docId, benPrincipal, 'suggester');
+  const ben = await actors.open(benPrincipal, { path: `/d/${docId}` });
+  await ui.waitLive(ben, docId);
+  const other = await actors.sameAs(ada, { path: `/d/${docId}` });
+  await ui.waitLive(other, docId);
+  await actors.requireDistinct(2);
+  // Ben suggests, so Ada's other window counts an open suggestion and shows his caret.
+  await ui.body(ben, docId).click();
+  await ben.page.keyboard.press(toEnd);
+  await ben.page.keyboard.type(' and a suggestion');
+  await expect(other.page.locator(`[${SUGGESTIONS_BUTTON_ATTR}]`), 'the open suggestion is counted').toHaveCount(1, { timeout: PEER_MS });
+  await expect(ui.pane(other, docId).locator(`[${REMOTE_CARET_ATTR}]`), 'Ben’s caret shows').not.toHaveCount(0, { timeout: PEER_MS });
+
+  await trashFromSidebar(ada, docId, ben, other);
+  const notices = (actor: Actor) => actor.page.locator(`[${NAMES.retentionNotice}], [${CONNECTION_BANNER_ATTR}]`);
+  for (const actor of [other, ben]) {
+    await expect(ui.pane(actor, docId), `${actor.label}: terminal in place`).toHaveAttribute(TERMINAL_REASON_ATTR, 'deleted', { timeout: PEER_MS });
+    await expect(notices(actor), `${actor.label}: one notice says the note is in Trash`).toHaveCount(1);
+    await expect(actor.page.locator(`[${SUGGESTIONS_BUTTON_ATTR}]`), `${actor.label}: no suggestion count on a note in Trash`).toHaveCount(0);
+    await expect(actor.page.locator(`[${REVIEW_BAND_ATTR}], [${MODE_ROW_ATTR}], [${ROLE_BAND_ATTR}]`), `${actor.label}: no mode or role row`).toHaveCount(0);
+    await expect(ui.pane(actor, docId).locator(`[${REMOTE_CARET_ATTR}]`), `${actor.label}: no caret of someone who is gone`).toHaveCount(0);
+  }
+  // The owner's notice keeps Moss's words and adds Restore; a suggester cannot restore, so his says only what happened.
+  const ownNotice = other.page.locator(`[${NAMES.retentionNotice}]`);
+  await expect(ownNotice).toContainText(TRASH_COPY.trashedNote);
+  await expect(notices(ben)).toHaveText(TRASH_COPY.peerTrashed);
+  await expect(ben.page.getByRole('button', { name: 'Restore', exact: true }), 'no Restore for a suggester').toHaveCount(0);
+
+  other.expectReconnects(1, docId);
+  await ownNotice.getByRole('button', { name: 'Restore', exact: true }).click();
+  await expect(ui.pane(other, docId), 'Restore brings the note back live in place').toHaveAttribute(DOC_STATE_ATTR, 'live', { timeout: BIND_TIMEOUT });
+  await expect(notices(other), 'and its notice goes').toHaveCount(0);
+  await expect(noteRow(ada, docId), 'back in Ada’s notes').toBeVisible({ timeout: PEER_MS });
+});
+
 test('j05-trash: a restore the server refuses shows the server’s sentence, and the note stays in Trash @p:note-5', async ({ actors }) => {
   const ada = await openShell(actors, 'ada');
   const benPrincipal = await actors.principal('ben');
@@ -410,7 +453,7 @@ test('j05-trash: on a narrow window, a refused restore’s notice stands clear o
   await ada.page.getByRole('button', { name: 'Trash', exact: true }).click();
   await trashRow(ada, docId).click();
   const notice = ada.page.locator(`[${NAMES.retentionNotice}]`);
-  await expect(notice, 'the open trashed note says it is in Trash').toHaveText(TRASH_COPY.trashedNote, { timeout: BIND_TIMEOUT });
+  await expect(notice, 'the open trashed note says it is in Trash').toContainText(TRASH_COPY.trashedNote, { timeout: BIND_TIMEOUT });
 
   // The live-note cap refuses the restore (answered here: filling the cap takes thousands of notes).
   const CAP = 'You have 10,000 notes, the limit. Move some to Trash to restore this one.';
