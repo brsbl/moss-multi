@@ -1,6 +1,6 @@
 # moss-multi progress
 
-**Overall: 89% done** (272 of 304 planned tasks verified)
+**Overall: 90% done** (273 of 304 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
@@ -13,7 +13,7 @@
 | M6 History | Versions, view, diff, identity-preserving restore | 20 / 20 | in progress |
 | M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 26 / 26 | in progress |
 | M8 Ship | Everything on a permanent staging URL with demo content | 17 / 17 | |
-| M9 Polish | Understand every control without help: fixes found by using the whole product | 32 / 43 | |
+| M9 Polish | Understand every control without help: fixes found by using the whole product | 33 / 43 | |
 
 A task counts only after an independent checker passes it on green CI. Each milestone also ends with the cumulative journey suite green in Chromium and WebKit and a naive-user critic pass.
 
@@ -294,6 +294,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-11-22 — T9.48a verified: a window with nothing chosen now stays on the note it shows when a collaborator creates or edits another note, and a multi-pane typing check waits for each pane to bind and names a pane that never binds, with j06 green in both engines at ten repeats.
 - 2026-11-22 — T9.34 verified: suggestions use Moss's comment surfaces: the list is flat rows with proposed text in the note's ink and quiet Accept and Reject, and a click on a suggestion's mark opens it as Moss's comment thread beside its line, or docked as a panel the note reflows beside, or filling a narrow pane.
 - 2026-11-22 — T9.48d verified: opening or focusing a note now sends one backlinks read instead of racing several, a note opened while the workspace socket connects gets its backlinks from that socket's reconcile (or within 2 s if the handshake hangs), and a failed read is retried on the next focus.
+- 2026-11-22 — T9.37 verified: `/login` is a quiet 400 px form column with Moss's heading, fields and action and an inline terracotta error that never moves the form; a signed-out link visitor finds Sign in in the bottom row and in More actions, and the denial page offers only Sign in, or Go to your notes and Use another account.
 
 ## T1.1s identity audit
 
@@ -342,6 +343,15 @@ A task counts only after an independent checker passes it on green CI. Each mile
 ## Follow-ups (P2)
 
 Parked from the M0 checker and critic passes, each with the task that owns it.
+
+### From T9.37's checker (0d114c0, 2026-11-22)
+
+- T9.37 (Sign-in and shared-link entry are a quiet reading flow) checker P2: a server-side refusal that names a field (a password too short, an email rejected on sign-up) shows its sentence and keeps the typed values but marks no field invalid; transport and credential-pair refusals should stay at form level.
+- T9.37 (Sign-in and shared-link entry are a quiet reading flow) checker P2: the one reserved error line sits under Password, so an invalid email's error reads one field away from Email (which does get the terracotta border); Moss's error also has a circled-exclamation icon and a tinted invalid fill, and the neutral focus ring on an invalid field is strong in dark mode (T9.46).
+- T9.37 (Sign-in and shared-link entry are a quiet reading flow) checker P2: the 36 px Sign in / Create account action spans the 400 px column, where Moss's Save is as wide as its text with a faint shadow and slightly tighter corners.
+- T9.37 (Sign-in and shared-link entry are a quiet reading flow) checker P2: the denial page's signed-out branch (an invalid or revoked share link) was not captured; confirm its look with a revoked-link capture.
+- T9.37 (Sign-in and shared-link entry are a quiet reading flow) checker P2: no e2e test presses the denial page's Use another account or More actions' Sign in; both were driven by hand and work.
+- T9.37 (Sign-in and shared-link entry are a quiet reading flow) checker P2: full-lane run 45027231004 attempt 1 failed j15-comments-drafts.spec.ts:621 (Cmd+Shift+A block composer retry) in 'e2e (chromium, large)' with "Node code-block is not registered" Yjs errors, green on rerun of the same commit (for the flake investigation).
 
 ### From T9.34's checker (76677dc, 2026-11-22)
 
