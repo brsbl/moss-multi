@@ -7,13 +7,14 @@ import { pasteAndCheck, setup } from '../lib/paste.ts';
 import { expect, test, ui } from '../lib/test.ts';
 
 /**
- * Its own bounds, on CI as locally: the longest hold is the 2 s target (paste.ts MAX_STALL_MS). In Chromium the total
- * held stays under 4 s, well below the 5.3-6.3 s it was before the highlight rules were scoped (run 45018468321), so
- * splitting one hold in two cannot pass; WebKit holds the tab in many short pieces (3.7-4.3 s in all, run 45020729644)
- * and is bounded at 6 s.
+ * Its own bounds, on CI as locally: the longest hold is the 2 s target (paste.ts MAX_STALL_MS). The total held (paste.ts
+ * `maxHeldMs`) grows with the runner's speed more than the calibration does. In Chromium it was 5.3-6.3 s before the
+ * highlight rules were scoped (runs 45018468321, 45020592760), and is 2.2-2.7 s after on a fast runner and 4.3-4.6 s
+ * on a slow one (runs 45020699574, 45023463984): 5.5 s passes the fix and fails most of the old holds split in two.
+ * WebKit holds the tab in many short pieces, 3.7-5.3 s in all (runs 45020729644, 45023479534).
  */
 const STALL_MS = 2_000;
-const HELD_MS: Record<string, number> = { chromium: 4_000, webkit: 6_000 };
+const HELD_MS: Record<string, number> = { chromium: 5_500, webkit: 7_000 };
 
 /** A check list of `count` items, open and done alternating, as written: moss sorts done items first only on a toggle. */
 function checklist(count: number): string {
