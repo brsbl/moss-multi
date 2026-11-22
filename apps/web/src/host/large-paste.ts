@@ -463,11 +463,11 @@ export class Placer {
     return this.#done;
   }
 
-  /** The first batch: units up to `budget` and the last unit, handed to `insert` as top-level nodes. */
-  $first(budget: number, insert: (nodes: LexicalNode[]) => void): void {
+  /** The first batch: units up to `budget` and the last unit, handed to `insert` as top-level nodes. Returns the units placed. */
+  $first(budget: number, insert: (nodes: LexicalNode[]) => void): number {
     const { units, top } = this.plan;
     const n = units.length;
-    if (n === 0) return;
+    if (n === 0) return 0;
     let k = 0;
     for (let cost = 0; k < n && (k === 0 || cost + units[k].cost <= budget); k += 1) cost += units[k].cost;
     if (k >= n - 1) k = n;
@@ -492,20 +492,26 @@ export class Placer {
     this.#next = k;
     insert(nodes);
     if (k === n) this.#done = true;
+    return k === n ? n : k + 1;
   }
 
-  /** The next units up to `budget`; the last batch also drops the gap. */
-  $next(budget: number): void {
+  /** The next units up to `budget`; the last batch also drops the gap. Returns the units placed. */
+  $next(budget: number): number {
     const { units } = this.plan;
     const last = units.length - 1;
+    const from = this.#next;
     for (let cost = 0; this.#next < last && (cost === 0 || cost + units[this.#next].cost <= budget); this.#next += 1) {
       cost += units[this.#next].cost;
       this.#place(units[this.#next]);
     }
-    if (this.#next < last) return;
+    if (this.#next < last) return this.#next - from;
     const gap = attached(this.#gap);
-    if ($isElementNode(gap) && gap.isEmpty()) gap.remove();
+    if ($isElementNode(gap) && gap.isEmpty()) {
+      gap.remove();
+      performance.mark('moss-paste-gap');
+    }
     this.#done = true;
+    return this.#next - from;
   }
 
   #place(unit: Part): void {
@@ -635,7 +641,7 @@ class Pacer {
    * Runs a batch of `used` units (`run`, which may return the units it used instead), then lays the note out
    * (`layout`), and sizes the next batch.
    */
-  time(used: number, run: () => number | void, layout?: () => void): void {
+  time(used: number, run: () => number | void, layout?: () => void, placed?: () => number): void {
     const started = performance.now();
     const before = this.#ended === null ? 0 : started - this.#ended;
     const counted = run();
@@ -645,7 +651,7 @@ class Pacer {
     this.#ended = performance.now();
     const work = Math.max(0.001, ran - started);
     const laid = this.#ended - ran;
-    performance.measure(this.label, { start: started, detail: { units: used, workMs: Math.round(work), layoutMs: Math.round(laid), beforeMs: Math.round(before) } });
+    performance.measure(this.label, { start: started, detail: { units: used, ...(placed ? { placed: placed() } : {}), workMs: Math.round(work), layoutMs: Math.round(laid), beforeMs: Math.round(before) } });
     const room = Math.max(TARGET_MS / 3, TARGET_MS - laid);
     if (this.max !== MAX_TOP_BATCH) {
       // List items and table rows: sized by the whole time (each item can cost time linear in its list).
@@ -925,10 +931,12 @@ function* landPaste(job: PasteJob, request: PasteRequest): Generator<void, void>
   job.track = trackPaste(noteDoc(editor), job.abort);
   if (job.track) job.track.scrollTop = scrollerOf(editor)?.scrollTop;
   const live = editor.getEditorState()._selection;
+  let placed = 0;
+  const count = () => placed;
   pacing.time(first, () => editor.update(() => {
     if (!$selectLive(live) && !request.$restore()) $getRoot().selectEnd();
-    placer.$first(first, request.$insert);
-  }, { discrete: true }), layout);
+    placed = placer.$first(first, request.$insert);
+  }, { discrete: true }), layout, count);
   let batches = 1;
   while (!placer.done) {
     job.liftDir(placer);
@@ -940,10 +948,11 @@ function* landPaste(job: PasteJob, request: PasteRequest): Generator<void, void>
     const release = undo?.hold?.();
     const nested = editor._updating;
     const budget = pacing.budget;
-    pacing.time(budget, () => editor.update(() => $keepElementPoints(() => placer.$next(budget)), { discrete: true, onUpdate: release }), layout);
+    pacing.time(budget, () => editor.update(() => $keepElementPoints(() => { placed = placer.$next(budget); }), { discrete: true, onUpdate: release }), layout, count);
     if (!nested) release?.();
   }
   job.restoreDir();
+  performance.mark('moss-paste-restore-dir');
   undo?.stopCapturing();
   // Its redo lands in slices too: the step is stamped as a paste's (redoInSlices). The stamp is a token, not the
   // request: the step lives as long as the undo stack, and the plan (every unit's JSON) need not.
