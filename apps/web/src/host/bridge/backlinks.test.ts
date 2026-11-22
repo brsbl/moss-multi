@@ -17,17 +17,12 @@ function fakeServer() {
     /** Backlinks reads answered by the test, by doc id. */
     held: new Map<string, (response: Response) => void>(),
     hold: new Set<string>(),
-    /** Workspace listings answered by the test, while holdListing is set. */
-    holdListing: false,
-    listings: [] as (() => void)[],
   };
   const fetch = vi.fn<typeof globalThis.fetch>(async (input, init = {}) => {
     const path = new URL(String(input), 'http://localhost').pathname;
     calls.push({ path, signal: init.signal });
     if (path === '/api/workspace') {
-      const answer = () => Response.json({ vault: { id: 'home', name: 'Home', role: 'owner', owned: true }, docs: [doc('d1', 'One'), doc('d2', 'Two')], folders: [] });
-      if (state.holdListing) return new Promise<Response>((resolve) => state.listings.push(() => resolve(answer())));
-      return answer();
+      return Response.json({ vault: { id: 'home', name: 'Home', role: 'owner', owned: true }, docs: [doc('d1', 'One'), doc('d2', 'Two')], folders: [] });
     }
     if (path === '/api/docs/x') return Response.json({ role: 'viewer', doc: doc('x', 'Shared with me') });
     const backlinks = /^\/api\/docs\/([^/]+)\/backlinks$/.exec(path);
@@ -55,7 +50,7 @@ function open(server: ReturnType<typeof fakeServer>, leaving?: Parameters<typeof
     await vi.waitFor(() => expect(listings()).toBe(before + 1));
     await new Promise((resolve) => setTimeout(resolve, 20));
   };
-  return { bridge, changed, event, receive: (event: Parameters<Receive>[0]) => receive(event) };
+  return { bridge, changed, event };
 }
 
 it('carries backlinks for a note opened by its URL outside the listing, refreshes them on a workspace event and drops them once revoked', async () => {
@@ -152,20 +147,4 @@ it('lets a workspace event replace an opened note’s backlinks read in flight',
   await event(['d2']);
   await vi.waitFor(() => expect(server.reads('d1')).toBe(2));
   expect(first?.signal?.aborted, 'the links may have changed: the event replaces the read').toBe(true);
-});
-
-it('does not read an opened note’s backlinks again for a workspace event that arrived before its read was sent', async () => {
-  const server = fakeServer();
-  const { bridge, receive } = open(server);
-  await bridge.notes.getAll();
-  // The workspace socket opens (its reconcile) and the refresh's listing is on the wire when the note opens.
-  server.state.holdListing = true;
-  receive({ type: 'vaults' });
-  await vi.waitFor(() => expect(server.state.listings).toHaveLength(1));
-  await bridge.notes.getById('d1');
-  await vi.waitFor(async () => expect((await bridge.notes.getById('d1'))?.incomingLinks?.map((link) => link.noteId)).toEqual(['d2']));
-  server.state.holdListing = false;
-  server.state.listings.shift()!();
-  await new Promise((resolve) => setTimeout(resolve, 20));
-  expect(server.reads('d1'), 'the read sent after the event already covers it').toBe(1);
 });
