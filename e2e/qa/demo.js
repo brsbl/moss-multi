@@ -615,7 +615,8 @@ export const STEPS = {
     if (!(await listed())) {
       const field = await dialog.waitForSelector(aria('textbox', 'Email or agent ID'), { visible: true });
       await field.type(email);
-      await press(await dialog.waitForSelector(aria('radiogroup', 'Access')), 'radio', access);
+      await press(dialog, 'button', 'Access');
+      await press(page, 'menuitemradio', access);
       await press(dialog, 'button', 'Create invite link');
       await until(`${email} is listed`, listed);
       shared = true;
@@ -625,7 +626,8 @@ export const STEPS = {
     let linkField = await dialog.$(aria('textbox', `${linkAccess} link`));
     const linkCreated = !linkField;
     if (!linkField) {
-      await press(await dialog.waitForSelector(aria('radiogroup', 'Link access')), 'radio', linkAccess);
+      await press(dialog, 'button', 'Link access');
+      await press(page, 'menuitemradio', linkAccess);
       await press(dialog, 'button', 'Create link');
       linkField = await dialog.waitForSelector(aria('textbox', `${linkAccess} link`), { visible: true });
     }
