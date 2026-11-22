@@ -1,6 +1,6 @@
 # moss-multi progress
 
-**Overall: 92% done** (278 of 302 planned tasks verified)
+**Overall: 92% done** (279 of 302 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
@@ -13,7 +13,7 @@
 | M6 History | Versions, view, diff, identity-preserving restore | 20 / 20 | in progress |
 | M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 26 / 26 | in progress |
 | M8 Ship | Everything on a permanent staging URL with demo content | 17 / 17 | |
-| M9 Polish | Understand every control without help: fixes found by using the whole product | 38 / 43 | |
+| M9 Polish | Understand every control without help: fixes found by using the whole product | 39 / 43 | |
 
 A task counts only after an independent checker passes it on green CI. Each milestone also ends with the cumulative journey suite green in Chromium and WebKit and a naive-user critic pass.
 
@@ -301,6 +301,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-11-22 — T9.42 verified: Version history opens the chosen version as the read-only note beside a 280 px list of quiet rows, with automatic saves folded, kind, time and size in a Details tooltip, Compare with current off until pressed, and a neutral Restore that waits for the preview and asks by name with Cancel focused.
 - 2026-11-22 — T9.48c verified (focus fix): when a collaborator withdraws, accepts or rejects a suggestion, the author's open Suggestions list, menu or dialog stays open with its focus, because the caret a rebuilt fork puts back no longer takes focus from an overlay over the note.
 - 2026-11-22 — T9.45 verified: Settings names who is signed in beside Sign out, and Agents is a quiet card of key rows with + New key, Copy ID and Revoke on hover or focus; a new key stays shown until Done, Copy key says Copied only when the clipboard took it, and same-name keys are told apart by their creation time.
+- 2026-11-22 — T9.43 verified: a note trashed under an open window shows one bottom notice and nothing else, Moss's Trash notice with Restore for whoever may restore it or “This note was moved to Trash.” for a collaborator, its carets clear at once, and a Trash row from the caller's own vault names that vault.
 
 ## T1.1s identity audit
 
@@ -372,6 +373,13 @@ Moss's marker patterns (`\{%c:\s*([A-Za-z0-9_,\-\s]+?)\s*%\}` and the `%%m:` for
 ## Follow-ups (P2)
 
 Parked from the M0 checker and critic passes, each with the task that owns it.
+
+### From T9.43's checker (32fd1a2, 2026-11-22)
+
+- T9.43 (A note in Trash says so once, with Restore where it applies) checker P2: a collaborator's “This note was moved to Trash.” card sits about 8 CSS px below Moss's Trash notice (y938 vs y930 at 1440×1000), and its warning icon may be about 12 px instead of Moss's 14 px; present before this change (T9.46).
+- T9.43 (A note in Trash says so once, with Restore where it applies) checker P2: the owner's other window and the Trash view still show the suggester's pending-insertion mark at the end of the paragraph where the suggestion was (not a caret); T9.46 decides whether a note that has ended hides suggestion marks.
+- T9.43 (A note in Trash says so once, with Restore where it applies) checker P2: the implementer's proof set lacks an owner shot at 390 px, a long-vault-name state and detail crops, and its before and after shots use slightly different body text; the checker's own recapture covers the main states.
+- T9.43 (A note in Trash says so once, with Restore where it applies) checker P2: the new j05 leg checks that carets clear when the note is trashed but not that presence returns after Restore (the checker's browser pass showed it does).
 
 ### From T9.45's checker (60c8481, 2026-11-22)
 
