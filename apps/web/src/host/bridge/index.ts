@@ -146,6 +146,8 @@ const NOTE_INTELLIGENCE_KEY = 'moss-multi:note-intelligence';
 const VAULT_KEY = 'moss-multi:active-vault';
 /** Notes whose backlinks this tab keeps current: the ones it opened most recently. */
 const BACKLINK_WATCH = 4;
+/** A note opened while the workspace socket opens waits this long for its reconcile, then reads its own backlinks. */
+export const BACKLINK_AWAIT_MS = 2_000;
 const layoutKey = (id: string) => `moss-multi:layout:${id}`;
 const collapsedKey = (id: string) => `moss-multi:collapsed-headings:${id}`;
 /** The one PDF export session a tab holds: the next Save as PDF replaces it, so session storage never accumulates. */
@@ -404,6 +406,8 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
         if (reopen.length) reopenDocs?.(reopen);
       }
     } catch {
+      // A note left to this reconcile reads its own backlinks rather than wait on the retry.
+      readAwaiting();
       if (generation === channelGeneration) {
         refreshAll = true;
         // Through the listing prerequisite, as any other refresh.
@@ -422,6 +426,7 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
     void (listing ?? notes()).then(() => {
       if (generation === channelGeneration) return refreshWorkspace();
     }).catch(() => {
+      readAwaiting();
       if (generation !== channelGeneration || refreshRetry) return;
       refreshRetry = setTimeout(() => {
         refreshRetry = null;
@@ -442,10 +447,16 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
   let tick = 0;
   let invalidatedAt = 0;
   const readSince = new Map<string, number>();
-  /** Notes opened while the channel's socket opens: its reconcile reads them, or they are read when it fails. */
+  /**
+   * Notes opened while the channel's socket opens: its reconcile reads them, or they are read when the socket or the
+   * reconcile's listing fails, or after BACKLINK_AWAIT_MS.
+   */
   const awaiting = new Set<string>();
   let connecting = false;
+  let awaitTimer: ReturnType<typeof setTimeout> | null = null;
   const readAwaiting = () => {
+    if (awaitTimer) clearTimeout(awaitTimer);
+    awaitTimer = null;
     for (const id of [...awaiting]) {
       awaiting.delete(id);
       if (watched.includes(id)) void readBacklinks(id);
@@ -560,10 +571,15 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
     const at = watched.indexOf(id);
     if (at !== -1) watched.splice(at, 1);
     watched.unshift(id);
-    watched.splice(BACKLINK_WATCH);
+    for (const evicted of watched.splice(BACKLINK_WATCH)) awaiting.delete(evicted);
     if (at !== -1 && (backlinks.has(id) || reading.has(id) || awaiting.has(id))) return;
-    if (connecting) awaiting.add(id);
-    else void readBacklinks(id);
+    if (!connecting) {
+      void readBacklinks(id);
+      return;
+    }
+    awaiting.add(id);
+    // A handshake that neither opens nor fails does not hold the note's backlinks past the bound.
+    awaitTimer ??= setTimeout(readAwaiting, BACKLINK_AWAIT_MS);
   };
   const receiveWorkspace = (event: WorkspaceEvent) => {
     if (event.type !== 'meta' && event.type !== 'vaults') return;
