@@ -491,7 +491,8 @@ export function SuggestionsButton({ docId, source, showCount = true, anchor, peo
     void resized;
     return at ? placeAt(docId, at(), threadHeight, asPanel) : null;
   }, [at, docId, threadHeight, resized, asPanel]);
-  if (at && place && place.kind !== 'beside' && !asPanel) setPanelFor(at);
+  // `at` is a function: stored as a value, not run as an updater.
+  if (at && place && place.kind !== 'beside' && !asPanel) setPanelFor(() => at);
   // A docked panel takes its width from the pane: the note reflows beside it, and its source is scrolled into view.
   useLayoutEffect(() => {
     const pane = paneOf(docId);
