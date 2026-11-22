@@ -110,9 +110,19 @@ export async function closePanel(actor: Actor): Promise<void> {
 export const confirmation = (actor: Actor, action: 'Reject' | 'Withdraw'): Locator =>
   actor.page.getByRole('alertdialog', { name: `${action} suggestion?` });
 
+/** Chooses `action` on `card`: Reject is a row action, the author's Withdraw is in the row's own menu (T9.34). */
+export async function pressClose(actor: Actor, card: Locator, action: 'Reject' | 'Withdraw'): Promise<void> {
+  if (action === 'Reject') {
+    await card.getByRole('button', { name: action, exact: true }).click();
+    return;
+  }
+  await card.getByRole('button', { name: 'Suggestion actions', exact: true }).click();
+  await actor.page.getByRole('menuitem', { name: action, exact: true }).click();
+}
+
 /** Presses `action` on `card` and confirms it in the dialog it opens. */
 export async function confirmClose(actor: Actor, card: Locator, action: 'Reject' | 'Withdraw'): Promise<void> {
-  await card.getByRole('button', { name: action, exact: true }).click();
+  await pressClose(actor, card, action);
   const dialog = confirmation(actor, action);
   await expect(dialog, `${action} asks first`).toBeVisible();
   await expect(dialog.getByRole('button', { name: 'Cancel' }), 'the dialog opens on Cancel').toBeFocused();

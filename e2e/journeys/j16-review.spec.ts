@@ -11,7 +11,7 @@ import {
 } from '../lib/contract.ts';
 import { grantDoc } from '../lib/grants.ts';
 import {
-  BIND_TIMEOUT, button, caret, cards, closePanel, confirmation, confirmClose, content, openIn, openPanel, panel, reviewSwitch, settled as acked,
+  BIND_TIMEOUT, button, caret, cards, closePanel, confirmation, confirmClose, content, openIn, openPanel, panel, pressClose, reviewSwitch, settled as acked,
   sharedNote,
 } from '../lib/suggest.ts';
 import { expect, test, ui } from '../lib/test.ts';
@@ -23,6 +23,25 @@ async function suggestText(actor: Actor, docId: string, at: string, offset: numb
   const pane = ui.pane(actor, docId);
   await expect(pane, 'acknowledged').toHaveAttribute(SYNC_UNACKED_ATTR, '0', { timeout: BIND_TIMEOUT });
   await expect(pane, 'never refused').toHaveAttribute(SUGGEST_REFUSED_ATTR, '0');
+}
+
+/** The title and body lines `actor`'s open suggestion surface covers, by their text. */
+async function coveredLines(actor: Actor, docId: string): Promise<string[]> {
+  return panel(actor).evaluate((surface, selector) => {
+    const card = surface.getBoundingClientRect();
+    const covered: string[] = [];
+    for (const root of document.querySelector(selector)!.querySelectorAll('[data-title-binding], [data-body-binding]')) {
+      const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+      for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+        const range = document.createRange();
+        range.selectNodeContents(node);
+        for (const line of range.getClientRects()) {
+          if (line.width > 0 && line.right > card.left && line.left < card.right && line.bottom > card.top && line.top < card.bottom) covered.push(node.textContent ?? '');
+        }
+      }
+    }
+    return covered;
+  }, `[data-editor-pane][data-doc-id="${docId}"]`);
 }
 
 /** The centre of `text`'s first occurrence in `actor`'s body. */
@@ -69,7 +88,7 @@ test("j16-review: the peer's panel lists a suggestion; an editor's accept from t
   // The author's own panel lists it with Withdraw and no Accept.
   const own = (await openPanel(ben)).locator(`[${SUGGESTION_CARD_ATTR}][${SUGGESTION_STATUS_ATTR}="open"]`);
   await expect(own).toHaveCount(1);
-  await expect(own.getByRole('button', { name: 'Withdraw' })).toBeVisible();
+  await expect(own.getByRole('button', { name: 'Suggestion actions' }), 'Withdraw is in its own menu').toBeVisible();
   await expect(own.getByRole('button', { name: 'Accept' })).toHaveCount(0);
   await closePanel(ben);
 
@@ -354,7 +373,7 @@ test('j16-review: withdraw removes the inserted text from every view while the n
   // Withdraw asks first; Escape and Cancel keep the suggestion.
   const withdraw = confirmation(ben, 'Withdraw');
   for (const dismiss of ['Escape', 'Cancel'] as const) {
-    await own.getByRole('button', { name: 'Withdraw' }).click();
+    await pressClose(ben, own, 'Withdraw');
     await expect(withdraw).toBeVisible();
     await expect(withdraw).toContainText('Your proposed change will be discarded. This action cannot be undone.');
     await expect(withdraw.getByRole('button', { name: 'Cancel' }), 'the dialog opens on Cancel').toBeFocused();
@@ -518,4 +537,154 @@ test('j16-review: a code-block edit reads as its changed line before and after, 
   await card.getByRole('button', { name: 'Accept' }).click();
   await expect(cards(ada, 'accepted')).toHaveCount(1, { timeout: BIND_TIMEOUT });
   await expect.poll(() => content(ada, docId), { timeout: BIND_TIMEOUT }).toContain('console.debug(y)');
+});
+
+test("j16-review proposals (T9.34): marks keep the note's ink, a mark opens its one suggestion beside it, and the list is flat with quiet actions @p:mean-2 @p:R17", async ({ actors }) => {
+  const { ada, ben, docId } = await sharedNote(actors);
+  await openIn(ben, docId, 'suggest');
+  await openIn(ada, docId, 'edit');
+  await actors.requireDistinct(2);
+  await ada.page.setViewportSize({ width: 1440, height: 1000 });
+  await suggestText(ben, docId, 'original word', 8, ' plus');
+  await expect(button(ada)).toHaveAttribute('aria-label', /1 open/, { timeout: BIND_TIMEOUT });
+
+  // Paint: inserted text keeps the note's ink with an underline, struck text no accent colour.
+  const rules = await ada.page.evaluate(() => {
+    const out: Record<string, { background: string; color: string; decoration: string }> = {};
+    for (const sheet of [...document.styleSheets]) {
+      let list: CSSRuleList;
+      try {
+        list = sheet.cssRules;
+      } catch {
+        continue;
+      }
+      for (const rule of [...list]) {
+        if (!(rule instanceof CSSStyleRule)) continue;
+        for (const name of ['suggest-insert', 'suggest-delete']) {
+          if (rule.selectorText.trim() === `::highlight(${name})`) {
+            out[name] = { background: rule.style.backgroundColor, color: rule.style.color, decoration: rule.style.textDecorationColor };
+          }
+        }
+      }
+    }
+    return out;
+  });
+  expect(rules['suggest-insert'], 'the insert rule is found').toBeTruthy();
+  expect(rules['suggest-insert']!.background, 'no fill behind inserted text').toBe('');
+  expect(rules['suggest-insert']!.decoration, 'no brand colour under inserted text').not.toContain('accent');
+  expect(rules['suggest-delete']!.color, 'struck text is not recoloured').not.toContain('accent');
+
+  // Edit mode: the insert stays a mark; its preview is Moss's tooltip material above the line, not over the next.
+  const mark = ada.page.locator(`[${SUGGEST_MARK_ATTR}="insert"][${SUGGESTION_ID_ATTR}]`).first();
+  await expect(mark).toBeAttached({ timeout: BIND_TIMEOUT });
+  await mark.hover({ force: true });
+  const preview = mark.locator('[data-suggest-preview]');
+  await expect(preview).toBeVisible();
+  // A repaint can swap the wedge mid-read (WebKit then reports an empty style): read it again until it is attached.
+  const readTip = () => preview.evaluate((element) => {
+    const style = getComputedStyle(element);
+    const wedge = element.parentElement!.getBoundingClientRect();
+    return { fontSize: style.fontSize, radius: style.borderTopLeftRadius, above: element.getBoundingClientRect().bottom < wedge.top };
+  });
+  await expect.poll(readTip, { message: "Moss's tooltip material, above the marked line" }).toEqual({ fontSize: '10px', radius: '6px', above: true });
+
+  // A click on the mark opens that one suggestion at the mark, as Moss's comment thread opens at its text.
+  await mark.click({ force: true });
+  const surface = panel(ada);
+  await expect(surface.locator(`[${SUGGESTION_CARD_ATTR}][${SUGGESTION_ACTIVE_ATTR}]`)).toHaveCount(1, { timeout: BIND_TIMEOUT });
+  await expect(surface.locator(`[${SUGGESTION_CARD_ATTR}]`), 'only the clicked suggestion').toHaveCount(1);
+  const markBox = await mark.evaluate((element) => {
+    const rect = element.getBoundingClientRect();
+    return { top: rect.top, bottom: rect.bottom };
+  });
+  const placed = await surface.evaluate((element, at) => {
+    const rect = element.getBoundingClientRect();
+    return { width: rect.width, radius: getComputedStyle(element).borderTopLeftRadius, gap: Math.min(Math.abs(rect.top - at.bottom), Math.abs(at.top - rect.bottom)) };
+  }, markBox);
+  expect(placed.width).toBe(352);
+  expect(placed.radius, "the comment thread's radius").toBe('12px');
+  expect(placed.gap, 'beside the mark').toBeLessThan(24);
+  expect(await coveredLines(ada, docId), 'the thread covers no line of the title or the text').toEqual([]);
+  // Moss's thread header: what it is, and a way to close it.
+  await expect(surface.getByText('Suggestion', { exact: true }), "the thread's header names it").toBeVisible();
+  await expect(surface.getByRole('button', { name: 'Close', exact: true })).toBeVisible();
+
+  // The suggestion is a flat row; Accept and Reject are compact neutral actions.
+  const card = surface.locator(`[${SUGGESTION_CARD_ATTR}]`);
+  await expect(card.getByRole('button', { name: 'Accept' })).toBeEnabled({ timeout: BIND_TIMEOUT });
+  expect(await card.evaluate((element) => getComputedStyle(element).borderTopWidth), 'no nested card frame').toBe('0px');
+  for (const name of ['Accept', 'Reject']) {
+    const action = await card.getByRole('button', { name, exact: true }).evaluate((element) => {
+      const style = getComputedStyle(element);
+      return { height: element.getBoundingClientRect().height, background: style.backgroundColor };
+    });
+    expect(action.height, `${name} keeps Moss's 24 px action rhythm`).toBe(24);
+    expect(action.background, `${name} has no resting fill`).toBe('rgba(0, 0, 0, 0)');
+  }
+  for (const row of await card.locator(`[${SUGGESTION_ROW_ATTR}]`).all()) {
+    expect(await row.evaluate((element) => getComputedStyle(element).backgroundColor), 'rows carry no tint').toBe('rgba(0, 0, 0, 0)');
+  }
+  await surface.getByRole('button', { name: 'Close', exact: true }).click();
+  await expect(surface, 'Close closes the thread').toBeHidden();
+
+  // The list from the count is Moss's 352 px list with radius 8, and the author's Withdraw lives in the row's menu.
+  const list = await openPanel(ada);
+  expect(await list.evaluate((element) => [element.getBoundingClientRect().width, getComputedStyle(element).borderTopLeftRadius])).toEqual([352, '8px']);
+  await closePanel(ada);
+  const own = (await openPanel(ben)).locator(`[${SUGGESTION_CARD_ATTR}][${SUGGESTION_STATUS_ATTR}="open"]`);
+  await expect(own.getByRole('button', { name: 'Withdraw' }), 'Withdraw is not a resting button').toHaveCount(0);
+  await own.getByRole('button', { name: 'Suggestion actions' }).click();
+  await expect(ben.page.getByRole('menuitem', { name: 'Withdraw' })).toBeVisible();
+  await ben.page.keyboard.press('Escape');
+
+  // A 390 px pane has no margin for the thread: the suggestion fills the pane as one view, and Back to note returns
+  // to the note where it was.
+  await ada.page.setViewportSize({ width: 390, height: 844 });
+  await expect(mark).toBeAttached({ timeout: BIND_TIMEOUT });
+  const scroller = (root: Element) => {
+    for (let at = root.parentElement; at; at = at.parentElement) if (at.scrollHeight > at.clientHeight && /auto|scroll/.test(getComputedStyle(at).overflowY)) return at.scrollTop;
+    return 0;
+  };
+  const scrolled = await ui.body(ada, docId).evaluate(scroller);
+  await mark.click({ force: true });
+  await expect(surface.locator(`[${SUGGESTION_CARD_ATTR}][${SUGGESTION_ACTIVE_ATTR}]`)).toHaveCount(1, { timeout: BIND_TIMEOUT });
+  const back = surface.getByRole('button', { name: 'Back to note', exact: true });
+  await expect(back).toBeVisible();
+  // The pane may still be settling from the narrower window: the view follows it.
+  await expect.poll(() => surface.evaluate((element, selector) => {
+    const rect = element.getBoundingClientRect();
+    const pane = document.querySelector(selector)!.getBoundingClientRect();
+    return { left: Math.round(rect.left - pane.left), right: Math.round(pane.right - rect.right) };
+  }, `[data-editor-pane][data-doc-id="${docId}"]`), { message: 'the view fills the pane' }).toEqual({ left: 0, right: 0 });
+  await expect(surface.getByRole('button', { name: 'Accept' }), 'its decisions stay reachable').toBeInViewport();
+  await back.click();
+  await expect(surface).toBeHidden();
+  expect(await ui.body(ada, docId).evaluate(scroller), 'the note keeps its scroll').toBe(scrolled);
+});
+
+test('j16-review proposals (T9.34): a mark in a full-width paragraph opens the Suggestions panel beside the note, which reflows so no line is under it @p:mean-2 @p:R17', async ({ actors }) => {
+  const prose = 'The river runs past the old mill and along the bank under the willows, where the path turns toward the bridge and the town beyond it, and every spring the water rises over the lower meadow before it falls back again.';
+  const { ada, ben, docId } = await sharedNote(actors, `${prose}\n\n${prose}\n\nA closing line.`);
+  await openIn(ben, docId, 'suggest');
+  await openIn(ada, docId, 'edit');
+  await actors.requireDistinct(2);
+  await ada.page.setViewportSize({ width: 1440, height: 1000 });
+  await suggestText(ben, docId, 'old mill', 3, ' stone');
+  await expect(button(ada)).toHaveAttribute('aria-label', /1 open/, { timeout: BIND_TIMEOUT });
+  const edge = () => ui.body(ada, docId).evaluate((root) => Math.round(root.getBoundingClientRect().right));
+  const before = await edge();
+  const mark = ada.page.locator(`[${SUGGEST_MARK_ATTR}="insert"][${SUGGESTION_ID_ATTR}]`).first();
+  await expect(mark).toBeAttached({ timeout: BIND_TIMEOUT });
+  await mark.click({ force: true });
+  const surface = panel(ada);
+  await expect(surface.locator(`[${SUGGESTION_CARD_ATTR}][${SUGGESTION_ACTIVE_ATTR}]`)).toHaveCount(1, { timeout: BIND_TIMEOUT });
+  await expect(surface, 'the wrapped lines leave no margin: it opens as the panel').toHaveAttribute('data-suggestion-place', 'docked');
+  await expect(surface.getByText('Suggestion', { exact: true }), 'the panel names what it holds').toBeVisible();
+  await expect(surface.getByRole('button', { name: 'Back to note', exact: true })).toBeVisible();
+  // The note reflows beside the panel: no title or body line sits under it, and the source stays on screen.
+  await expect.poll(() => coveredLines(ada, docId), { message: 'the panel covers no line of the title or the text' }).toEqual([]);
+  await expect(mark, 'its source stays in view').toBeInViewport();
+  await surface.getByRole('button', { name: 'Back to note', exact: true }).click();
+  await expect(surface).toBeHidden();
+  await expect.poll(edge, { message: 'the note takes its place back' }).toBe(before);
 });
