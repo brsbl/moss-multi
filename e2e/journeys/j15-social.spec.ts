@@ -163,6 +163,7 @@ test('j15-social: reactions toggle per principal, live for both people @p:mean-1
   await expect(picker, 'Escape closes the picker').toBeHidden();
   await expect(add, 'and returns to Add reaction').toBeFocused();
   await ben.page.keyboard.press('Enter');
+  await expect(choice('👍'), 'the picker opens again on its first choice').toBeFocused();
   await ben.page.keyboard.press('ArrowRight');
   await expect(choice('❤️')).toBeFocused();
   await ben.page.keyboard.press('Enter');
