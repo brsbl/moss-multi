@@ -148,10 +148,10 @@ test('j08-agents settings: Agents is a quiet inventory; New key discloses the na
   await expect(list.getByRole('listitem'), 'both records are listed').toHaveCount(2);
 
   // A refused revoke says why and keeps the row; revoking the older same-name agent leaves the new key on screen.
-  ada.expectHttp(503, /\/api\/agents\//);
+  ada.expectHttp(409, /\/api\/agents\//);
   const revokes = /\/api\/agents\/[^/]+$/;
   await ada.page.route(revokes, (route) => route.request().method() === 'DELETE'
-    ? route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: 'unavailable', message: 'The key wasn’t revoked. Try again.' }) })
+    ? route.fulfill({ status: 409, contentType: 'application/json', body: JSON.stringify({ error: 'conflict', message: 'The key wasn’t revoked. Try again.' }) })
     : route.fallback());
   const confirm = ada.page.getByRole('alertdialog', { name: 'Revoke Scribe’s key?', exact: true });
   await list.getByRole('button', { name: 'Revoke Scribe', exact: true }).click();

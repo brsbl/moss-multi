@@ -73,6 +73,15 @@ export function AgentsSection(): ReactNode {
     if (shownId) idField.current?.select();
   }, [shownId]);
 
+  // A closed field, a put-away key or a revoked row hands focus back to New key once it is enabled again.
+  const [refocus, setRefocus] = useState(0);
+  const refocused = useRef(0);
+  useEffect(() => {
+    if (pending || refocus === refocused.current) return;
+    refocused.current = refocus;
+    newKeyButton.current?.focus();
+  }, [refocus, pending]);
+
   if (!signedIn) return null;
 
   async function run(work: () => Promise<void>): Promise<void> {
@@ -94,7 +103,7 @@ export function AgentsSection(): ReactNode {
   const closeForm = () => {
     setCreating(false);
     setName('');
-    requestAnimationFrame(() => newKeyButton.current?.focus());
+    setRefocus((n) => n + 1);
   };
 
   function mint(event: FormEvent<HTMLFormElement>): void {
@@ -124,7 +133,7 @@ export function AgentsSection(): ReactNode {
       if (shownId === agent.id) setShownId(null);
       await load();
       setNotice(`Revoked ${agent.name}’s key.`);
-      requestAnimationFrame(() => newKeyButton.current?.focus());
+      setRefocus((n) => n + 1);
     });
   }
 
@@ -206,7 +215,7 @@ export function AgentsSection(): ReactNode {
             <div className="flex items-center justify-between gap-2">
               <p className="text-xs text-ink-faint">Copy this key now. It won’t be shown again.</p>
               <button type="button" className={ACTION}
-                onClick={() => { setMinted(null); requestAnimationFrame(() => newKeyButton.current?.focus()); }}>
+                onClick={() => { setMinted(null); setRefocus((n) => n + 1); }}>
                 Done
               </button>
             </div>
