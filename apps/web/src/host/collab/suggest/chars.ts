@@ -47,6 +47,14 @@ export function sharedItem(binding: Binding, key: NodeKey): Y.Item | null {
 
 export const idKey = (id: { client: number; clock: number }): string => `${id.client}:${id.clock}`;
 
+/**
+ * An item the author's pending suggestion wrote: one of `own` clients, past what `body` (B) holds of that client. An
+ * accepted record's text is body text, though a continuation writes on under its lease. Without `body`, every item of
+ * an own client.
+ */
+export const isPending = (id: { client: number; clock: number }, own: ReadonlySet<number>, body?: Y.Doc | null): boolean =>
+  own.has(id.client) && (!body || id.clock >= Y.getState(body.store, id.client));
+
 export interface CharPlace {
   key: NodeKey;
   offset: number;

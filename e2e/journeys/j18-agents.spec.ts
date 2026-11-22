@@ -1,6 +1,7 @@
 // j18-agents (T7.2): the built moss-multi CLI pushes into notes people are typing in. A push while Ada types in the same
-// paragraph keeps both; the 61st push in a minute gets 429 with retry-after; a 2 MB push lands and the doc stays
-// typeable, and a push past the cap is refused loudly; a push deleting most of the doc is refused without --force.
+// paragraph keeps both; the 61st push in a minute gets 429 with retry-after; a push to the text limit (1.02 million
+// characters) lands and the doc stays typeable, and a push past the text or structure limit is refused in plain words;
+// a push deleting most of the doc is refused without --force.
 // T7.3: an agent's push shows a Bot-badged chip for about 15 s and adds no step to Ada's undo; `push --suggest` lands
 // as a pending suggestion Ada can accept; an agent Ben granted commenter can pull and comment, has its push refused
 // loudly, and is disconnected when the grant is revoked; revoking a key closes its socket and the CLI gets "not signed in".
@@ -25,8 +26,9 @@ import { childBudgetEnv } from '../lib/budget.ts';
 const CLI = fileURLToPath(new URL('../../packages/cli/dist/moss-multi.mjs', import.meta.url));
 const SOLO = 'one person and her own agent key push into her own notes';
 const BIND_TIMEOUT = 30_000;
-/** protocol/limits MARKDOWN_CAP_BYTES and PUSH_RATE. */
-const MARKDOWN_CAP_BYTES = 2 * 1024 * 1024;
+/** protocol/limits TEXT_CHAR_CAP, MARKDOWN_MAX_BYTES and PUSH_RATE. */
+const TEXT_CHAR_CAP = 1_020_000;
+const MARKDOWN_MAX_BYTES = 4 * 1024 * 1024;
 const PUSHES_PER_MINUTE = 60;
 
 interface Run { code: number; stdout: string; stderr: string }
@@ -195,7 +197,7 @@ test('j18-agents rate: the 61st push in a minute gets 429 with retry-after @p:ag
   }
 });
 
-test('j18-agents size: a 2 MB push lands and stays typeable; a push past the cap is refused loudly @p:agt-1 @p:tech-8', async ({ actors, stack }) => {
+test('j18-agents size: a push to the text limit lands and stays typeable; pushes past the text or structure limit are refused in plain words @p:agt-1 @p:tech-8', async ({ actors, stack }) => {
   actors.solo(SOLO);
   const principal = await actors.principal('ada');
   const setup = await actors.session(principal, { label: 'setup' });
@@ -205,14 +207,13 @@ test('j18-agents size: a 2 MB push lands and stays typeable; a push past the cap
   try {
     expect((await cli.run('pull', docId, 'big.md')).code).toBe(0);
     const paragraphs = [cli.read('big.md')];
-    let size = Buffer.byteLength(paragraphs[0]!);
-    for (let i = 0; size < 2_088_000; i += 1) {
-      const paragraph = `Paragraph ${i}: ${'the beans climb the trellis and the peas follow them up '.repeat(16)}end ${i}.`;
-      paragraphs.push(paragraph);
-      size += Buffer.byteLength(paragraph) + 2;
+    // Three-byte characters, so the push runs past the old 2 MB cap while its text stays within the limit.
+    for (let chars = paragraphs[0]!.length; chars < TEXT_CHAR_CAP - 12_000; chars += paragraphs.at(-1)!.length) {
+      paragraphs.push(`段落 ${paragraphs.length}：${'豆は棚を登り、豌豆がそれに続く。'.repeat(16)}終わり ${paragraphs.length}。`);
     }
     const big = paragraphs.join('\n\n');
-    expect(Buffer.byteLength(big)).toBeLessThanOrEqual(MARKDOWN_CAP_BYTES);
+    expect(Buffer.byteLength(big)).toBeGreaterThan(2_800_000);
+    expect(Buffer.byteLength(big)).toBeLessThanOrEqual(MARKDOWN_MAX_BYTES);
     cli.write('big.md', big);
     const pushed = await cli.run('push', 'big.md');
     expect(pushed.code, pushed.stderr).toBe(0);
@@ -227,16 +228,25 @@ test('j18-agents size: a 2 MB push lands and stays typeable; a push past the cap
     await ada.page.keyboard.type(' Still typeable.');
     ada.typed({ docId, field: 'body', text: ' Still typeable.', ordered: true });
     await ui.waitAcked(ada, docId, 30_000);
-    await expect.poll(async () => (await served(stack, docId, key)).startsWith('The first line. Still typeable.'), { message: 'the 2 MB doc takes typing', timeout: BIND_TIMEOUT }).toBe(true);
-    await actors.checkpoint('two-megabytes-typeable');
+    await expect.poll(async () => (await served(stack, docId, key)).startsWith('The first line. Still typeable.'), { message: 'the note at the text limit takes typing', timeout: BIND_TIMEOUT }).toBe(true);
+    await actors.checkpoint('text-limit-typeable');
 
     expect((await cli.run('pull', docId, 'big.md', '--force')).code).toBe(0);
     const before = await served(stack, docId, key);
-    cli.write('big.md', `${cli.read('big.md')}\n\n${'One paragraph too many. '.repeat(4_000)}`);
+    cli.write('big.md', `${cli.read('big.md')}\n\n${'One paragraph too many. '.repeat(1_000)}`);
     const refused = await cli.run('push', 'big.md');
-    expect(refused.code, 'a push past the cap fails').toBe(1);
-    expect(refused.stderr, 'and says why').toContain('too large');
+    expect(refused.code, 'a push past the text limit fails').toBe(1);
+    expect(refused.stderr, 'and says which limit, in plain words').toContain('too large: a note holds at most 1,020,000 characters of text');
     expect(await served(stack, docId, key), 'nothing of it landed').toBe(before);
+
+    // The structure limit: short lines, each a few structs, past 165,000 with little text.
+    const lines = await importNote(setup, stack, 'Seed tally', 'Tally.');
+    expect((await cli.run('pull', lines, 'tally.md')).code).toBe(0);
+    cli.write('tally.md', `${cli.read('tally.md')}\n\n${Array.from({ length: 34_000 }, (_, i) => `${i % 10}`).join('\n\n')}`);
+    const structure = await cli.run('push', 'tally.md');
+    expect(structure.code, 'a push past the structure limit fails').toBe(1);
+    expect(structure.stderr, 'and says which limit, in plain words').toContain('split it into smaller notes');
+    expect(await served(stack, lines, key)).toBe('Tally.');
   } finally {
     cli.dispose();
   }

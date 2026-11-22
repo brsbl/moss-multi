@@ -1,5 +1,6 @@
 // The suggest-mode wire (docs/design/suggestions.md §2): doc-socket string frames in the `__YPS:` envelope. Record
 // ids are minted by the server with each lease; a client names only a record it was minted or one it authors.
+import type { DocLimit } from './sync.ts';
 
 export interface IdSpan {
   client: number;
@@ -49,15 +50,25 @@ export interface LeaseGrant {
   clocks: Record<string, number>;
 }
 
+/**
+ * `room` on a reply: the bytes of suggestion state the DocDO may still retain after the request (short of
+ * `SUGGEST_LIMITS.stateShare`, and of the reserve), so a fork can refuse an edit past it before anything changes.
+ * `reserve`: what the note's state may still grow by short of the reserve alone, which a merge's copied ops count
+ * against as well.
+ */
 export type SuggestReply =
-  | { t: 'suggest-leased'; leases: LeaseGrant[] }
+  | { t: 'suggest-leased'; leases: LeaseGrant[]; room?: number; reserve?: number }
   /**
    * The frame landed in `record`, which differs from `requested` when the request opened a continuation of an
    * accepted record or followed a merge. `sv` is each of the record's leases' acknowledged clock in `doc`, the doc the
    * frame wrote (`body` for every frame but a payload op); `parts` the delete parts the record now holds.
    */
-  | { t: 'suggest-ack'; record: string; requested: string; doc: string; sv: Record<string, number>; parts: string[] }
-  | { t: 'suggest-refused'; record: string | null; reason: SuggestRefusal };
+  | { t: 'suggest-ack'; record: string; requested: string; doc: string; sv: Record<string, number>; parts: string[]; room?: number; reserve?: number }
+  /**
+   * `limit`: the note limit a `doc-cap` refusal met, text or structure (A§5.1 Limits); absent for the state bytes.
+   * Additive, so a client from before it reads the room notice.
+   */
+  | { t: 'suggest-refused'; record: string | null; reason: SuggestRefusal; limit?: Exclude<DocLimit, 'state'> };
 
 export const SUGGEST_LIMITS = {
   /** Live (unspent, unexpired) leases one principal may hold; a request cannot raise it. */
@@ -84,6 +95,11 @@ export const SUGGEST_LIMITS = {
   /** Spans one delete part may name, and items. */
   partSpans: 1024,
   partItems: 20_000,
+  /**
+   * Structs a record write adds to the note at most, as the DocDO counts them toward the structure limit (A§5.1
+   * Limits): a new record's map, meta, ops and parts; each op or delete part with the meta it patches; a merge's copy.
+   */
+  structs: { create: 5, write: 2, merge: 4 },
 } as const;
 
 /** Leases one `suggest-lease` resume may name; a client resumes more in several. */

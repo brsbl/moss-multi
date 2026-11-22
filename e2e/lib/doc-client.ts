@@ -60,6 +60,8 @@ export interface DocClient {
   type(text: string): void;
   /** Resolves once a server ack covers everything this client wrote. */
   acked(): Promise<void>;
+  /** Appends one paragraph per text, through the binding, in one update. */
+  paragraphs(texts: string[]): void;
   /** Idempotent. */
   close(): void;
 }
@@ -136,6 +138,13 @@ export async function openDocClient(baseUrl: string, docId: string, cookie: stri
           return [...local].every(([client, clock]) => (acked.get(client) ?? 0) >= clock);
         });
       }),
+    paragraphs: (texts) => {
+      flush();
+      editor.update(() => {
+        const root = $getRoot();
+        for (const text of texts) root.append($createParagraphNode().append($createTextNode(text)));
+      }, { discrete: true });
+    },
     close: () => {
       if (closed) return;
       closed = true;
@@ -146,9 +155,14 @@ export async function openDocClient(baseUrl: string, docId: string, cookie: stri
   };
 }
 
-/** Opens a doc socket and reports whether the handshake completed and the close code (1006 when it was refused). */
-export function probeSocket(baseUrl: string, docId: string, cookie: string | null): Promise<{ opened: boolean; code: number }> {
-  const url = `${baseUrl.replace(/^http/, 'ws')}${DOC_SOCKET_PATH}${encodeURIComponent(docId)}?${PROTOCOL_QUERY}`;
+/**
+ * Opens a doc socket and reports whether the handshake completed and the close code (1006 when it was refused).
+ * `query` stands in for another bundle's protocol; `send` is a frame sent as soon as the socket opens.
+ */
+export function probeSocket(
+  baseUrl: string, docId: string, cookie: string | null, { query = PROTOCOL_QUERY, send }: { query?: string; send?: Uint8Array } = {},
+): Promise<{ opened: boolean; code: number }> {
+  const url = `${baseUrl.replace(/^http/, 'ws')}${DOC_SOCKET_PATH}${encodeURIComponent(docId)}?${query}`;
   return new Promise((resolve, reject) => {
     chargeSocket(url);
     const socket = new WebSocket(url, { headers: upgradeHeaders(baseUrl, cookie) });
@@ -159,6 +173,7 @@ export function probeSocket(baseUrl: string, docId: string, cookie: string | nul
     }, 15_000);
     socket.on('open', () => {
       opened = true;
+      if (send) socket.send(send);
     });
     socket.on('error', noop);
     socket.on('close', (code) => {

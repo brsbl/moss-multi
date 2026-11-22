@@ -4,7 +4,7 @@
 // from the server's preview (the hash an accept must name), and a painted suggestion opens its card.
 import { Button } from '@moss/shared/components/ui/button';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuTrigger } from '@moss/shared/components/ui/dropdown-menu';
-import { BODY_DOC, recordDigest, type SuggestionRecord } from '@moss-multi/core/suggest/apply';
+import { recordDigest, type SuggestionRecord } from '@moss-multi/core/suggest/apply';
 import {
   SUGGESTION_ACTIVE_ATTR, SUGGESTION_CARD_ATTR, SUGGESTION_ID_ATTR, SUGGESTION_ROW_ATTR, SUGGESTION_STATUS_ATTR, SUGGESTIONS_BUTTON_ATTR, SUGGESTIONS_PANEL_ATTR,
 } from '@moss-multi/protocol/dom-contract';
@@ -16,6 +16,8 @@ import * as Y from 'yjs';
 import { useDocRole } from '../../access.ts';
 import { useAuthState } from '../../auth.ts';
 import { timeAgo } from '../../surfaces/NotificationsBell.tsx';
+import { suggestedText } from './copy-text.ts';
+import { reviewRefusal } from './notices.ts';
 import { createPreviewLoader, useLoadedPreview, useOnScreen } from './previews.ts';
 import { RowText } from './RowText.tsx';
 import { usePreviewRows } from './rows.ts';
@@ -75,34 +77,6 @@ function useRecords(source: SuggestionsSource): SuggestionRecord[] {
   }, [body, version]);
 }
 
-/** The text a record would add, decoded from its own ops (§4.7 "Copy suggested text"). */
-export function suggestedText(record: SuggestionRecord): string {
-  const parts: string[] = [];
-  for (const op of record.ops) {
-    try {
-      for (const struct of Y.decodeUpdate(op.update).structs) {
-        if (struct instanceof Y.Item && struct.content instanceof Y.ContentString) parts.push(struct.content.str);
-      }
-    } catch {
-      // An undecodable op adds nothing to copy.
-    }
-    if (op.doc !== BODY_DOC) parts.push('\n');
-  }
-  return parts.join('').trim();
-}
-
-const REASONS: Record<string, string> = {
-  outdated: 'The text it changes was edited since, so it can no longer be applied.',
-  broken: 'It cannot be shown in the note.',
-  changed: 'It changed while you reviewed it. Look again before accepting.',
-  'not-open': 'It was already reviewed.',
-  'doc-cap': 'Accepting it would make the note too large.',
-  'rate-limited': 'Too many reviews at once. Try again in a minute.',
-  role: "You can't review this suggestion.",
-  forbidden: "You can't review this suggestion.",
-  unavailable: 'Its changes could not be loaded.',
-};
-const reasonText = (reason: string) => REASONS[reason] ?? 'It could not be applied.';
 
 async function call(url: string, body?: unknown, signal?: AbortSignal): Promise<{ ok: boolean; status: number; json: Record<string, unknown>; retryAfter: string | null }> {
   // A role that comes from a share link travels with every call, as the comment API's does.
@@ -123,7 +97,7 @@ const reviewedHere = new Set<string>();
 
 const BADGE = 'inline-flex items-center rounded-md px-1.5 py-0.5 text-micro';
 
-function SuggestionCard({ docId, record, me, role, active, root, opened }: {
+function SuggestionCard({ docId, record, me, role, active, root, opened, body }: {
   docId: string;
   record: SuggestionRecord;
   me: string | null;
@@ -131,6 +105,7 @@ function SuggestionCard({ docId, record, me, role, active, root, opened }: {
   active: boolean;
   root: Element | null;
   opened: string;
+  body: Y.Doc | null;
 }): ReactNode {
   const { meta } = record;
   const open = meta.status === 'open';
@@ -155,7 +130,7 @@ function SuggestionCard({ docId, record, me, role, active, root, opened }: {
   const broken = !!meta.broken || (preview.state === 'failed' && preview.reason === 'broken');
   const rows = usePreviewRows(preview.state === 'ready' ? preview : null);
   // A preview that failed for any other reason is said, with a retry: Accept needs a preview.
-  const failed = preview.state === 'failed' && !outdated && !broken ? reasonText(preview.reason) : null;
+  const failed = preview.state === 'failed' && !outdated && !broken ? reviewRefusal(preview.reason) : null;
   const allShown = expanded || rows.length <= ROWS_SHOWN;
   const shownRows = allShown ? rows : rows.slice(0, ROWS_SHOWN);
 
@@ -163,15 +138,15 @@ function SuggestionCard({ docId, record, me, role, active, root, opened }: {
     setBusy(true);
     setError(null);
     previews.drop(docId, meta.id);
-    const body = action === 'accept' && preview.state === 'ready' ? { previewHash: preview.hash, digest: preview.digest } : {};
+    const request = action === 'accept' && preview.state === 'ready' ? { previewHash: preview.hash, digest: preview.digest } : {};
     try {
-      const result = await call(`/api/docs/${encodeURIComponent(docId)}/suggestions/${encodeURIComponent(meta.id)}/${action}`, body);
+      const result = await call(`/api/docs/${encodeURIComponent(docId)}/suggestions/${encodeURIComponent(meta.id)}/${action}`, request);
       if (result.ok) {
         reviewedHere.add(reviewedKey);
         setReviewed(true);
       } else {
         const reason = String(result.json.error ?? 'refused');
-        setError(reasonText(reason));
+        setError(reviewRefusal(reason, result.json.limit));
         // The note changed since this preview: fetch the one an accept must now name.
         if (reason === 'changed') refresh();
       }
@@ -230,12 +205,12 @@ function SuggestionCard({ docId, record, me, role, active, root, opened }: {
           )}
           {(outdated || broken) ? (
             <div className="flex items-center gap-2">
-              <span className="text-micro text-ink-muted">{reasonText(outdated ? 'outdated' : 'broken')}</span>
+              <span className="text-micro text-ink-muted">{reviewRefusal(outdated ? 'outdated' : 'broken')}</span>
               <button
                 type="button"
                 className="shrink-0 text-micro text-ink-default underline"
                 onClick={() => {
-                  void navigator.clipboard?.writeText(suggestedText(record)).then(() => setCopied(true), () => setCopied(false));
+                  void navigator.clipboard?.writeText(suggestedText(record, body)).then(() => setCopied(true), () => setCopied(false));
                 }}
               >
                 {copied ? 'Copied' : 'Copy suggested text'}
@@ -274,7 +249,7 @@ function SuggestionCard({ docId, record, me, role, active, root, opened }: {
 }
 
 /** The panel's cards: the open ones newest first, then the latest reviewed. */
-export function SuggestionList({ docId, open, reviewed, me, role, active, opened = '' }: {
+export function SuggestionList({ docId, open, reviewed, me, role, active, opened = '', body = null }: {
   docId: string;
   open: SuggestionRecord[];
   reviewed: SuggestionRecord[];
@@ -282,6 +257,8 @@ export function SuggestionList({ docId, open, reviewed, me, role, active, opened
   role: Role;
   active: string | null;
   opened?: string;
+  /** The note, so a copied suggestion reads as it stands in it. */
+  body?: Y.Doc | null;
 }): ReactNode {
   // The scroll box the cards' visibility is measured in.
   const [root, setRoot] = useState<HTMLDivElement | null>(null);
@@ -296,11 +273,11 @@ export function SuggestionList({ docId, open, reviewed, me, role, active, opened
         </div>
       ) : null}
       {open.map((record) => (
-        <SuggestionCard key={record.meta.id} docId={docId} record={record} me={me} role={role} active={record.meta.id === active} root={root} opened={opened} />
+        <SuggestionCard key={record.meta.id} docId={docId} record={record} me={me} role={role} active={record.meta.id === active} root={root} opened={opened} body={body} />
       ))}
       {reviewed.length ? <p className="mt-1 px-1 text-micro font-medium uppercase tracking-wide text-ink-faint">Reviewed</p> : null}
       {reviewed.map((record) => (
-        <SuggestionCard key={record.meta.id} docId={docId} record={record} me={me} role={role} active={record.meta.id === active} root={root} opened={opened} />
+        <SuggestionCard key={record.meta.id} docId={docId} record={record} me={me} role={role} active={record.meta.id === active} root={root} opened={opened} body={body} />
       ))}
     </div>
   );
@@ -344,7 +321,7 @@ export function SuggestionsButton({ docId, source }: { docId: string; source: Su
           <span className="text-xs font-medium text-ink-default">Suggestions</span>
           {open.length ? <span className="text-micro text-ink-faint">{open.length} open</span> : null}
         </div>
-        <SuggestionList docId={docId} open={open} reviewed={reviewed} me={me} role={role} active={active} opened={opened} />
+        <SuggestionList docId={docId} open={open} reviewed={reviewed} me={me} role={role} active={active} opened={opened} body={body} />
       </DropdownMenuContent>
     </DropdownMenu>
   );

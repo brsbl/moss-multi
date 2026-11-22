@@ -186,11 +186,6 @@ jobs:
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: node scripts/measure-converter.mjs
         timeout-minutes: 30
-      # T8.F: the DocDO's heap for the journeys' near-cap notes, read over the inspector; the table lands in the job summary.
-      - name: DocDO memory in workerd
-        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
-        run: node scripts/measure-memory.mjs
-        timeout-minutes: 20
       # A missing converter golden is written here for review; it fails the run until committed.
       - name: Upload missing converter goldens
         if: ${{ failure() }}
@@ -200,6 +195,32 @@ jobs:
           path: ${{ runner.temp }}/converter-goldens
           if-no-files-found: ignore
           retention-days: 3
+
+  # T3.B31a, T3.B31c: the heap each note at the caps needs to create, wake and export in workerd (V8's heap cap
+  # bisected, 3 of 3 fresh runs), against absolute budgets; notes past each cap are refused with that limit; the tables
+  # land in the job summary. One note per job: each note's bisection takes minutes.
+  memory:
+    needs: plan
+    if: needs.plan.outputs.checks == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        note: ['^text cap', '^structure cap: .* one-line', '^structure cap: .* list items', '^structure cap: the largest table', '^structure ceiling: .* one-line', '^structure ceiling: .* list items', '^structure ceiling: the largest table', '^past the', '^200k of mixed', '^scattered edits']
+    steps:
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: DocDO memory in workerd
+        run: node scripts/measure-memory.mjs
+        env:
+          MEASURE_MEMORY_CASES: ${{ matrix.note }}
+        timeout-minutes: 25
 
   build:
     needs: plan
@@ -230,6 +251,17 @@ jobs:
       # one out of the static assets (T8.D).
       - name: Upload guard
         run: node scripts/deploy/staging-config.mjs guard apps/web/dist
+      # The CLI the replicas install (T7.P3, docs/SYNC.md): one bundled file, its checksums and the service wrappers,
+      # checked alone in an empty folder, where --version must name this commit.
+      - name: Pack the CLI
+        run: node scripts/ci/cli-pack.mjs packages/cli/release
+        env:
+          MOSS_PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      - uses: actions/upload-artifact@v7
+        with:
+          name: moss-multi-cli
+          path: packages/cli/release
+          retention-days: 30
       # The built Worker boots under wrangler dev, /api/version is this commit, and / links CSS served 200 text/css.
       - name: Smoke
         run: node scripts/stack.mjs start --run-id "$SMOKE_RUN" --prebuilt apps/web/dist --expect-commit "$(git rev-parse HEAD)" --json
@@ -808,7 +840,7 @@ jobs:
 
   ci-ok:
     if: always()
-    needs: [plan, checks, build, e2e, macos, oracle, parity, viewer, editor, editor-host, canary, demo]
+    needs: [plan, checks, build, e2e, macos, oracle, parity, viewer, editor, editor-host, memory, canary, demo]
     runs-on: ubuntu-latest
     timeout-minutes: 3
     steps:

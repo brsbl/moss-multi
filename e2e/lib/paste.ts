@@ -266,14 +266,16 @@ export async function setup<R extends Record<string, string> = Record<never, str
  * paste (`typed`); one undo removes the typing and the next the whole paste (`before`), for both; one redo brings the
  * paste back and the next the typing. With `maxStallMs`,
  * the main thread is never held longer than that while the paste lands; with `wire`, no frame passes the frame cap
- * and the doc socket never closes, through the paste, its undo and its redo.
+ * and the doc socket never closes, through the paste, its undo and its redo. `history: false` stops after the typing:
+ * a paste just under the structure limit leaves no room for its own redo, since an undone paste's structs stay in the
+ * note's history (A§5.1).
  */
 export async function pasteAndCheck(
   { ada, ben, docId, wire }: { ada: Actor; ben: Actor; docId: string; wire?: Wire },
   pasted: string,
   want: { whole: string; typed: string },
   timeout: number,
-  { maxBusyMs = Infinity, maxStallMs = Infinity }: { maxBusyMs?: number; maxStallMs?: number } = {},
+  { maxBusyMs = Infinity, maxStallMs = Infinity, history = true }: { maxBusyMs?: number; maxStallMs?: number; history?: boolean } = {},
 ): Promise<number> {
   await ui.waitAcked(ada, docId, timeout);
   const before = await exported(ada, docId);
@@ -299,6 +301,10 @@ export async function pasteAndCheck(
   await ada.page.keyboard.type('Z');
   await ui.waitAcked(ada, docId, timeout);
   await expect.poll(() => exported(ada, docId), { message: 'the caret ends after the paste', timeout }).toBe(want.typed);
+  if (!history) {
+    if (wire) expectWire(wire);
+    return busyMs;
+  }
 
   await ada.page.waitForTimeout(NEW_STEP_MS);
   await ada.page.keyboard.press(UNDO);
@@ -333,6 +339,32 @@ export function fence(language: string, bytes: number, line: (i: number) => stri
   return `\`\`\`${language}\n${lines.join('\n')}\n\`\`\``;
 }
 
+/** What the refusal band says past the text limit, the structure limit, and the stored bytes or the frame cap (A§5.1). */
+export const TEXT_NOTICE = 'This note has reached its size limit (1.02 million characters).';
+export const STRUCTURE_NOTICE = 'This note is too big to add to: it has too many separate lines, cells or past edits. Continue in a new note.';
+export const BYTES_NOTICE = 'This note is at its size limit, so your last change was not saved.';
+/** A large paste cut short by a limit is rolled back (T3.B32). */
+export const PASTE_ROLLED_BACK_NOTICE = "The paste didn't fit, so nothing was pasted.";
+
+/**
+ * A paste's admission figures (the `moss-paste-admission` mark): what it adds (bytes, characters, structs), what the
+ * tab counts as held, the bytes limit, and which limit it met, if any.
+ */
+export interface Admission {
+  adds: number;
+  held: number;
+  heldLocal: number;
+  heldServer: number;
+  limit: number;
+  largestFrame: number;
+  fit: boolean;
+  chars: number;
+  heldChars: number;
+  structs: number;
+  heldStructs: number;
+  met: 'text' | 'structure' | 'state' | null;
+}
+
 /**
  * Pastes `pasted` after the note's "Kept." and checks it is refused whole and visibly: nothing of it in the editor, on
  * the server or on the collaborator's screen, the tab never held past MAX_STALL_MS, the note still editable, and, with
@@ -342,10 +374,11 @@ export async function expectRefusedPaste(
   { ada, ben, docId, wire }: { ada: Actor; ben: Actor; docId: string; wire: Wire },
   stack: Stack,
   pasted: string,
-  { checkWire = true }: { checkWire?: boolean } = {},
+  { checkWire = true, admission: checkAdmission, notice = TEXT_NOTICE }: { checkWire?: boolean; admission?: (figures: Admission) => void; notice?: string } = {},
 ): Promise<void> {
   await ui.waitAcked(ada, docId, 30_000);
   const before = await exported(ada, docId);
+  const benBefore = await exported(ben, docId);
   const print = await fingerprint(ada, docId);
   await ui.body(ada, docId).locator('p').filter({ hasText: /^Kept\.$/ }).click();
   await ada.page.keyboard.press('End');
@@ -354,9 +387,14 @@ export async function expectRefusedPaste(
   await pastePlain(ada, docId, pasted);
   // The admission's own figures (what the paste adds, what the tab counts as held), so a paste admitted that should
   // not have been says why.
-  const admission = () => ada.page.evaluate(() => performance.getEntriesByName('moss-paste-admission').map((mark) => (mark as PerformanceMark).detail));
+  const admission = () => ada.page.evaluate(() => performance.getEntriesByName('moss-paste-admission').map((mark) => (mark as PerformanceMark).detail as Admission));
+  if (checkAdmission) {
+    let figures: Admission | undefined;
+    await expect.poll(async () => (figures = (await admission()).at(-1)) !== undefined, { message: 'the paste is measured', timeout: 120_000 }).toBe(true);
+    checkAdmission(figures!);
+  }
   try {
-    await expect(ada.page.locator(`[${INPUT_REFUSAL_ATTR}]`), 'the refusal is announced').toContainText('size limit', { timeout: 120_000 });
+    await expect(ada.page.locator(`[${INPUT_REFUSAL_ATTR}]`), 'the refusal is announced, naming the limit').toContainText(notice, { timeout: 120_000 });
   } catch (error) {
     throw new Error(`${(error as Error).message}\nadmission: ${JSON.stringify(await admission().catch(() => 'unreadable'))}; socket closes: ${wire.closes.join(', ') || 'none seen'}`, { cause: error });
   }
@@ -370,6 +408,7 @@ export async function expectRefusedPaste(
   expect(await fingerprint(ada, docId), 'nothing of the paste is in the editor').toEqual(print);
   await ada.page.waitForTimeout(3_000);
   expect(await exported(ada, docId), 'nothing of the paste reached the server').toBe(before);
+  expect(await exported(ben, docId), 'nor the collaborator\'s export').toBe(benBefore);
   expect(await fingerprint(ben, docId), 'nor the collaborator').toEqual(print);
   await ui.typeBody(ada, docId, ' Still typing.');
   await ui.waitAcked(ada, docId, 30_000);

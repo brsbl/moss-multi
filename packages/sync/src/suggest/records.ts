@@ -170,6 +170,54 @@ export const partBytes = (part: DeletePart): number => part.id.length + part.quo
 export const recordBytes = (record: SuggestionRecord): number =>
   record.ops.reduce((sum, op) => sum + op.update.byteLength, 0) + record.parts.reduce((sum, part) => sum + partBytes(part), 0);
 
+const charsOf = new WeakMap<Uint8Array, number>();
+/** The characters of text an op's update inserts, as the DocDO counts a record's toward the note's text limit. */
+export function opChars(update: Uint8Array): number {
+  let chars = charsOf.get(update);
+  if (chars !== undefined) return chars;
+  chars = 0;
+  try {
+    for (const struct of Y.decodeUpdate(update).structs) if (struct instanceof Y.Item && struct.content instanceof Y.ContentString) chars += struct.length;
+  } catch {
+    // An undecodable op is accept's to refuse; it adds no text the DocDO counts.
+  }
+  charsOf.set(update, chars);
+  return chars;
+}
+
+/** The characters of text a record's ops insert, deleted ones included (doc/suggest.ts Info.chars). */
+export const recordChars = (record: SuggestionRecord): number => record.ops.reduce((sum, op) => sum + opChars(op.update), 0);
+
+/**
+ * A record's chain followed to its head: `next` names a closed record's successor (the record it merged into, or its
+ * continuation). The DocDO walks its own index of successors; a client walks the metas (`successorIn`).
+ */
+export function chainHead(id: string, next: (id: string) => string | undefined): string {
+  let head = id;
+  const seen = new Set([head]);
+  for (let step = next(head); step !== undefined && !seen.has(step); step = next(head)) {
+    seen.add(step);
+    head = step;
+  }
+  return head;
+}
+
+/** A closed record's successor as its meta names it. */
+export const successorIn = (doc: Y.Doc) => (id: string): string | undefined => {
+  const meta = readMeta(doc, id);
+  return meta?.mergedInto ?? meta?.continuedBy;
+};
+
+/**
+ * Where a frame for a record whose chain heads at a record of `status` lands: in that record while it is open, in a
+ * new continuation of it (a new open record) once accepted, nowhere once rejected or withdrawn. The DocDO's routing of
+ * every frame and a client's admission of an edit before it is made both decide by this.
+ */
+export function landingOf(status: RecordMeta['status']): 'head' | 'continuation' | 'closed' {
+  if (status === 'open') return 'head';
+  return status === 'accepted' ? 'continuation' : 'closed';
+}
+
 /** The bytes lib0 spends on `n` as a var uint. */
 export function varUintBytes(n: number): number {
   let bytes = 1;
@@ -192,6 +240,9 @@ export function suggestionStateBytes(doc: Y.Doc): number {
     }
     return bytes;
   }
+  // With no S struct the note holds no suggestion state, and the two encodings below (each a walk of the whole store
+  // for its delete set) would only agree: a wake of a note never suggested on pays nothing.
+  if (!doc.store.clients.get(writer.client)?.length) return 0;
   const full = Y.encodeStateVector(doc);
   const without = Y.decodeStateVector(full);
   without.delete(writer.client);

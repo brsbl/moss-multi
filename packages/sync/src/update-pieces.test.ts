@@ -1,6 +1,9 @@
 import { expect, it } from 'vitest';
 import * as Y from 'yjs';
-import { splitUpdate } from './update-pieces.ts';
+import * as encoding from 'lib0/encoding';
+import { ANSWER_PIECE_BYTES } from '@moss-multi/protocol/limits';
+import { splitAnswer, splitUpdate } from './update-pieces.ts';
+import { CHAIN, interleavedChains, waitersOnOne } from '../test/harness/answer-shapes.ts';
 
 /** A note shaped as @lexical/yjs V1 writes one: top-level blocks embedded in the root, each with its `__type`. */
 function addBlocks(doc: Y.Doc, count: number, at = doc.get('root', Y.XmlText).length): void {
@@ -159,4 +162,134 @@ it('leaves an update within the limit whole, and never cuts inside a block', () 
     });
   });
   expect(splitUpdate(big, 8 * 1024)).toHaveLength(1);
+});
+
+it('splits an answer whose structs depend on each other in a cycle, rather than looping (T3.B4, B212)', () => {
+  // A crafted frame can leave a cycle in the DocDO's pending structs, which every answer then carries: A:0 after B:0,
+  // and B:0 after A:0.
+  const a = new Y.Doc();
+  a.clientID = 1;
+  a.getText('t').insert(0, 'a'.repeat(40));
+  const b = new Y.Doc();
+  b.clientID = 2;
+  b.getText('t').insert(0, 'b'.repeat(40));
+  const { structs } = Y.decodeUpdate(Y.mergeUpdates([Y.encodeStateAsUpdate(a), Y.encodeStateAsUpdate(b)]));
+  const [first, second] = structs as Y.Item[];
+  first.origin = Y.createID(second.id.client, 0);
+  second.origin = Y.createID(first.id.client, 0);
+  const encoder = new Y.UpdateEncoderV1();
+  encoding.writeVarUint(encoder.restEncoder, 2);
+  for (const item of [first, second]) {
+    encoding.writeVarUint(encoder.restEncoder, 1);
+    encoder.writeClient(item.id.client);
+    encoding.writeVarUint(encoder.restEncoder, 0);
+    item.write(encoder, 0);
+  }
+  encoding.writeVarUint(encoder.restEncoder, 0);
+  const update = encoder.toUint8Array();
+  // The loop is synchronous, so a test timeout cannot end it: the waiting clients' Map writes are counted instead.
+  const set = Map.prototype.set;
+  let writes = 0;
+  Map.prototype.set = function (this: Map<unknown, unknown>, key: unknown, value: unknown) {
+    if ((writes += 1) > 100_000) throw new Error('splitAnswer did not terminate');
+    return set.call(this, key, value);
+  };
+  let pieces: Uint8Array[];
+  try {
+    pieces = splitAnswer(update, 16);
+  } finally {
+    Map.prototype.set = set;
+  }
+  const ids = pieces.flatMap((piece) => Y.decodeUpdate(piece).structs.map((struct) => `${struct.id.client}:${struct.id.clock}`));
+  expect(ids.sort()).toEqual(['1:0', '2:0']);
+});
+
+/** Applies `pieces` in order to an empty doc, asserting none needs a later one; returns the doc. */
+function appliedInOrder(pieces: Uint8Array[]): Y.Doc {
+  const peer = new Y.Doc();
+  for (const [index, piece] of pieces.entries()) {
+    Y.applyUpdate(peer, piece);
+    expect(peer.store.pendingStructs, `piece ${index} of ${pieces.length} needs nothing a later piece carries`).toBeNull();
+  }
+  return peer;
+}
+
+/**
+ * splitAnswer's work, counted as the Map lookups and writes it makes (its bookkeeping lives in Maps). The loop is
+ * synchronous, so a test timeout cannot end it: past `bound` the count throws.
+ */
+function counted<T>(bound: number, run: () => T): { result: T; work: number } {
+  const { get, set } = Map.prototype;
+  let work = 0;
+  const tick = () => {
+    if ((work += 1) > bound) throw new Error(`splitAnswer did more than ${bound} steps`);
+  };
+  Map.prototype.get = function (this: Map<unknown, unknown>, key: unknown) {
+    tick();
+    return get.call(this, key);
+  };
+  Map.prototype.set = function (this: Map<unknown, unknown>, key: unknown, value: unknown) {
+    tick();
+    return set.call(this, key, value);
+  };
+  try {
+    return { result: run(), work };
+  } finally {
+    Map.prototype.get = get;
+    Map.prototype.set = set;
+  }
+}
+
+it('orders 2,000 interleaved authors near the 2 MB cap in work linear in structs plus clients (T3.B28)', () => {
+  const clients = 2_000;
+  const update = interleavedChains(clients, 120_000);
+  expect(update.byteLength, 'near the 2 MB cap').toBeGreaterThan(1.8 * 1024 * 1024);
+  const structs = Y.decodeUpdate(update).structs.length;
+  // Waking every waiter on each struct the chain places costs about 120,000 x 2,000 steps, far past this.
+  const bound = 32 * (structs + clients);
+  const { result: pieces, work } = counted(bound, () => splitAnswer(update, ANSWER_PIECE_BYTES));
+  expect(work).toBeLessThanOrEqual(bound);
+  expect(pieces.length, 'the answer is several pieces').toBeGreaterThan(4);
+  const source = new Y.Doc();
+  Y.applyUpdate(source, update);
+  const peer = appliedInOrder(pieces);
+  expect(Y.encodeStateVector(peer)).toEqual(Y.encodeStateVector(source));
+  expect(peer.getText('chains').toString()).toBe(source.getText('chains').toString());
+});
+
+it('splits an answer whose woken list or whose one blocked run passes 200,000 entries, without a RangeError (T3.B28)', () => {
+  // 200,000 clients wait on CHAIN's one struct, so placing it wakes them all at once.
+  const woken = waitersOnOne(200_000);
+  const source = new Y.Doc();
+  Y.applyUpdate(source, woken);
+  const peer = appliedInOrder(splitAnswer(woken, ANSWER_PIECE_BYTES));
+  expect(Y.encodeStateVector(peer)).toEqual(Y.encodeStateVector(source));
+
+  // One client's 200,001 structs behind a crafted cycle with CHAIN's one struct: all of them go in the fallback.
+  const run = 200_001;
+  const doc = new Y.Doc();
+  const text = doc.getText('run');
+  doc.transact(() => {
+    doc.clientID = CHAIN;
+    text.insert(0, 'c');
+    doc.clientID = 1;
+    for (let i = 0; i < run; i += 1) text.insert(0, 'r');
+  });
+  const { structs } = Y.decodeUpdate(Y.encodeStateAsUpdate(doc));
+  const chain = structs[0] as Y.Item;
+  expect(chain.id.client).toBe(CHAIN);
+  // 1:0 sits before CHAIN:0 (its right origin); CHAIN:0 now follows 1:0.
+  chain.origin = Y.createID(1, 0);
+  const encoder = new Y.UpdateEncoderV1();
+  encoding.writeVarUint(encoder.restEncoder, 2);
+  for (const group of [[chain], structs.slice(1)]) {
+    encoding.writeVarUint(encoder.restEncoder, group.length);
+    encoder.writeClient(group[0].id.client);
+    encoding.writeVarUint(encoder.restEncoder, group[0].id.clock);
+    for (const struct of group) struct.write(encoder, 0);
+  }
+  encoding.writeVarUint(encoder.restEncoder, 0);
+  const pieces = splitAnswer(encoder.toUint8Array(), ANSWER_PIECE_BYTES);
+  const count = pieces.reduce((sum, piece) => sum + Y.decodeUpdate(piece).structs.length, 0);
+  expect(count).toBe(run + 1);
 });

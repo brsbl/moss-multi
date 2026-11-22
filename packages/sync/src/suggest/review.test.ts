@@ -9,6 +9,7 @@ import {
   applyRecord, canonical, hydrate, previewHash, projectDoc, recordDigest, type DeletePart, type RecordMeta, type RecordOp,
 } from '@moss-multi/core/suggest/apply';
 import { describeHunks, type ReviewRow } from '@moss-multi/core/suggest/describe';
+import { positionAt, project } from '@moss-multi/core/tree-anchor';
 import { SuggestIngest } from '../doc/suggest.ts';
 import { payloadDocsFor } from '../payload-docs.ts';
 import { ForkShim } from './fork-shim.ts';
@@ -857,3 +858,124 @@ describe('T5.3 the card shows every change accept commits to @p:mean-2 @p:R17', 
     }
   });
 });
+
+describe('T5.S14 accept never applies a change the preview hides @p:mean-2 @p:R17', () => {
+  const EMPTY_HASH = previewHash([]);
+  const blockText = (type: Y.XmlText) => (type.toDelta() as { insert: unknown }[]).map(({ insert }) => (typeof insert === 'string' ? insert : '')).join('');
+  /** The live top-level paragraph whose text starts with `prefix`. */
+  const paragraph = (doc: Y.Doc, prefix: string) =>
+    (root(doc).toDelta() as { insert: unknown }[]).map((op) => op.insert).find((x) => x instanceof Y.XmlText && blockText(x).startsWith(prefix)) as Y.XmlText;
+  /** The paragraph's text removed and written again, identical, under the suggester's client. */
+  const recopy = (type: Y.XmlText) => {
+    const text = blockText(type);
+    const at = (type.toDelta() as { insert: unknown }[]).findIndex(({ insert }) => typeof insert === 'string');
+    type.delete(at, text.length);
+    type.insert(at, text);
+  };
+  /** Each live character of `text` by id. */
+  const idsOf = (doc: Y.Doc, text: string) => JSON.stringify(spansOfText(doc, text));
+  /** A comment's start on `quote`, as comments mint it (tree-anchor positionAt): it names the quote's first item. */
+  const commentOn = (doc: Y.Doc, quote: string) => {
+    const projection = project(doc);
+    return positionAt(projection, projection.text.indexOf(quote), 0)!;
+  };
+  const anchored = (doc: Y.Doc, position: Y.RelativePosition) => {
+    const item = Y.getItem(doc.store, position.item!);
+    return item instanceof Y.Item && !item.deleted;
+  };
+
+  it("a record that replaces a peer's paragraph with an identical copy shows nothing, and accept keeps the originals: same ids, the comment anchored, the empty hash", () => {
+    const live = seededBody();
+    const text = 'Hello world and the cat.';
+    const ids = idsOf(live, text);
+    const comment = commentOn(live, 'world');
+    forgeRecord(live, 'g', [LEASED], [forged(live, (doc) => recopy(paragraph(doc, 'Hello')))]);
+    const preview = previewRecord(live, 'g');
+    if (!preview.ok) throw new Error(preview.reason);
+    expect(preview.hunks, 'nothing is shown').toEqual([]);
+    expect(preview.hash, 'the hash binds nothing').toBe(EMPTY_HASH);
+    expect(acceptRecord(live, 'g', { previewHash: preview.hash, digest: preview.digest }, EDITOR)).toEqual({ ok: true });
+    expect(blockText(paragraph(live, 'Hello'))).toBe(text);
+    expect(idsOf(live, text), 'the original items stay, so their authorship does').toBe(ids);
+    expect(anchored(live, comment), 'the comment on them stays anchored').toBe(true);
+  });
+
+  it('a payload replaced by an identical copy shows nothing, and accept keeps its original items', () => {
+    const live = seededBody();
+    const { key } = codeDecorator(live);
+    const before = liveItems(payloadDocsFor(live).get(key)!);
+    forgeRecord(live, 'g', [LEASED], [payloadOp(live, key, (text) => {
+      text.delete(0, text.length);
+      text.insert(0, 'seed');
+    })]);
+    const preview = previewRecord(live, 'g');
+    if (!preview.ok) throw new Error(preview.reason);
+    expect(preview.hunks, 'nothing is shown').toEqual([]);
+    expect(acceptRecord(live, 'g', { previewHash: preview.hash, digest: preview.digest }, EDITOR)).toEqual({ ok: true });
+    expect(payloadDocsFor(live).get(key)!.getText('payload').toString()).toBe('seed');
+    expect(liveItems(payloadDocsFor(live).get(key)!), 'the original items stay').toEqual(before);
+  });
+
+  it('a record with a real change and an identity-only block shows and applies only the real change', () => {
+    const live = seededBody();
+    const text = 'Hello world and the cat.';
+    const ids = idsOf(live, text);
+    const comment = commentOn(live, 'world');
+    const tail = paragraph(live, 'join tail')._item!.id;
+    forgeRecord(live, 'g', [LEASED], [forged(live, (doc) => {
+      recopy(paragraph(doc, 'Hello'));
+      const target = paragraph(doc, 'join tail');
+      target.insert(target.length, ' More.');
+    })]);
+    const preview = previewRecord(live, 'g');
+    if (!preview.ok) throw new Error(preview.reason);
+    expect(preview.hunks.map((hunk) => [hunk.kind, hunk.op, hunk.id]), 'only the real change is shown').toEqual([['block', 'changed', `${tail.client}:${tail.clock}`]]);
+    expect(acceptRecord(live, 'g', { previewHash: preview.hash, digest: preview.digest }, EDITOR)).toEqual({ ok: true });
+    expect(blockText(paragraph(live, 'join tail')), 'the real change lands').toBe('join tail. More.');
+    expect(idsOf(live, text), 'the copied paragraph keeps its original items').toBe(ids);
+    expect(anchored(live, comment), 'and its comment stays anchored').toBe(true);
+  });
+
+  it.each([
+    ['the restored copy', 'copy', false],
+    ['the restored copy, beside a real change', 'copy', true],
+    ['its original', 'original', false],
+    ['its original, beside a real change', 'original', true],
+  ] as const)("a record that overwrites a key inside %s of a peer's text node shows nothing there, and accept refuses with 409, the doc byte-identical", (_name, where, real) => {
+    const live = seededBody();
+    forgeRecord(live, 'g', [LEASED], [forged(live, (doc) => {
+      const target = paragraph(doc, 'Hello');
+      const mapIn = () => (target.toDelta() as { insert: unknown }[]).map(({ insert }) => insert).find((x) => x instanceof Y.Map) as Y.Map<unknown>;
+      const original = mapIn();
+      // An undo restores the text node (its property map and text) as copies, as yjs redoes removed items.
+      const undo = new Y.UndoManager(target, { captureTimeout: 0 });
+      doc.transact(() => target.delete(0, target.length));
+      undo.undo();
+      undo.destroy();
+      const copy = mapIn();
+      expect(copy, 'the map is a copy').not.toBe(original);
+      const key = [...original.keys()].find((k) => k !== '__type') ?? '__type';
+      if (where === 'copy') copy.set(key, copy.get(key));
+      else original.set(key, 'overwritten');
+      if (real) {
+        const tail = paragraph(doc, 'join tail');
+        tail.insert(tail.length, ' More.');
+      }
+    })]);
+    const preview = previewRecord(live, 'g');
+    if (!preview.ok) throw new Error(preview.reason);
+    const hello = paragraph(live, 'Hello')._item!.id;
+    expect(preview.hunks.map((hunk) => hunk.id), 'nothing is shown for the restored paragraph').not.toContain(`${hello.client}:${hello.clock}`);
+    expect(preview.hunks.length, 'only the real change is shown').toBe(real ? 1 : 0);
+    const before = Y.encodeStateAsUpdate(live);
+    expect(acceptRecord(live, 'g', { previewHash: preview.hash, digest: preview.digest }, EDITOR)).toEqual({ ok: false, status: 409, reason: 'changed' });
+    expect(Y.encodeStateAsUpdate(live), 'the doc is byte-identical').toEqual(before);
+  });
+});
+
+/** Each live item of a payload's text, by id and length. */
+function liveItems(payload: Y.Doc): string[] {
+  const out: string[] = [];
+  for (let item = payload.getText('payload')._start; item; item = item.right) if (!item.deleted) out.push(`${item.id.client}:${item.id.clock}:${item.length}`);
+  return out;
+}

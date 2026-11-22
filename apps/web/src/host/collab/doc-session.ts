@@ -7,13 +7,18 @@
 import { CLIENT_PROTOCOL, PROTOCOL_PARAM } from '@moss-multi/protocol/client-protocol';
 import type { ConnectionState, TerminalReason } from '@moss-multi/protocol/dom-contract';
 import { isRole, roleAtLeast, type Role } from '@moss-multi/protocol/roles';
+import { STATE_CAP_BYTES } from '@moss-multi/protocol/limits';
 import type { SuggestReply, SuggestRequest } from '@moss-multi/protocol/suggest';
-import { base64ToBytes, CLOSE, closeAction, encodeSyncFrame, PAYLOAD_MESSAGE, type ServerEvent, type WriteRefusalReason } from '@moss-multi/protocol/sync';
-import { attachPayloadDocs, PayloadDocs, PayloadSync } from '@moss-multi/sync/payload-docs';
+import {
+  base64ToBytes, CLOSE, closeAction, DOC_LIMIT_NOTICE, encodeMovesFrame, encodeSyncFrame, PAYLOAD_MESSAGE, type ServerEvent, type WriteRefusalReason,
+} from '@moss-multi/protocol/sync';
+import { attachPayloadDocs, namedPayloadIds, PayloadDocs, PayloadSync } from '@moss-multi/sync/payload-docs';
+import { applyDeletes, deletesUpdate, landedWhole, PasteWatch, rollBackPaste, withoutDeletes, type PasteRecord, type PayloadSpan, type Ranges } from '@moss-multi/sync/paste-rollback';
 import YProvider from 'y-partyserver/provider';
 import * as Y from 'yjs';
-import { rememberRole } from '../access.ts';
+import { knownRole, rememberRole } from '../access.ts';
 import { onOutdated } from '../client-protocol.ts';
+import { existingModel } from '../comments/model.ts';
 import { heldRead } from '../leave.ts';
 import { leaveTo } from '../navigation.ts';
 import { refuseInput, settleRefusal } from '../refusal.ts';
@@ -23,7 +28,8 @@ import {
   connectionOf, FIRST_SYNC_DEADLINE_MS, HANDSHAKE_FAILURES, HEARTBEAT_CHECK_MS, publishConnection, reduceLink, RESYNC_MS,
   SILENCE_LIMIT_MS, startLink, type Link, type LinkEvent,
 } from './connection.ts';
-import { Outbox, type Frame } from './outbox.ts';
+import { Outbox, syncWrite, type Frame } from './outbox.ts';
+import { dropRollback, PASTE_PARTLY_KEPT, PASTE_ROLLED_BACK, saveRollback, storedRollbacks, storeRollback, type StoredPaste } from './paste-rollback.ts';
 import { clearTerminal, setTerminal, terminalOf } from './terminal.ts';
 import { isSuggestReply, SuggestLedger } from './suggest-acks.ts';
 import { markSession, markUnacked } from './unacked.ts';
@@ -69,12 +75,15 @@ class DocSocket extends WebSocket {
   declare closeListeners?: ((event: CloseEvent) => void)[];
   /** Sends large updates in acked pieces (T3.S6); a session's sockets each have their own. */
   declare outbox?: Outbox;
+  /** Takes out of a write what must not be sent yet: a landing paste's deletes (T3.B32). */
+  declare hold?: (frame: Frame) => Frame;
 
   /** Nothing goes out on a socket that is closing: a reply to a late server frame would be lost and logs an error. */
   override send(...args: Parameters<WebSocket['send']>): void {
     if (this.readyState !== WebSocket.OPEN) return;
-    if (this.outbox) this.outbox.send(args[0] as Frame);
-    else super.send(...args);
+    const frame = this.hold ? this.hold(args[0] as Frame) : (args[0] as Frame);
+    if (this.outbox) this.outbox.send(frame);
+    else super.send(frame);
   }
 
   detach(code: number, reason: string): void {
@@ -294,15 +303,101 @@ const byDoc = new WeakMap<Y.Doc, DocSession>();
 const BUSY_TICK_MS = 2 * HEARTBEAT_CHECK_MS;
 
 /**
- * The bytes of the payload docs the DocDO counts against `doc`'s cap, withheld ones too, as it last said (T3.S6): a
- * tab holds only the payloads its tree names. 0 for a doc no session holds, or before the DocDO has said.
+ * A late tick keeps a silent socket for at most this long after the last frame heard, counted in time the thread was
+ * free to read frames: a late tick adds one interval, since frames sent during the block wait behind it (B208).
  */
-export const countedPayloadBytes = (doc: Y.Doc): number => byDoc.get(doc)?.payloadBytes ?? 0;
+const BUSY_GRACE_MS = 30_000;
+/** A step 1 still unanswered this long is sent again, however many frames still arrive (B213). */
+const RESYNC_HOLD_MS = 30_000;
+/** An outbox stalled at its budget with writes still queued this long reconnects and replays the ledger (B209). */
+const STUCK_MS = 20_000;
+
+/**
+ * The bytes of the payload docs the DocDO counts against `doc`'s cap, withheld ones too (T3.S6): a tab holds only the
+ * payloads its tree names. Its last word, plus the payload writes of this tab no ack has covered, made since its last
+ * usage figure: an ack's count includes the writes it covers, and a usage figure those that persisted with their acks
+ * lost, so none is counted twice (B207). 0 for a doc no session holds.
+ */
+export const countedPayloadBytes = (doc: Y.Doc): number => byDoc.get(doc)?.countedPayloadBytes ?? 0;
+
+/** What a paste may bring the note to: the cap less 3% for what its estimate leaves out (T3.S6). */
+export const PASTE_LIMIT_BYTES = Math.floor(STATE_CAP_BYTES * 0.97);
+
+/** The origin of a rollback's deletes: not the binding's, so no undo step takes them (T3.B32). */
+export const ROLLBACK_ORIGIN = Symbol('moss-multi:paste-rollback');
+/** How long a rollback waits for the payload docs a cut paste made to arrive, so their landed text goes too. */
+const ROLLBACK_ARRIVAL_MS = 10_000;
+
+/**
+ * A large paste as it lands (T3.B32): this client's clocks in the note, the payload docs it makes, and the deletes its
+ * writes make. Those deletes are held back from what the tab sends (`holding`) until every item of the paste is
+ * acked, so a paste cut short has deleted nothing on the server and its rollback only deletes what it added.
+ */
+export class PasteTrack {
+  readonly watch: PasteWatch;
+  /** The paste's deletes are not sent yet. */
+  holding = true;
+  /** A refusal stopped it: its deletes are never sent from this session. */
+  stopped = false;
+  /** Where the pane was scrolled when the paste began, restored if it is rolled back. */
+  scrollTop: number | undefined;
+  readonly #made = new Map<string, Y.Doc>();
+  /** The deletes the paste makes in each payload doc it made, so a rollback tells another writer's deletes apart. */
+  readonly #watches = new Map<string, PasteWatch>();
+  readonly #ends = new Map<string, number>();
+  readonly #stop: () => void;
+
+  constructor(readonly doc: Y.Doc, payloads: PayloadDocs, readonly abort: () => void, readonly onFinish: () => void) {
+    this.watch = new PasteWatch(doc);
+    this.#stop = payloads.onHold((id, payload, fresh) => {
+      if (!fresh || this.finished) return;
+      this.#made.set(id, payload);
+      if (!this.#watches.has(id)) this.#watches.set(id, new PasteWatch(payload));
+    });
+  }
+
+  get finished(): boolean {
+    return this.watch.finished;
+  }
+
+  /** The paste's last item is written. */
+  finish(): void {
+    if (this.finished) return;
+    this.watch.finish();
+    for (const [id, payload] of this.#made) this.#ends.set(id, Y.getState(payload.store, payload.clientID));
+    for (const watch of this.#watches.values()) watch.finish();
+    this.#stop();
+    this.onFinish();
+  }
+
+  payloads(): PasteRecord['payloads'] {
+    const payloads: PasteRecord['payloads'] = {};
+    for (const [id, payload] of this.#made) {
+      payloads[id] = { client: payload.clientID, from: 0, to: this.#ends.get(id) ?? Y.getState(payload.store, payload.clientID) };
+      const deletes = this.#watches.get(id)?.deletes() ?? [];
+      if (deletes.length > 0) payloads[id].deletes = deletes;
+    }
+    return payloads;
+  }
+
+  record(): StoredPaste {
+    const record: StoredPaste = { note: this.watch.span(), payloads: this.payloads(), deletes: this.watch.deletes() };
+    if (this.scrollTop !== undefined) record.scrollTop = this.scrollTop;
+    return record;
+  }
+}
+
+/** Tracks a large paste landing in `doc` (T3.B32); `abort` stops it landing. Null for a doc no session holds. */
+export const trackPaste = (doc: Y.Doc | undefined, abort: () => void): PasteTrack | null => (doc && byDoc.get(doc)?.trackPaste(abort)) ?? null;
 
 export class DocSession {
   readonly doc = new Y.Doc();
   /** The DocDO's last word on the payload bytes it counts against the cap (countedPayloadBytes). */
   payloadBytes = 0;
+
+  get countedPayloadBytes(): number {
+    return this.payloadBytes + this.#ledger.pendingPayloadBytes();
+  }
   /** The payload docs this tab holds beside the note (A§10.10), destroyed with it. */
   readonly payloads = attachPayloadDocs(this.doc, new PayloadDocs());
   readonly #payloadSync: PayloadSync;
@@ -336,11 +431,24 @@ export class DocSession {
   #firstSync: Uint8Array[] = [];
   #visibleSince = 0;
   #lastTick = 0;
+  /** The last frame stamp a tick saw, and the free time since it (BUSY_GRACE_MS). */
+  #heardSeen = 0;
+  #quietFor = 0;
   #failedHandshakes = 0;
   #accessRetries = 0;
   #accessRetry: ReturnType<typeof setTimeout> | undefined;
   #paused = false;
   #pagePresence: ReturnType<YProvider['awareness']['getLocalState']> = null;
+  /** Large pastes landing or unacked (T3.B32). */
+  readonly #pastes = new Set<PasteTrack>();
+  /** The stored pastes this session took on at its first sync, each dropped once what settles it is acked. */
+  #rollbacks: Set<string> | null = null;
+  /** Those it settled, waiting for the acks. */
+  readonly #applied = new Set<string>();
+  /** The DocDO's state vector, as its acks report it. */
+  readonly #ackedSv = new Map<number, number>();
+  /** Where to scroll the pane once a rolled-back note shows: where it was when the paste began. */
+  rolledBackScroll: number | null = null;
   readonly #tick: ReturnType<typeof setInterval>;
   readonly #deadline: ReturnType<typeof setTimeout>;
 
@@ -480,6 +588,54 @@ export class DocSession {
 
   get state(): SessionState {
     return this.#state;
+  }
+
+  trackPaste(abort: () => void): PasteTrack | null {
+    if (this.#ended || this.#disposed) return null;
+    const track = new PasteTrack(this.doc, this.payloads, abort, () => this.#release());
+    this.#pastes.add(track);
+    return track;
+  }
+
+  /** What a write sent now must leave out: the deletes of the pastes still holding theirs. */
+  readonly #hold = (frame: Frame): Frame => {
+    if (typeof frame === 'string' || this.#pastes.size === 0) return frame;
+    const held: Ranges = [];
+    for (const track of this.#pastes) if (track.holding) held.push(...track.watch.deletes());
+    if (held.length === 0) return frame;
+    const write = syncWrite(frame);
+    if (!write) return frame;
+    try {
+      const update = withoutDeletes(write.update, held);
+      return update === write.update ? frame : encodeSyncFrame(write.step, update);
+    } catch {
+      // bytes Yjs cannot read hold no deletes of the paste's
+      return frame;
+    }
+  };
+
+  /** Whether every item of `track` is acked: the note's, and its payload docs' writes. */
+  #landed(track: PasteTrack): boolean {
+    const span = track.watch.span();
+    if ((this.#ackedSv.get(span.client) ?? 0) < span.to) return false;
+    const pending = new Set(this.#ledger.pendingPayloads());
+    return Object.keys(track.payloads()).every((id) => !pending.has(id));
+  }
+
+  /** A paste that finished and landed whole sends its deletes: the paste is complete. */
+  #release(): void {
+    for (const track of this.#pastes) {
+      if (!track.holding || track.stopped || !track.finished || !this.#landed(track)) continue;
+      track.holding = false;
+      const ranges = track.watch.deletes();
+      // A socket that is down sends them with the unacked writes when it reconnects.
+      const ws = this.provider.ws;
+      if (ranges.length === 0 || this.#ended || !ws) continue;
+      // The server sees the moved text's delete only now, after the copy: it is told where the comments on it went.
+      const moves = existingModel(this.doc)?.moves() ?? [];
+      if (moves.length > 0) ws.send(encodeMovesFrame(moves));
+      ws.send(encodeSyncFrame(2, deletesUpdate(ranges)));
+    }
   }
 
   /** Calls `listener` on every change; returns the unsubscriber. */
@@ -646,10 +802,29 @@ export class DocSession {
 
   #set(patch: Partial<SessionState>): void {
     this.#state = { ...this.#state, ...patch };
+    if (!this.#state.unacked) this.#settled();
     markUnacked(this, this.#state.unacked);
     this.#publish();
     for (const listener of [...this.#listeners]) listener(this.#state);
     for (const check of [...ackWaiters]) check();
+  }
+
+  /** Every write is acked: a paste that finished and sent its deletes is whole, and a settled rollback is done. */
+  #settled(): void {
+    for (const track of [...this.#pastes]) if (track.finished && !track.holding) this.#pastes.delete(track);
+    for (const key of this.#applied) {
+      dropRollback(key);
+      this.#rollbacks?.delete(key);
+    }
+    this.#applied.clear();
+  }
+
+  /** Gives up the stored pastes this session took on, settled or not: the landed part stays (docs/METHOD.md). */
+  #dropRollbacks(): void {
+    if (!this.#rollbacks) return;
+    for (const key of this.#rollbacks) dropRollback(key);
+    this.#rollbacks.clear();
+    this.#applied.clear();
   }
 
   #publish(): void {
@@ -671,6 +846,8 @@ export class DocSession {
     this.#lastResync = Date.now();
     this.#resyncOwed = true;
     this.#failedHandshakes = 0;
+    const ws = this.provider.ws as DocSocket | null;
+    if (ws) ws.hold = this.#hold;
     // A write made before the server's step 1 arrives must not overtake the backlog replayed then (comments.md §6).
     // The note's backlog goes first: it holds the elements naming payloads made offline, so those payloads' resends wait
     // for it and never reach the DocDO as unnamed writes.
@@ -701,9 +878,97 @@ export class DocSession {
     this.#suggestWs = this.provider.ws;
     this.#accessRetries = 0;
     this.#update({ type: 'synced' });
-    if (this.#state.synced) return;
+    if (this.#state.synced || this.#rollbacks !== null) return;
     clearTimeout(this.#deadline);
-    this.#set({ synced: true, retrying: false });
+    const stored = storedRollbacks(this.docId);
+    this.#rollbacks = new Set(stored.keys());
+    if (stored.size === 0) {
+      this.#set({ synced: true, retrying: false });
+      return;
+    }
+    // Without write access the landed part stays (docs/METHOD.md): nothing is tried, so nothing is refused again.
+    if (!this.#state.canWrite || !roleAtLeast(knownRole(this.docId) ?? 'editor', 'editor')) {
+      this.#dropRollbacks();
+      this.#set({ synced: true, retrying: false });
+      return;
+    }
+    void this.#rollBack(stored).then(() => {
+      if (!this.#disposed && !this.#state.synced) this.#set({ synced: true, retrying: false });
+    });
+  }
+
+  /** Resolves once none of `ids` is still arriving, or after `ms`. */
+  #arrival(ids: Set<string>, ms: number): Promise<void> {
+    return new Promise<void>((resolve) => {
+      const waiting = () => [...ids].some((id) => this.payloads.awaiting(id));
+      if (!waiting()) {
+        resolve();
+        return;
+      }
+      const done = () => {
+        clearTimeout(timer);
+        stop();
+        resolve();
+      };
+      const timer = Number.isFinite(ms) ? setTimeout(done, ms) : undefined;
+      const stop = this.payloads.onArrive(() => {
+        if (!waiting() || this.#disposed) done();
+      });
+    });
+  }
+
+  /**
+   * Settles each stored paste (T3.B32) before the pane shows the note, the latest first. One cut short is rolled
+   * back in whole blocks, a block another writer wrote into (or into its payload, read once it has arrived) kept
+   * whole. Its deletes were never sent, so nothing it replaced needs restoring. One that landed whole sends its held
+   * deletes, which completes it. A paste whose payload docs have not arrived after 10 s is settled once they have, as
+   * the note shows.
+   */
+  async #rollBack(stored: Map<string, StoredPaste>): Promise<void> {
+    const records = [...stored].sort(([, a], [, b]) => b.note.from - a.note.from);
+    const named = namedPayloadIds(this.doc);
+    const ids = new Set<string>();
+    for (const [, record] of records) for (const id of Object.keys(record.payloads)) if (named.has(id)) ids.add(id);
+    for (const id of ids) this.payloads.hold(id);
+    await this.#arrival(ids, ROLLBACK_ARRIVAL_MS);
+    if (this.#disposed || this.#ended) return;
+    const waiting = this.#settle(records, ids);
+    if (waiting.length === 0) return;
+    void this.#arrival(ids, Infinity).then(() => {
+      if (!this.#disposed && !this.#ended && this.#rollbacks) this.#settle(waiting.filter(([key]) => this.#rollbacks?.has(key)), ids);
+    });
+  }
+
+  /** Settles `records`; returns those whose payload docs are still arriving. */
+  #settle(records: [string, StoredPaste][], ids: Set<string>): [string, StoredPaste][] {
+    const waiting: [string, StoredPaste][] = [];
+    let cut = false;
+    let kept = 0;
+    for (const [key, record] of records) {
+      const payloads = Object.entries(record.payloads).filter(([id]) => ids.has(id));
+      // One still arriving would read as cut short, and its landed items would stay once it arrived.
+      if (payloads.some(([id]) => this.payloads.awaiting(id))) {
+        waiting.push([key, record]);
+        continue;
+      }
+      if (!record.decided) {
+        const whole = landedWhole(this.doc, record.note) && payloads.every(([id, span]) => landedWhole(this.payloads.hold(id), span));
+        record.decided = whole ? 'whole' : 'cut';
+        saveRollback(key, record);
+      }
+      if (record.decided === 'whole') {
+        if (record.deletes?.length) applyDeletes(this.doc, record.deletes, ROLLBACK_ORIGIN);
+      } else {
+        cut = true;
+        const held = payloads.map(([id, span]): [string, Y.Doc, PayloadSpan] => [id, this.payloads.hold(id), span]);
+        kept += rollBackPaste(this.doc, record.note, held, ROLLBACK_ORIGIN, undefined, record.deletes).kept;
+        if (record.scrollTop !== undefined) this.rolledBackScroll = record.scrollTop;
+      }
+      this.#applied.add(key);
+    }
+    if (cut) refuseInput(kept > 0 ? PASTE_PARTLY_KEPT : PASTE_ROLLED_BACK);
+    if (!this.#ledger.unacked) this.#settled();
+    return waiting;
   }
 
   #closed(event: CloseEvent | null): void {
@@ -769,6 +1034,7 @@ export class DocSession {
         // A suggester's failed handshakes are the network: its suggestions still need delivering, so it reconnects.
         if (!answer.canWrite && !(cause === 'handshake' && answer.canSuggest)) {
           refuseInput(VIEW_ONLY);
+          this.#dropRollbacks();
           this.#ended = true;
           this.#set({ canWrite: false, resync: true });
           if (this.#lingering) this.dispose();
@@ -792,19 +1058,36 @@ export class DocSession {
     // A main thread busy enough to hold this 1 s tick back (a 2 MB paste, its undo, a peer's large paste applied
     // here) reads its frames late: that is not a silent socket. Held 6 s was the bar, and a collaborator's tab
     // applying a 40,000-block paste, its ticks late by 1-5 s, read the server as silent and reconnected.
-    if (this.#lastTick > 0 && now - this.#lastTick > BUSY_TICK_MS) this.#visibleSince = now;
+    // The grace is bounded by the last frame heard, so a socket that stays silent through it still reads as half-open.
+    const heard = this.provider.wsLastMessageReceived;
+    const late = this.#lastTick > 0 && now - this.#lastTick > BUSY_TICK_MS;
+    if (heard !== this.#heardSeen) {
+      this.#heardSeen = heard;
+      this.#quietFor = 0;
+    } else if (this.#lastTick > 0) {
+      this.#quietFor += late ? HEARTBEAT_CHECK_MS : now - this.#lastTick;
+    }
+    if (late && this.#quietFor < BUSY_GRACE_MS) this.#visibleSince = now;
     this.#lastTick = now;
     if (ws && ws.readyState === WebSocket.OPEN && !document.hidden) {
-      const heard = this.provider.wsLastMessageReceived;
       if (now - Math.max(heard, this.#visibleSince) > SILENCE_LIMIT_MS) {
         // Half-open: close 4408 and reconnect now; the old socket's close event may never come (A§10.5).
         this.#update({ type: 'silent', lastHeard: heard });
         ws.detach(CLOSE.heartbeat, 'heartbeat');
         return;
       }
+      // Writes queued behind a budget no ack frees (acks lost while frames still arrive): the reconnect's step 2
+      // replays the ledger, and its fresh outbox starts with an empty window.
+      if ((ws.outbox?.blockedFor(now) ?? 0) > STUCK_MS) {
+        this.#update({ type: 'silent', lastHeard: heard });
+        ws.detach(CLOSE.heartbeat, 'stalled');
+        return;
+      }
       // While sync frames still arrive, the answer to the last step 1 is queued behind them: another would only
       // queue the whole backlog again. A peer behind a large paste was sent it once per 4 s, megabytes each time.
-      if (now - this.#lastResync >= RESYNC_MS && !(this.#resyncOwed && now - this.#syncHeard < RESYNC_MS)) this.#resync(ws);
+      // Held back at most RESYNC_HOLD_MS: an answer that was lost never arrives.
+      const holding = this.#resyncOwed && now - this.#syncHeard < RESYNC_MS && now - this.#lastResync < RESYNC_HOLD_MS;
+      if (now - this.#lastResync >= RESYNC_MS && !holding) this.#resync(ws);
     }
     this.#update(null);
   }
@@ -873,17 +1156,26 @@ export class DocSession {
     } catch {
       return;
     }
+    // A server event is a frame heard: y-partyserver stamps only binary ones, and a socket hearing just acks while a
+    // large replay converges is alive, not silent.
+    this.provider.wsLastMessageReceived = Date.now();
     if (event.t === 'usage') {
       this.payloadBytes = event.pb;
+      this.#ledger.usageReported();
+      // Once per connect: a test can wait for the DocDO's figure before it sizes a paste against it (j01-paste-held).
+      performance.mark('moss-payload-usage', { detail: { pb: event.pb, limit: PASTE_LIMIT_BYTES } });
     } else if (event.t === 'ack') {
       this.payloadBytes = event.pb ?? 0;
       try {
-        (this.provider.ws as DocSocket | null)?.outbox?.acked(Y.decodeStateVector(base64ToBytes(event.sv)));
+        const sv = Y.decodeStateVector(base64ToBytes(event.sv));
+        for (const [client, clock] of sv) if ((this.#ackedSv.get(client) ?? 0) < clock) this.#ackedSv.set(client, clock);
+        (this.provider.ws as DocSocket | null)?.outbox?.acked(sv);
       } catch {
         // a malformed vector reopens nothing
       }
       const started = performance.now();
       if (this.#state.unacked && this.#ledger.acked(event)) this.#settleUnacked();
+      if (this.#pastes.size > 0) this.#release();
       // A slow ack read is a User Timing measure, so a held tab can be told apart from the paste's batches.
       if (performance.now() - started > 50) performance.measure('moss-sync-ack', { start: started });
     } else if (isSuggestReply(event)) {
@@ -891,7 +1183,28 @@ export class DocSession {
       for (const listener of [...this.#suggestListeners]) listener(event);
       this.#settleUnacked();
     } else if (event.t === 'write-refused') {
-      this.#refusedMessage = WRITE_REFUSED[event.reason] ?? WRITE_REFUSED.role;
+      this.#refusedMessage = event.reason === 'doc-cap' && event.limit && event.limit !== 'state'
+        ? DOC_LIMIT_NOTICE[event.limit]
+        : WRITE_REFUSED[event.reason] ?? WRITE_REFUSED.role;
+      // A rollback refused in its turn is not tried again: the landed part stays (docs/METHOD.md).
+      if (this.#rollbacks?.size) this.#dropRollbacks();
+      // A paste cut short is rolled back by the binding that follows, and one that landed whole is completed: each
+      // stops here, under its own key.
+      if ((event.reason === 'doc-cap' || event.reason === 'unresolved') && this.#pastes.size > 0) {
+        let cut = false;
+        for (const track of this.#pastes) {
+          // One not yet all written was cut short, whatever of it landed.
+          const unfinished = !track.finished;
+          track.stopped = true;
+          track.abort();
+          const record = track.record();
+          if (unfinished) record.decided = 'cut';
+          if (unfinished || !this.#landed(track)) cut = true;
+          storeRollback(this.docId, record);
+        }
+        this.#pastes.clear();
+        if (cut) this.#refusedMessage = PASTE_ROLLED_BACK;
+      }
       refuseInput(this.#refusedMessage);
     } else if (event.t === 'doc-deleted') {
       this.end('deleted');

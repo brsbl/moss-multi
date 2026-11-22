@@ -8,8 +8,8 @@ import * as Y from 'yjs';
 import { STATE_CAP_BYTES } from '@moss-multi/protocol/limits';
 import { roleAtLeast } from '@moss-multi/protocol/roles';
 import {
-  applyRecord, canonical, hydrate, itemKey, previewHash, projectDoc, projectionDiff, recordDigest, ROOT_KINDS, yValue, type GateReason, type Hunk, type IdSpan,
-  type Inserted, type PayloadMirrors, type Projection,
+  applyRecord, BODY_DOC, blockKeyOf, canonical, hydrate, itemKey, landing, previewHash, projectDoc, projectionDiff, recordDigest, relocated, restoredCopies, ROOT_KINDS, unchangedReads,
+  yValue, type GateReason, type Hunk, type IdSpan, type Inserted, type PayloadMirrors, type Projection, type Restored,
 } from '@moss-multi/core/suggest/apply';
 import { createConverterEditor } from '../converter/index.ts';
 import { attachPayloadSource, exportDocMarkdown, mirrorOf, payloadSourceOf } from '../server-doc.ts';
@@ -22,7 +22,15 @@ export interface Reviewer {
 
 export type Preview = { ok: true; hunks: Hunk[]; hash: string; digest: string } | { ok: false; reason: GateReason | 'missing' };
 
-export type ReviewResult = { ok: true } | { ok: false; status: 403 | 404 | 409; reason: GateReason | 'role' | 'missing' };
+/** `limit`: the note limit a `doc-cap` accept would pass, text or structure (A§5.1 Limits); absent for the state bytes. */
+export type ReviewResult = { ok: true } | { ok: false; status: 403 | 404 | 409; reason: GateReason | 'role' | 'missing'; limit?: 'text' | 'structure' };
+
+export interface AcceptOptions {
+  stateCap?: number;
+  now?: number;
+  /** Which note limit landing `body` and each payload update would pass, or null; asked before anything is written. */
+  limit?: (body: Uint8Array, payloads: readonly [string, Uint8Array][]) => 'text' | 'structure' | 'state' | null;
+}
 
 export interface AcceptInput {
   previewHash: string;
@@ -206,11 +214,17 @@ function mirrorWith(live: Y.Doc, payloads: Payloads): Y.Doc {
   return mirror;
 }
 
-const project = (doc: Y.Doc, payloads: Payloads, also: Iterable<string>): Projection =>
-  projectDoc(doc, (id) => payloads.doc(id), also);
+const project = (doc: Y.Doc, payloads: Payloads, also: Iterable<string>, restored?: Restored): Projection =>
+  projectDoc(doc, (id) => payloads.doc(id), also, restored);
 
 type Applied =
-  | { ok: true; mirror: Y.Doc; payloads: Payloads; hydrated: Uint8Array; touched: Map<string, Uint8Array>; hunks: Hunk[] }
+  | {
+    ok: true; mirror: Y.Doc; payloads: Payloads; hydrated: Uint8Array; touched: Map<string, Uint8Array>; hunks: Hunk[];
+    /** What the record removed, per doc, and what reads as it did (`unchangedReads`), for `landing`. */
+    removed: Map<string, IdSpan[]>; unchanged: Set<string>;
+    /** The copies the preview reads as the body units they restore, which accept keeps as those units. */
+    restored: Restored;
+  }
   | { ok: false; reason: GateReason | 'missing' };
 
 /** The record applied to fresh mirrors of `live` and its payloads, with the hunks a reviewer is shown. */
@@ -229,8 +243,11 @@ function apply(live: Y.Doc, id: string): Applied {
   }
   // Every payload the record writes is projected after it, named or not, so accept never lands a payload change the
   // preview did not show (I3). Before the record, G4 leaves only named payloads (already projected) and new ones.
-  const hunks = projectionDiff(before, project(mirror, payloads, result.payloads.keys()));
-  return { ok: true, mirror, payloads, hydrated: result.hydrated, touched: result.payloads, hunks };
+  // Text an undo restored as copies (the rest of a split it took back) reads as the body text it restores.
+  const restored = restoredCopies(mirror, live);
+  const after = project(mirror, payloads, result.payloads.keys(), restored);
+  const hunks = projectionDiff(before, after);
+  return { ok: true, mirror, payloads, hydrated: result.hydrated, touched: result.payloads, hunks, removed: result.removed, unchanged: unchangedReads(before, after), restored };
 }
 
 export function previewRecord(live: Y.Doc, id: string): Preview {
@@ -253,11 +270,11 @@ function badge(live: Y.Doc, id: string, reason: GateReason): void {
 }
 
 /**
- * One synchronous turn: G0, then G1–G5 and G7 on the mirror, G6 against the previewed hash and G8 against the state
- * cap. On any failure nothing reaches the live doc; on success the mirror's diff lands under `suggest-accept` and the
+ * One synchronous turn: G0, then G1–G5 and G7 on the mirror, G6 against the previewed hash, G8 against the state
+ * cap and the note's text and structure limits. On any failure nothing reaches the live doc; on success the mirror's diff lands under `suggest-accept` and the
  * record closes.
  */
-export function acceptRecord(live: Y.Doc, id: string, input: AcceptInput, reviewer: Reviewer, options: { stateCap?: number; now?: number } = {}): ReviewResult {
+export function acceptRecord(live: Y.Doc, id: string, input: AcceptInput, reviewer: Reviewer, options: AcceptOptions = {}): ReviewResult {
   if (!roleAtLeast(reviewer.role, 'editor')) return { ok: false, status: 403, reason: 'role' };
   const record = readRecord(live, id);
   if (!record) return { ok: false, status: 404, reason: 'missing' };
@@ -268,7 +285,7 @@ export function acceptRecord(live: Y.Doc, id: string, input: AcceptInput, review
     if (applied.reason !== 'missing') badge(live, id, applied.reason);
     return applied.reason === 'missing' ? { ok: false, status: 404, reason: 'missing' } : { ok: false, status: 409, reason: applied.reason };
   }
-  const { mirror, payloads, hydrated, touched, hunks } = applied;
+  const { mirror, payloads, hydrated, touched, hunks, removed, unchanged, restored } = applied;
   try {
     if (previewHash(hunks) !== input.previewHash) return { ok: false, status: 409, reason: 'changed' };
     // G8 as A§10 and the DocDO count: the note plus every stored payload, withheld ones included, each payload the
@@ -277,10 +294,31 @@ export function acceptRecord(live: Y.Doc, id: string, input: AcceptInput, review
     let bytes = Y.encodeStateAsUpdate(mirror).byteLength + source.totalBytes();
     for (const payload of touched.keys()) bytes += Y.encodeStateAsUpdate(payloads.doc(payload)).byteLength - source.bytesOf(payload);
     if (bytes > (options.stateCap ?? STATE_CAP_BYTES)) return { ok: false, status: 409, reason: 'doc-cap' };
-    // Payloads first, as serverWrite does, so the body's elements name payloads the note already holds.
-    for (const [payload, sv] of touched) source.write(payload, Y.encodeStateAsUpdate(payloads.doc(payload), sv));
-    Y.applyUpdate(live, Y.encodeStateAsUpdate(mirror, hydrated), SUGGEST_ACCEPT);
-    closeRecord(live, id, { status: 'accepted', resolvedBy: reviewer.id, resolvedAt: options.now ?? Date.now() });
+    // Payloads first, as serverWrite does, so the body's elements name payloads the note already holds. A block or
+    // payload that reads as it did, which the preview shows no hunk for, is kept as it is (T5.S14).
+    // Everything is landed before anything is written: where accept cannot land exactly what the preview showed (a
+    // write beneath a restored copy or its original, an anchor or holder it cannot resolve), nothing is written.
+    const landed: [string, Uint8Array][] = [];
+    let kept = false;
+    for (const [payload, sv] of touched) {
+      const same = unchanged.has(`payload:${payload}`);
+      const one = landing(payloads.doc(payload), sv, removed.get(payload) ?? [], () => same);
+      if (!one) return { ok: false, status: 409, reason: 'changed' };
+      kept ||= one.kept;
+      landed.push([payload, one.update]);
+    }
+    // A restored copy, read as its original, lands as that original, and what the record wrote among the copies lands
+    // where the preview showed it (relocated).
+    const body = landing(mirror, hydrated, removed.get(BODY_DOC) ?? [], (item) => unchanged.has(`block:${blockKeyOf(mirror, item)}`), restored);
+    const update = body && relocated(live, body.update, mirror, restored);
+    if (!body || !update) return { ok: false, status: 409, reason: 'changed' };
+    // The note's text and structure limits, on exactly what lands (A§5.1 Limits).
+    const limit = options.limit?.(update, landed);
+    if (limit) return { ok: false, status: 409, reason: 'doc-cap', ...(limit === 'state' ? {} : { limit }) };
+    kept ||= body.kept;
+    for (const [payload, payloadUpdate] of landed) source.write(payload, payloadUpdate);
+    Y.applyUpdate(live, update, SUGGEST_ACCEPT);
+    closeRecord(live, id, { status: 'accepted', resolvedBy: reviewer.id, resolvedAt: options.now ?? Date.now(), ...(kept ? { kept: true as const } : {}) });
     return { ok: true };
   } finally {
     mirror.destroy();

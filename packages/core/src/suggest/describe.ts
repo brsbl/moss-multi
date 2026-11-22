@@ -309,24 +309,18 @@ function align(before: readonly Piece[], after: readonly Piece[]): Step[] {
       continue;
     }
     const n = Math.min(x.len - bi, y.len - aj);
-    let same = n;
-    if (isChar(x) && x.s.slice(bi, bi + n) !== y.s!.slice(aj, aj + n)) {
-      same = 0;
-      while (x.s.charCodeAt(bi + same) === y.s!.charCodeAt(aj + same)) same += 1;
-    }
-    if (same) {
-      steps.push({ op: 'keep', b: slice(x, bi, bi + same), a: slice(y, aj, aj + same) });
-      if (bi + same === x.len) [i, bi] = [i + 1, 0];
-      else bi += same;
-      if (aj + same === y.len) [j, aj] = [j + 1, 0];
-      else aj += same;
+    if (!isChar(x) || x.s.slice(bi, bi + n) === y.s!.slice(aj, aj + n)) {
+      steps.push({ op: 'keep', b: slice(x, bi, bi + n), a: slice(y, aj, aj + n) });
+      if (bi + n === x.len) [i, bi] = [i + 1, 0];
+      else bi += n;
+      if (aj + n === y.len) [j, aj] = [j + 1, 0];
+      else aj += n;
       continue;
     }
-    // One id holding two different characters (never so in Yjs, but hashed as such) is removed and added.
-    let differ = 1;
-    while (differ < n && x.s!.charCodeAt(bi + differ) !== y.s!.charCodeAt(aj + differ)) differ += 1;
-    del(bi + differ);
-    ins(aj + differ);
+    // Runs whose ids hold different characters (never so in Yjs, but hashed as such) are removed and added whole, so
+    // no part of either reads as kept text the card leaves out.
+    del(x.len);
+    ins(y.len);
   }
   return steps;
 }
@@ -485,42 +479,46 @@ class Rows {
   /**
    * A value the record adds or removes whole: one row with the value and its own fields, then a row for each node it
    * holds and each run of its text a reader would not see in that row's text (a formatted run). `quiet` leaves out a
-   * text node's map with nothing to add, which the enclosing row covers.
+   * text node's map with nothing to add, which the enclosing row covers. `fields` names the fields of enclosing nodes
+   * it sits in (as `node` does), so the same value added under two fields never reads the same.
    */
-  whole(kind: 'insert' | 'delete', path: string, value: unknown, quiet = false): void {
+  whole(kind: 'insert' | 'delete', path: string, value: unknown, quiet = false, fields = ''): void {
     const verb = kind === 'insert' ? 'new' : 'removes';
+    const at = fields ? ` in ${fields}` : '';
     if (!isNode(value)) {
-      this.push(kind, path, typeof value === 'string' ? value : show(value), typeof value === 'string' ? undefined : `${verb} content`, value);
+      const note = typeof value === 'string' ? (fields ? `in ${fields}` : undefined) : `${verb} content${at}`;
+      this.push(kind, path, typeof value === 'string' ? value : show(value), note, value);
       return;
     }
     const own = this.read.carried(value);
     if (!(quiet && value.type === 'Map' && own.length === 0)) {
       const type = this.read.typeName(value);
-      this.push(kind, path, this.read.textOf(value) || `[${clip(type)}]`, [`${verb} ${type}`, ...own].join('; '), shallow(value));
+      this.push(kind, path, this.read.textOf(value) || `[${clip(type)}]`, [`${verb} ${type}${at}`, ...own].join('; '), shallow(value));
     }
     if (Array.isArray(value.seq)) {
-      this.sequence(kind, path, pieces(value.seq), [], true);
+      this.sequence(kind, path, pieces(value.seq), [], true, fields);
     }
-    this.fields(kind, path, value);
+    this.fields(kind, path, value, fields);
   }
 
   /** The nodes a node holds as field values, each in its own rows; an empty one (its kind is in the parent's detail) has none. */
-  fields(kind: 'insert' | 'delete', path: string, node: Node): void {
+  fields(kind: 'insert' | 'delete', path: string, node: Node, fields = ''): void {
     for (const [key, item] of fieldsOf(node)) {
-      if (isNode(item) && (fieldsOf(item).length > 0 || (item.seq?.length ?? 0) > 0)) this.whole(kind, sub(path, key), item);
+      if (isNode(item) && (fieldsOf(item).length > 0 || (item.seq?.length ?? 0) > 0)) this.whole(kind, sub(path, key), item, false, within(fields, key));
     }
   }
 
   /**
    * Pieces all added or all removed: runs of characters by text node, and every other item. A text node's map whose
-   * characters follow it is said by their row. `quiet` leaves out what has nothing to add to an enclosing row.
+   * characters follow it is said by their row. `quiet` leaves out what has nothing to add to an enclosing row. `fields`
+   * names the fields of enclosing nodes the sequence sits in.
    */
-  sequence(kind: 'insert' | 'delete', path: string, list: readonly Piece[], chain: readonly string[], quiet: boolean): void {
+  sequence(kind: 'insert' | 'delete', path: string, list: readonly Piece[], chain: readonly string[], quiet: boolean, fields = ''): void {
     for (let i = 0; i < list.length; ) {
       const unit = list[i];
       const map: Owner | null = !isChar(unit) && isNode(unit.node) && unit.node.type === 'Map' ? { id: unit.id, node: unit.node } : null;
       if (!isChar(unit) && !map) {
-        this.whole(kind, sub(path, unit.id), unit.node, quiet);
+        this.whole(kind, sub(path, unit.id), unit.node, quiet, fields);
         i += 1;
         continue;
       }
@@ -535,18 +533,19 @@ class Rows {
       }
       const text = run.map((p) => p.s ?? '').join('');
       if (map && !text) {
-        this.whole(kind, sub(path, map.id), map.node, quiet);
+        this.whole(kind, sub(path, map.id), map.node, quiet, fields);
         continue;
       }
       // A text node of another Lexical type says so, then its fields: in full when its map is in this run (said once),
       // clipped when the run only sits in it.
       const lexical = owner ? this.read.typeName(owner.node) : 'text';
-      const fields = !owner ? [] : map ? this.read.carried(owner.node) : this.read.context(owner.node);
-      const note = [...chain, ...(lexical === 'text' ? [] : [map ? lexical : clip(lexical)]), ...fields];
+      const carried = !owner ? [] : map ? this.read.carried(owner.node) : this.read.context(owner.node);
+      const note = [...chain, ...(lexical === 'text' ? [] : [map ? lexical : clip(lexical)]), ...carried];
       if (!quiet || note.length > 0) {
+        if (fields) note.unshift(`in ${fields}`);
         this.push(kind, path, text, note.join('; ') || undefined, { ids: idRuns(run), node: map ? shallow(map.node) : (owner?.id ?? null) });
       }
-      if (map) this.fields(kind, sub(path, map.id), map.node);
+      if (map) this.fields(kind, sub(path, map.id), map.node, fields);
     }
   }
 
@@ -578,25 +577,25 @@ class Rows {
     for (let i = 0; i < steps.length; ) {
       const step = steps[i];
       if (step.op === 'keep') {
-        if (!isChar(step.b) && !isChar(step.a)) this.value(sub(path, step.a.id), step.b.node, step.a.node, texts.get(step.a.id));
+        if (!isChar(step.b) && !isChar(step.a)) this.value(sub(path, step.a.id), step.b.node, step.a.node, texts.get(step.a.id), fields);
         i += 1;
         continue;
       }
       const { op, run, end } = runAt(steps, i);
-      this.sequence(op, path, run, inner, false);
+      this.sequence(op, path, run, inner, false, fields);
       i = end;
     }
   }
 
   /** Two versions of a value: a node of one kind is compared field by field, anything else is replaced. */
-  value(path: string, b: unknown, a: unknown, label?: string): void {
+  value(path: string, b: unknown, a: unknown, label?: string, fields = ''): void {
     if (this.read.same(b, a)) return;
     if (isNode(b) && isNode(a) && b.type === a.type && b.name === a.name) {
-      this.node(path, b, a, clip(label?.trim() || this.read.labelOf(a)));
+      this.node(path, b, a, clip(label?.trim() || this.read.labelOf(a)), fields);
       return;
     }
-    if (b !== undefined) this.whole('delete', path, b);
-    if (a !== undefined) this.whole('insert', path, a);
+    if (b !== undefined) this.whole('delete', path, b, false, fields);
+    if (a !== undefined) this.whole('insert', path, a, false, fields);
   }
 
   /** Two lists of `[key, value]` pairs (the note's settings, a payload's fields): each key that differs. */

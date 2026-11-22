@@ -20,7 +20,20 @@ interface Tracer {
   read: () => Spot[];
   /** The editor state `spots` describe: the pending one while an update runs. */
   state: EditorState | null;
-  spots: Spot[];
+  /** The spots by the node they stand in: an operation on a node carries only that node's. */
+  spots: Map<NodeKey, Spot[]>;
+}
+
+function byKey(spots: readonly Spot[]): Map<NodeKey, Spot[]> {
+  const out = new Map<NodeKey, Spot[]>();
+  for (const spot of spots) put(out, spot);
+  return out;
+}
+
+function put(spots: Map<NodeKey, Spot[]>, spot: Spot): void {
+  const held = spots.get(spot.key);
+  if (held) held.push(spot);
+  else spots.set(spot.key, [spot]);
 }
 
 const tracers = new WeakMap<LexicalEditor, Tracer>();
@@ -49,19 +62,40 @@ function active(): Tracer | null {
     return null;
   }
   if (tracer.state !== pending) {
-    tracer.spots = tracer.read();
+    tracer.spots = byKey(tracer.read());
     tracer.state = pending;
   }
   return tracer;
 }
 
+/** Spots visited while carrying them through text operations; tests bound it. */
+export const traceWork = { spots: 0 };
+
 /** Moves the text spots in `key` to where `to` says, dropping those it deletes. */
 function move(tracer: Tracer, key: NodeKey, to: (offset: number) => { key: NodeKey; offset: number } | null): void {
-  tracer.spots = tracer.spots.flatMap((spot) => {
-    if (spot.key !== key || spot.offset < 0) return [spot];
+  const held = tracer.spots.get(key);
+  if (!held) return;
+  tracer.spots.delete(key);
+  for (const spot of held) {
+    traceWork.spots += 1;
+    if (spot.offset < 0) {
+      put(tracer.spots, spot);
+      continue;
+    }
     const next = to(spot.offset);
-    return next ? [{ id: spot.id, ...next }] : [];
-  });
+    if (next) put(tracer.spots, { id: spot.id, ...next });
+  }
+}
+
+/**
+ * Offsets of `before` in `after` when `after` is the one slice of `before` it equals (a text-match shortcut keeps the
+ * text between its delimiters, one character or a block's worth); null when it is no slice, or more than one.
+ */
+function sliceOf(before: string, after: string): ((offset: number) => number | null) | null {
+  if (after.length === 0 || after.length > before.length) return null;
+  const at = before.indexOf(after);
+  if (at < 0 || before.indexOf(after, at + 1) >= 0) return null;
+  return (offset) => (offset >= at && offset < at + after.length ? offset - at : null);
 }
 
 /**
@@ -134,8 +168,14 @@ function install(): void {
     const merged = traced(() => mergeWithSibling.call(this, target));
     if (tracer) {
       const into = merged.getKey();
+      // This node's spots set aside first: `into` is this node, and the other's spots join it.
+      const own = tracer.spots.get(self) ?? [];
+      tracer.spots.delete(self);
       move(tracer, other, (offset) => ({ key: into, offset: before ? offset : offset + selfSize }));
-      move(tracer, self, (offset) => ({ key: into, offset: before ? offset + otherSize : offset }));
+      for (const spot of own) {
+        traceWork.spots += 1;
+        put(tracer.spots, spot.offset < 0 ? spot : { id: spot.id, key: into, offset: before ? spot.offset + otherSize : spot.offset });
+      }
     }
     return merged;
   };
@@ -180,9 +220,12 @@ function install(): void {
     const into = result.getKey();
     if (tracer && into !== key) {
       if (before === null) {
-        tracer.spots = tracer.spots.map((spot) => (spot.key === key && spot.offset < 0 ? { ...spot, key: into } : spot));
+        const held = tracer.spots.get(key) ?? [];
+        tracer.spots.delete(key);
+        for (const spot of held) put(tracer.spots, spot.offset < 0 ? { ...spot, key: into } : spot);
       } else {
-        const map = $isTextNode(result) ? remap(before, result.getTextContent(), $cursorIn(result, result.getTextContentSize())) : () => null;
+        const text = $isTextNode(result) ? result.getTextContent() : null;
+        const map = text === null ? () => null : (sliceOf(before, text) ?? remap(before, text, $cursorIn(result, text.length)));
         move(tracer, key, (offset) => {
           const at = map(offset);
           return at === null ? null : { key: into, offset: at };
@@ -206,23 +249,23 @@ export interface StrikeTrace {
 /** Traces `editor`'s struck items; `read` lists where they stand now, by the binding (before it writes an update). */
 export function traceStrikes(editor: LexicalEditor, read: () => Spot[]): StrikeTrace {
   install();
-  const tracer: Tracer = { read, state: null, spots: [] };
+  const tracer: Tracer = { read, state: null, spots: new Map() };
   tracers.set(editor, tracer);
   return {
     settle() {
       const state = editor.getEditorState();
       if (tracer.state === state) return;
-      tracer.spots = read();
+      tracer.spots = byKey(read());
       tracer.state = state;
     },
     take() {
-      const { spots } = tracer;
-      tracer.spots = [];
+      const spots = [...tracer.spots.values()].flat();
+      tracer.spots = new Map();
       tracer.state = null;
       return spots;
     },
     add(spots) {
-      if (tracer.state && tracer.state === pendingOf(editor)) tracer.spots.push(...spots);
+      if (tracer.state && tracer.state === pendingOf(editor)) for (const spot of spots) put(tracer.spots, spot);
     },
     stop() {
       if (tracers.get(editor) === tracer) tracers.delete(editor);

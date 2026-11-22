@@ -47,6 +47,29 @@ declare module '@moss-desktop/common/embed-iframe-policy' {
   };
 }
 
+// The pane's paste handlers and content transforms, which a Suggest-mode paste also runs on a copy (suggest/paste-stack.ts).
+declare module '@moss-desktop/renderer/editor/MarkdownEditor' {
+  import type { LinkMatcher } from '@lexical/link';
+  import type { LexicalEditor } from 'lexical';
+  export const AUTOLINK_MATCHERS: LinkMatcher[];
+  export function registerPasteFormattingHandlers(editor: LexicalEditor): () => void;
+}
+
+declare module '@moss-desktop/renderer/editor/AutoArrowPlugin' {
+  import type { LexicalEditor } from 'lexical';
+  export function registerAutoArrow(editor: LexicalEditor): () => void;
+}
+
+declare module '@moss-desktop/renderer/editor/plugins/SafePastePlugin' {
+  import type { LexicalEditor } from 'lexical';
+  export function registerSafePaste(editor: LexicalEditor): () => void;
+}
+
+declare module '@moss-desktop/renderer/editor/plugins/WebpageEmbedPastePlugin' {
+  import type { LexicalEditor } from 'lexical';
+  export function registerWebpageEmbedPaste(editor: LexicalEditor): () => void;
+}
+
 declare module '@moss-desktop/common/web-embed-url' {
   export function resolveRemoteWebSurfaceUrl(text: string): string;
 }

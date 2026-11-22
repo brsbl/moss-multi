@@ -116,7 +116,10 @@ const CASES: CensusCase[] = [
   keyCase("a text node's stored text", 'body/root/Map/key', 'Any', (doc) => textMap(doc).set('__text', 'stored-secret'), ['text', 'stored-secret']),
   keyCase("a text node's stored key", 'body/root/Map/key', 'Any', (doc) => textMap(doc).set('__hidden', 'map-secret'), ['hidden', 'map-secret']),
   keyCase('a nested map on a text node', 'body/root/Map/key', 'Type:Map', (doc) => textMap(doc).set('__extra', new Y.Map([['k', 'map-deep']])), ['extra', 'map-deep']),
-  keyCase('a removed text field', 'body/root/Map/key', 'Deleted', (doc) => textMap(doc).delete('__style'), ['style', 'none']),
+  // The lean layout stores a text node's style only once it differs from the default, so the note holds one to remove.
+  keyCase('a removed text field', 'body/root/Map/key', 'Deleted', (doc) => textMap(doc).delete('__style'), ['style', 'color: red', 'none'], 'body', (live) => {
+    textMap(live).set('__style', 'color: red');
+  }),
   // A compound payload's fields.
   keyCase('a payload field', 'payload/payload-map/Map/key', 'Any', (doc) => doc.getMap('payload-map').set('lang', 'python'), ['lang', 'python'], 'payload'),
   keyCase('a removed payload field', 'payload/payload-map/Map/key', 'Deleted', (doc) => doc.getMap('payload-map').delete('lang'), ['lang', 'ruby', 'none'], 'payload', (live) => {
@@ -356,3 +359,47 @@ function suggestedRowsHunks(): Hunk[] {
   if (!preview.ok) throw new Error(preview.reason);
   return preview.hunks;
 }
+
+describe('T5.B4 a nested node added or removed whole names the field it sits in @p:mean-2 @p:R17', () => {
+  const image = (id?: string) => ({ ...(id ? { id } : {}), type: 'XmlElement', keys: [['__type', { Any: ['image'] }], ['__src', { Any: ['a.png'] }]] });
+  const caption = (seq: unknown[]) => ({ type: 'XmlText', seq, keys: [['__type', { Any: ['caption'] }]] });
+  const holder = (fields: [string, unknown][]) => ({ type: 'XmlText', seq: [{ id: '9:0', s: 'Body' }], keys: [['__type', { Any: ['paragraph'] }], ...fields] });
+  /** The rows under a field: their path (in `detail`) starts with its key. */
+  const under = (rows: ReviewRow[], key: string) => rows.filter((row) => new RegExp(`#[0-9a-f]{12} +${key}[ :]`).test(row.detail));
+  const reads = (row: ReviewRow) => `${row.text} ${row.note ?? ''}`;
+
+  function expectNamed(rows: ReviewRow[], fields: [string, string][]) {
+    for (const [key, name] of fields) {
+      const nested = under(rows, key);
+      expect(nested.length, `rows under ${key}:\n${shown(rows)}`).toBeGreaterThan(0);
+      for (const row of nested) expect(reads(row), `a row under ${key} names ${name}:\n${shown(rows)}`).toContain(name);
+    }
+    const seen = new Set(visible(rows).map((row) => canonical(row)));
+    expect(seen.size, `two rows read the same:\n${shown(rows)}`).toBe(rows.length);
+  }
+
+  it.each(['added', 'removed'] as const)('a parent %s whole: its identical nested nodes under two keys read differently', (op) => {
+    const value = holder([['__first', image()], ['__second', image()]]);
+    const hunk: Hunk = op === 'added' ? { kind: 'block', id: '1:5', op, after: value, at: '1:3' } : { kind: 'block', id: '1:5', op, before: value };
+    expectNamed(describeHunks([hunk]), [['__first', 'first'], ['__second', 'second']]);
+  });
+
+  it.each(['insert', 'delete'] as const)('a changed parent: identical nodes, one inside each of two fields (%s), read differently', (kind) => {
+    const without = holder([['__first', caption([])], ['__second', caption([])]]);
+    const withImages = holder([['__first', caption([image('7:1')])], ['__second', caption([image('7:2')])]]);
+    const [before, after] = kind === 'insert' ? [without, withImages] : [withImages, without];
+    const rows = describeHunks([{ kind: 'block', id: '1:5', op: 'changed', before, after }]);
+    expect(rows.filter((row) => row.kind === kind), shown(rows)).toHaveLength(2);
+    expectNamed(rows, [['__first', 'first'], ['__second', 'second']]);
+  });
+
+  it('long keys are clipped in the note, and two that differ only at the end still read differently', () => {
+    const long = (end: string) => `__${'k'.repeat(300)}${end}`;
+    const rows = describeHunks([{ kind: 'block', id: '1:5', op: 'added', after: holder([[long('A'), image()], [long('B'), image()]]), at: '1:3' }]);
+    const nested = rows.filter((row) => row.note?.includes('image'));
+    expect(nested, shown(rows)).toHaveLength(2);
+    for (const row of nested) expect(row.note!.length, row.note).toBeLessThan(260);
+    expect(nested[0].note).not.toBe(nested[1].note);
+    expect(nested.every((row) => row.note!.includes('kkkk'))).toBe(true);
+  });
+});

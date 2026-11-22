@@ -6,9 +6,11 @@ import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 
 import * as Y from 'yjs';
 import { base64ToBytes, CLOSE } from '@moss-multi/protocol/sync';
 import { exportMarkdown, importMarkdown } from '../../src/converter/index.ts';
-import { DocDO } from '../../src/doc-do.ts';
+import { DocDO, type DocLimits } from '../../src/doc-do.ts';
 import { readFrontmatter, updateFrontmatter, writeFrontmatterKey } from '@moss-multi/core/frontmatter';
-import { serverWrite } from '../../src/server-doc.ts';
+import { keepLeanKeys, repairWork } from '../../src/lean-defaults.ts';
+import { serverLeanDefaults, serverWrite } from '../../src/server-doc.ts';
+import { interleavedChains } from './answer-shapes.ts';
 import { Backing, bindLexical, blockTypes, connect, counts, openDoc, start, step1, syncFrame, wake, type Opened, type TestClient } from './do-harness.ts';
 
 const CHUNK = 1.5 * 1024 * 1024;
@@ -171,8 +173,13 @@ describe('server writes', () => {
   it('replays legacy YAML into the map, persists its upgrade, and exports after a second wake', async () => {
     const legacy = await start(openDoc());
     await legacy.dobj.create({ folderId: 'folder', ownerId: 'owner', title: 'Old note', markdown: MARKDOWN });
-    // The pre-map server's persisted wire shape, including its fenced YAML and CRLFs.
-    legacy.dobj.document.getText('frontmatter').insert(0, '---\r\nstatus: draft\r\ntags: [keep, both]\r\n---\r\n');
+    // The pre-map server's persisted wire shape, including its fenced YAML and CRLFs, written by a peer: create's
+    // in-place export already read the field here as a map.
+    const peer = new Y.Doc();
+    Y.applyUpdate(peer, Y.encodeStateAsUpdate(legacy.dobj.document));
+    peer.getText('frontmatter').insert(0, '---\r\nstatus: draft\r\ntags: [keep, both]\r\n---\r\n');
+    Y.applyUpdate(legacy.dobj.document, Y.encodeStateAsUpdate(peer, Y.encodeStateVector(legacy.dobj.document)));
+    peer.destroy();
     await legacy.dobj.onSave();
     const restored = await start(wake(legacy));
     expect(readFrontmatter(restored.dobj.document)).toEqual({ status: 'draft', tags: ['keep', 'both'] });
@@ -533,6 +540,46 @@ describe('admission and the write classifier', () => {
     expect(opened.dobj.document.getText('title').toString()).toBe('a'.repeat(32 * 1024));
   });
 
+  it('admits each frame of a multi-frame paste on its own (B209, a known limitation): a writer in between leaves its later frames refused with doc-cap after its earlier ones landed, and every peer converges on what landed', async () => {
+    const limits = { ...DocDO.limits, stateCapBytes: 1024 * 1024 };
+    class Capped extends DocDO {
+      static override limits = limits;
+    }
+    const opened = await start(openDoc(new Backing(), Capped as never));
+    const ada = await connect(opened, { id: 'ada', role: 'editor' });
+    await ada.hello();
+    const ben = await connect(opened, { id: 'ben', role: 'editor' });
+    await ben.hello();
+    await typeTitle(ada, 's'.repeat(16 * 1024));
+    await ben.pump();
+    // Five frames of 6,000 'a's, measured before any is sent (the client's preflight): the whole paste fits.
+    const title = ada.doc.getText('title');
+    for (let i = 0; i < 5; i += 1) title.insert(title.length, 'a'.repeat(6_000));
+    const frames = ada.drain();
+    const w = 20_000;
+    limits.stateCapBytes = Y.encodeStateAsUpdate(opened.dobj.document).byteLength + frames.reduce((sum, frame) => sum + frame.byteLength, 0) + Math.floor(w / 2);
+    for (const frame of frames.slice(0, 2)) await ada.deliver(frame);
+    // Ben's write fits beside what landed, so it lands; the rest of Ada's paste no longer fits beside it.
+    await typeTitle(ben, 'w'.repeat(w));
+    expect(ben.closed).toBeNull();
+    for (const frame of frames.slice(2)) if (ada.socket.readyState === 1) await ada.deliver(frame);
+    await ada.pump();
+    expect(ada.events).toContainEqual({ t: 'write-refused', reason: 'doc-cap' });
+    expect(ada.closed?.code).toBe(CLOSE.writeRefused);
+    const held = opened.dobj.document.getText('title').toString();
+    const landed = held.split('a').length - 1;
+    expect(landed, 'the paste is half committed').toBeGreaterThan(0);
+    expect(landed).toBeLessThan(30_000);
+    expect(held.split('w').length - 1).toBe(w);
+    // The refused tab discards its optimistic state and binds a fresh doc (A§5.1): it and Ben hold what the DocDO holds.
+    const again = await connect(opened, { id: 'ada', role: 'editor' });
+    await again.hello();
+    await ben.pump();
+    expect(again.doc.getText('title').toString()).toBe(held);
+    expect(ben.doc.getText('title').toString()).toBe(held);
+    expect(again.closed).toBeNull();
+  });
+
   it('closes 4401 without a principal and 4429 for a 51st connection', async () => {
     const opened = await start(openDoc());
     const anonymous = await connect(opened, { id: null });
@@ -711,8 +758,13 @@ describe('RPC', () => {
 });
 
 describe('answers', () => {
+  // These notes pass the text limit (A§5.1); they test the answers, not admission.
+  class Roomy extends DocDO {
+    static override limits = { ...DocDO.limits, textCharCap: Infinity };
+  }
+
   it('answers a step 1 far behind in frames under 256 KiB of whole blocks, updates first and the step 2 last', async () => {
-    const opened = await start(openDoc());
+    const opened = await start(openDoc(new Backing(), Roomy as never));
     const writer = await connect(opened, { role: 'editor' });
     const lexical = bindLexical(writer.doc);
     await writer.hello();
@@ -735,6 +787,76 @@ describe('answers', () => {
     expect(answer.map((frame) => frame[1]), 'updates, then the one step 2').toEqual([...answer.slice(1).map(() => 2), 1]);
     expect(Y.encodeStateVector(reader.doc)).toEqual(Y.encodeStateVector(opened.dobj.document));
     expect(blockTypes(reader.doc)).toEqual(blockTypes(opened.dobj.document));
+    expect(reader.closed).toBeNull();
+  });
+
+  it('answers a multi-author doc in dependency order: no piece leaves a peer pending where a higher client id builds on a lower one (B212)', async () => {
+    const opened = await start(openDoc(new Backing(), Roomy as never));
+    const lowDoc = new Y.Doc();
+    lowDoc.clientID = 7;
+    const low = await connect(opened, { role: 'editor' }, lowDoc);
+    const lowLexical = bindLexical(low.doc);
+    await low.hello();
+    for (let batch = 0; batch < 4; batch += 1) {
+      lowLexical.editor.update(() => {
+        for (let i = 0; i < 600; i += 1) $getRoot().append($createParagraphNode().append($createTextNode(`${batch}.${i} ${'x'.repeat(440)}`)));
+      }, { discrete: true });
+      await low.flush();
+    }
+    // A second author, its client id higher (Yjs encodes higher ids first), inserts between the first's blocks.
+    const highDoc = new Y.Doc();
+    highDoc.clientID = 0xfffff000;
+    const high = await connect(opened, { role: 'editor' }, highDoc);
+    const highLexical = bindLexical(high.doc);
+    await high.hello();
+    highLexical.flush();
+    highLexical.editor.update(() => {
+      const blocks = $getRoot().getChildren();
+      for (let i = 0; i < blocks.length; i += 6) blocks[i].insertAfter($createParagraphNode().append($createTextNode(`high ${i} ${'y'.repeat(300)}`)));
+    }, { discrete: true });
+    await high.flush();
+    expect(high.closed).toBeNull();
+    expect(low.closed).toBeNull();
+
+    const reader = await connect(opened, { role: 'viewer' });
+    const from = reader.socket.sent.length;
+    await reader.deliver(step1(new Y.Doc()));
+    const answer = reader.socket.sent.slice(from).filter((frame): frame is Uint8Array => typeof frame !== 'string' && frame[0] === 0 && frame[1] !== 0);
+    expect(answer.length, 'the answer is several frames').toBeGreaterThan(4);
+    const peer = new Y.Doc();
+    for (const [index, frame] of answer.entries()) {
+      const decoder = decoding.createDecoder(frame);
+      decoding.readVarUint(decoder);
+      decoding.readVarUint(decoder);
+      Y.applyUpdate(peer, decoding.readVarUint8Array(decoder));
+      expect(peer.store.pendingStructs, `piece ${index} of ${answer.length} needs nothing a later piece carries`).toBeNull();
+      expect(peer.store.pendingDs, `piece ${index} deletes nothing it lacks`).toBeNull();
+    }
+    expect(answer.map((frame) => frame[1]), 'updates, then the one step 2').toEqual([...answer.slice(1).map(() => 2), 1]);
+    expect(Y.encodeStateVector(peer)).toEqual(Y.encodeStateVector(opened.dobj.document));
+    expect(blockTypes(peer)).toEqual(blockTypes(opened.dobj.document));
+    expect(peer.get('root', Y.XmlText).toString()).toBe(opened.dobj.document.get('root', Y.XmlText).toString());
+  });
+
+  it('answers a step 1 at the 2 MB cap over 2,000 interleaved authors, in dependency order (T3.B28)', async () => {
+    const opened = await start(openDoc());
+    // A stored state shaped against the ordering: every author waits on one chain that advances a struct at a time.
+    Y.applyUpdate(opened.dobj.document, interleavedChains(2_000, 120_000));
+    const reader = await connect(opened, { role: 'viewer' });
+    const from = reader.socket.sent.length;
+    await reader.deliver(step1(new Y.Doc()));
+    const answer = reader.socket.sent.slice(from).filter((frame): frame is Uint8Array => typeof frame !== 'string' && frame[0] === 0 && frame[1] !== 0);
+    expect(answer.length, 'the answer is several frames').toBeGreaterThan(4);
+    expect(answer.map((frame) => frame[1]), 'updates, then the one step 2').toEqual([...answer.slice(1).map(() => 2), 1]);
+    const peer = new Y.Doc();
+    for (const [index, frame] of answer.entries()) {
+      const decoder = decoding.createDecoder(frame);
+      decoding.readVarUint(decoder);
+      decoding.readVarUint(decoder);
+      Y.applyUpdate(peer, decoding.readVarUint8Array(decoder));
+      expect(peer.store.pendingStructs, `piece ${index} of ${answer.length} needs nothing a later piece carries`).toBeNull();
+    }
+    expect(Y.encodeStateVector(peer)).toEqual(Y.encodeStateVector(opened.dobj.document));
     expect(reader.closed).toBeNull();
   });
 
@@ -1005,5 +1127,239 @@ describe('answers', () => {
       expect(title(fresh), 'the vector was not kept, so the answer is the whole state').toBe('Kept small');
       expect(viewer.closed).toBeNull();
     });
+  });
+});
+
+describe('lean layout (A§10.11)', () => {
+  const block = (doc: Y.Doc) => (doc.get('root', Y.XmlText).toDelta() as { insert: unknown }[])[0]!.insert as Y.XmlText;
+  const PLAIN = { __type: 'paragraph', __indent: 0, __format: 0 };
+
+  it("writes a node class's default back when a client on the earlier binding deletes a key, as its undo of a first write does", async () => {
+    const opened = await start(openDoc());
+    const ben = await editorOn(opened);
+    const ada = await editorOn(opened);
+    expect(block(ben.doc).getAttributes(), "the seed stores the paragraph's type alone").toEqual({ __type: 'paragraph' });
+    block(ben.doc).setAttribute('__indent', 1);
+    block(ben.doc).setAttribute('__format', 2);
+    await ben.flush();
+    block(ben.doc).removeAttribute('__indent');
+    block(ben.doc).removeAttribute('__format');
+    await ben.flush();
+    await ada.pump();
+    for (const [who, doc] of [['the server', opened.dobj.document], ['Ben', ben.doc], ['Ada', ada.doc]] as const) {
+      expect(block(doc).getAttributes(), `${who} holds the defaults, not empty keys`).toEqual(PLAIN);
+    }
+    const woken = await start(wake(opened));
+    expect(block(woken.dobj.document).getAttributes(), 'the defaults are persisted').toEqual(PLAIN);
+  });
+});
+
+// T3.B33: a body property a client frame writes with the wrong type for its class default (or a non-finite number) is
+// put back to the default, counted with the frame against the limits, never over a concurrent valid write.
+describe('wrong-typed body properties (A§10.11)', () => {
+  const block = (doc: Y.Doc, at = 0) => (doc.get('root', Y.XmlText).toDelta() as { insert: unknown }[])[at]!.insert as Y.XmlText;
+  const structsOf = (doc: Y.Doc) => [...doc.store.clients.values()].reduce((sum, structs) => sum + structs.length, 0);
+  const refused = (client: TestClient) => client.events.filter((event) => event.t === 'write-refused');
+
+  function capped(caps: Partial<DocLimits>): { Doc: typeof DocDO; limits: DocLimits } {
+    const limits = { ...DocDO.limits, ...caps } as DocLimits;
+    class Capped extends DocDO {
+      static override limits = limits;
+    }
+    return { Doc: Capped, limits };
+  }
+
+  /** `count` more paragraphs, each with `attributes`, written by `client` in one frame. */
+  async function paragraphs(client: TestClient, count: number, attributes: Record<string, unknown> = {}): Promise<void> {
+    const root = client.doc.get('root', Y.XmlText);
+    client.doc.transact(() => {
+      for (let i = 0; i < count; i += 1) {
+        const paragraph = new Y.XmlText();
+        root.insertEmbed(root.length, paragraph);
+        paragraph.setAttribute('__type', 'paragraph');
+        for (const [key, value] of Object.entries(attributes)) paragraph.setAttribute(key, value as never);
+      }
+    });
+    await client.flush();
+  }
+
+  /** Sets `key` on the first `count` paragraphs of `client`'s doc, in one transaction. */
+  function setOn(client: TestClient, key: string, value: unknown, count = Number.POSITIVE_INFINITY): void {
+    const blocks = (client.doc.get('root', Y.XmlText).toDelta() as { insert: Y.XmlText }[]).slice(0, count);
+    client.doc.transact(() => {
+      for (const op of blocks) op.insert.setAttribute(key, value as never);
+    });
+  }
+
+  it.each([
+    ['__indent', Number.NaN, 0],
+    ['__format', 'x', 0],
+    ['__style', 7, ''],
+    ['__indent', Number.POSITIVE_INFINITY, 0],
+  ] as const)('a client frame writing %s %s is put back to the default, and every peer reads it', async (key, wrong, fallback) => {
+    const opened = await start(openDoc());
+    const ben = await editorOn(opened);
+    const ada = await editorOn(opened);
+    block(ben.doc).setAttribute(key, wrong as never);
+    await ben.flush();
+    await ada.pump();
+    for (const [who, doc] of [['the server', opened.dobj.document], ['Ben', ben.doc], ['Ada', ada.doc]] as const) {
+      expect(block(doc).getAttribute(key), `${who} holds the default`).toBe(fallback);
+    }
+    expect(ben.closed, 'the writer stays connected').toBeNull();
+    const woken = await start(wake(opened));
+    expect(block(woken.dobj.document).getAttribute(key), 'the default is persisted').toBe(fallback);
+  });
+
+  it('leaves a valid write, a key whose default is null, and `__type` alone, writing nothing', async () => {
+    const opened = await start(openDoc());
+    const ben = await editorOn(opened);
+    const values = { __indent: 2, __format: 1, __style: 'color: red', __dir: 5 };
+    for (const [key, value] of Object.entries(values)) block(ben.doc).setAttribute(key, value as never);
+    await ben.flush();
+    expect(block(opened.dobj.document).getAttributes()).toEqual({ __type: 'paragraph', ...values });
+    expect(Y.encodeStateVector(opened.dobj.document), 'the server wrote nothing of its own').toEqual(Y.encodeStateVector(ben.doc));
+  });
+
+  for (const repair of ['a wrong-typed value', 'an emptied key'] as const) {
+    for (const [order, id] of [['lower', 1], ['higher', 2 ** 32 - 2]] as const) {
+      it(`a peer's concurrent valid write survives the repair of ${repair} on every peer, its client id ${order}`, async () => {
+        const opened = await start(openDoc());
+        const ben = await editorOn(opened);
+        const adaDoc = new Y.Doc();
+        adaDoc.clientID = id;
+        const ada = await connect(opened, { role: 'editor' }, adaDoc);
+        await ada.hello();
+        if (repair === 'an emptied key') {
+          block(ben.doc).setAttribute('__indent', 1 as never);
+          await ben.flush();
+          await ada.pump();
+          block(ben.doc).removeAttribute('__indent');
+        } else {
+          block(ben.doc).setAttribute('__indent', Number.NaN as never);
+        }
+        // Ada has Ben's write, and not yet the server's repair, when she indents.
+        const bens = Y.encodeStateAsUpdate(ben.doc, Y.encodeStateVector(ada.doc));
+        await ben.flush();
+        expect(block(opened.dobj.document).getAttribute('__indent'), 'the server repaired it').toBe(0);
+        Y.applyUpdate(ada.doc, bens);
+        ada.drain();
+        block(ada.doc).setAttribute('__indent', 2 as never);
+        await ada.flush();
+        await ben.pump();
+        for (const [who, doc] of [['the server', opened.dobj.document], ['Ben', ben.doc], ['Ada', ada.doc]] as const) {
+          expect(block(doc).getAttribute('__indent'), `${who} holds Ada's write`).toBe(2);
+        }
+      });
+    }
+  }
+
+  it('a repair runs only while the key still holds the value it repairs', () => {
+    const doc = new Y.Doc();
+    const paragraph = new Y.XmlText();
+    doc.transact(() => {
+      doc.get('root', Y.XmlText).insertEmbed(0, paragraph);
+      paragraph.setAttribute('__type', 'paragraph');
+    }, 'seed');
+    const detach = keepLeanKeys(doc, serverLeanDefaults(), 'lean-keys', (origin) => origin === 'peer');
+    // Another write lands after the peer's and before the repair would run.
+    doc.on('afterTransaction', (transaction: Y.Transaction) => {
+      if (transaction.origin === 'peer') doc.transact(() => paragraph.setAttribute('__indent', 3 as never), 'other');
+    });
+    doc.transact(() => paragraph.setAttribute('__indent', Number.NaN as never), 'peer');
+    expect(paragraph.getAttribute('__indent')).toBe(3);
+    detach();
+    doc.destroy();
+  });
+
+  it('a small frame emptying many keys on a note near its state cap is refused whole when its repair would pass the cap', async () => {
+    const { Doc, limits } = capped({});
+    const opened = await start(openDoc(new Backing(), Doc as never));
+    const ben = await editorOn(opened);
+    const ada = await editorOn(opened);
+    await paragraphs(ben, 400, { __indent: 1 });
+    await ada.pump();
+    const root = ben.doc.get('root', Y.XmlText);
+    const before = Y.encodeStateVector(ben.doc);
+    ben.doc.transact(() => {
+      for (const op of root.toDelta() as { insert: Y.XmlText }[]) op.insert.removeAttribute('__indent');
+    });
+    // What the note would hold once the frame and its repair landed.
+    const copy = new Y.Doc();
+    Y.applyUpdate(copy, Y.encodeStateAsUpdate(opened.dobj.document));
+    const detach = keepLeanKeys(copy, serverLeanDefaults(), 'lean-keys', (origin) => origin === 'frame');
+    Y.applyUpdate(copy, Y.encodeStateAsUpdate(ben.doc, before), 'frame');
+    detach();
+    expect(block(copy, 399).getAttribute('__indent'), 'the copy holds the repair').toBe(0);
+    const after = Y.encodeStateAsUpdate(copy).byteLength;
+    const stored = Y.encodeStateAsUpdate(opened.dobj.document);
+    expect(after, 'the repair adds bytes').toBeGreaterThan(stored.byteLength);
+    limits.stateCapBytes = after - 1;
+    await ben.flush();
+    expect(refused(ben)).toContainEqual({ t: 'write-refused', reason: 'doc-cap' });
+    expect(ben.closed?.code).toBe(CLOSE.writeRefused);
+    expect(Y.encodeStateAsUpdate(opened.dobj.document), 'the server keeps what it had').toEqual(stored);
+    expect(stored.byteLength, 'and stays within the cap').toBeLessThanOrEqual(limits.stateCapBytes);
+    await ada.pump();
+    expect(block(ada.doc, 399).getAttribute('__indent'), 'the peer keeps what it had').toBe(1);
+  });
+
+  it('a frame whose repair would pass the structure limit is refused whole; within it, it lands repaired', async () => {
+    const { Doc, limits } = capped({ structHeadroom: 0 });
+    const opened = await start(openDoc(new Backing(), Doc as never));
+    const ben = await editorOn(opened);
+    await paragraphs(ben, 199, { __indent: 1 });
+    setOn(ben, '__indent', 1, 1);
+    await ben.flush();
+    const now = structsOf(opened.dobj.document);
+    // The frame adds a struct per paragraph and its repair another: room for the frame alone.
+    limits.structCap = now + 300;
+    setOn(ben, '__indent', Number.NaN);
+    await ben.flush();
+    expect(refused(ben)).toContainEqual({ t: 'write-refused', reason: 'doc-cap', limit: 'structure' });
+    expect(structsOf(opened.dobj.document), 'the server keeps what it had').toBe(now);
+    expect(block(opened.dobj.document, 199).getAttribute('__indent')).toBe(1);
+
+    limits.structCap = now + 400;
+    const carl = await editorOn(opened);
+    setOn(carl, '__indent', Number.NaN);
+    await carl.flush();
+    expect(carl.closed).toBeNull();
+    expect(block(carl.doc, 199).getAttribute('__indent'), 'repaired on the writer').toBe(0);
+    expect(structsOf(opened.dobj.document)).toBeLessThanOrEqual(limits.structCap);
+  });
+
+  it('repairs per frame are bounded: past the bound the frame is refused whole', async () => {
+    const { Doc } = capped({ repairsPerFrame: 3 });
+    const opened = await start(openDoc(new Backing(), Doc as never));
+    const ben = await editorOn(opened);
+    await paragraphs(ben, 3);
+    setOn(ben, '__indent', Number.NaN, 3);
+    await ben.flush();
+    expect(ben.closed, 'three repairs land').toBeNull();
+    expect(block(opened.dobj.document, 2).getAttribute('__indent')).toBe(0);
+    const carl = await editorOn(opened);
+    setOn(carl, '__indent', Number.NaN, 4);
+    await carl.flush();
+    expect(refused(carl)).toContainEqual({ t: 'write-refused', reason: 'doc-cap', limit: 'structure' });
+    expect(block(opened.dobj.document, 3).getAttribute('__indent'), 'none of the frame applied').toBeUndefined();
+  });
+
+  it('costs the same on a small note and on a note near its limits (steps, not wall time)', async () => {
+    const steps = async (extra: number): Promise<number> => {
+      const { Doc, limits } = capped({ structHeadroom: 0 });
+      const opened = await start(openDoc(new Backing(), Doc as never));
+      const ben = await editorOn(opened);
+      if (extra) await paragraphs(ben, extra, { __indent: 1 });
+      limits.structCap = structsOf(opened.dobj.document) + 4;
+      const from = repairWork.steps;
+      block(ben.doc).setAttribute('__indent', Number.NaN as never);
+      await ben.flush();
+      expect(block(opened.dobj.document).getAttribute('__indent')).toBe(0);
+      return repairWork.steps - from;
+    };
+    const small = await steps(0);
+    expect(small).toBeGreaterThan(0);
+    expect(await steps(20_000)).toBe(small);
   });
 });

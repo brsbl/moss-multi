@@ -2,11 +2,14 @@
 // YProvider to the DocDO's seed, takes an edit, and reopens with that text after a stack restart on a new DO
 // instance. A doc socket the Worker denies opens and closes with its code, never a refused handshake (1006).
 // T0.12: a page on another port of the stack's host, where the session cookie still rides, cannot read a note.
-import { randomUUID } from 'node:crypto';
+// T8.V: a bundle from before the lean stored layout (protocol 1) writes nothing, by socket or REST.
+import { createHash, randomUUID } from 'node:crypto';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
+import * as Y from 'yjs';
+import { OUTDATED_ERROR, PROTOCOL_HEADER, PROTOCOL_PARAM } from '../../packages/protocol/src/client-protocol.ts';
 import { DOC_SOCKET_PATH } from '../../packages/protocol/src/dom-contract.ts';
-import { CLOSE } from '../../packages/protocol/src/sync.ts';
+import { CLOSE, encodeSyncFrame } from '../../packages/protocol/src/sync.ts';
 import { cookieHeader, openDocClient, probeSocket, PROTOCOL_QUERY, type DocClient } from '../lib/doc-client.ts';
 import { induce } from '../lib/hibernate.ts';
 import { signIn } from '../lib/principals.ts';
@@ -65,6 +68,60 @@ test('j00-roundtrip: a seeded note takes an edit and reopens with it after a res
   expect(await probeSocket(stack.baseUrl, docId, benCookie), "another person's socket to Ada's note").toEqual({ opened: true, code: CLOSE.unavailable });
   expect(await probeSocket(stack.baseUrl, randomUUID(), adaCookie), 'a socket to a note that does not exist').toEqual({ opened: true, code: CLOSE.unavailable });
   expect(await probeSocket(stack.baseUrl, docId, null), 'a socket with no credential').toEqual({ opened: true, code: CLOSE.noPrincipal });
+});
+
+const LEAN_TEXT = 'Stored in the lean layout';
+const OLD_TITLE = 'Written by a bundle from before the lean layout';
+const CLI_PUSH = 'Pushed by a client that names no protocol.';
+
+test('j00-roundtrip: a protocol-1 bundle, from before the lean stored layout, is refused on its doc socket and its REST write and changes nothing; a client naming no protocol still writes @p:col-4', async ({ actors, stack }) => {
+  actors.solo('one person\'s protocol-level clients on one note');
+  const ada = await actors.principal('ada');
+  const cookie = cookieHeader(await signIn(stack.baseUrl, ada));
+  const docId = await createNote(stack.baseUrl, cookie);
+  const writer = await openDocClient(stack.baseUrl, docId, cookie);
+  try {
+    await writer.synced;
+    writer.type(LEAN_TEXT);
+    await writer.acked();
+  } finally {
+    writer.close();
+  }
+  const content = async () => {
+    const response = await fetch(`${stack.baseUrl}/api/docs/${docId}/content`, { headers: { cookie }, signal: AbortSignal.timeout(30_000) });
+    expect(response.status).toBe(200);
+    return response.text();
+  };
+  const base = await content();
+  const push = (newText: string, headers: Record<string, string>) => fetch(`${stack.baseUrl}/api/docs/${docId}/push`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', origin: stack.baseUrl, cookie, ...headers },
+    body: JSON.stringify({ newText, baseHash: createHash('sha256').update(base).digest('hex'), baseText: base }),
+    signal: AbortSignal.timeout(30_000),
+  });
+
+  // The old bundle's socket sends its first update the moment it opens; the server closes it 4426 first.
+  const old = new Y.Doc();
+  old.getText('title').insert(0, OLD_TITLE);
+  const frame = encodeSyncFrame(2, Y.encodeStateAsUpdate(old));
+  expect(await probeSocket(stack.baseUrl, docId, cookie, { query: `${PROTOCOL_PARAM}=1`, send: frame }), 'a protocol-1 socket').toEqual({ opened: true, code: CLOSE.outdated });
+  const refused = await push(`${base}\n\n${OLD_TITLE}\n`, { [PROTOCOL_HEADER]: '1' });
+  expect(refused.status, 'a protocol-1 REST write').toBe(426);
+  expect(await refused.json()).toMatchObject({ error: OUTDATED_ERROR });
+  expect(await content(), 'the note is unchanged').toBe(base);
+  const reader = await openDocClient(stack.baseUrl, docId, cookie);
+  try {
+    await reader.synced;
+    expect(reader.text()).toBe(LEAN_TEXT);
+    expect(reader.doc.getText('title').toString(), 'the old socket wrote no title').toBe('');
+  } finally {
+    reader.close();
+  }
+
+  // The CLI and agents name no protocol and are not refused.
+  const pushed = await push(`${base}\n\n${CLI_PUSH}\n`, {});
+  expect(pushed.status, 'a push with no protocol').toBe(200);
+  expect(await content()).toContain(CLI_PUSH);
 });
 
 interface Attempt { code: number | null; frames: number; leaked: boolean }
