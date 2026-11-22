@@ -47,6 +47,12 @@ export const declares = (declared: DeclaredHttp[], status: number, url: string) 
 
 /** A doc socket the network dropped: the close the page heard was abnormal. */
 const NETWORK_DROP = 1006;
+/**
+ * The network dropped it: it heard 1006 without the page asking to close it. A socket the page closes while still
+ * connecting (a note switch or navigation before the handshake ends, which off loopback takes a round trip) hears 1006
+ * too, by the WebSocket spec; that is the page's own close, judged as any other.
+ */
+const networkDropped = (socket: SocketEntry): boolean => socket.code === NETWORK_DROP && !socket.close?.startsWith('asked');
 /** The server's try-again (packages/sync access-epoch.ts TRY_AGAIN): a close no journey sees unless it declares it. */
 const TRY_AGAIN = 1013;
 const SOCKET_FAILED = /^WebSocket connection to '([^']+)' failed/;
@@ -73,11 +79,11 @@ export interface NetworkDrop { docId: string; at: number; recovered: boolean; re
 
 /** Every network drop (a heard 1006) in a census: when it closed, and whether and how fast a later socket resynced. */
 export function networkDrops(sockets: SocketEntry[]): NetworkDrop[] {
-  return [...socketGroups(sockets).values()].flatMap((group) => group.filter((s) => s.code === NETWORK_DROP).map((dropped) => {
-    const at = dropped.closedAt ?? dropped.openedAt;
-    const next = replacement(dropped, group);
+  return [...socketGroups(sockets).values()].flatMap((group) => group.filter(networkDropped).map((drop) => {
+    const at = drop.closedAt ?? drop.openedAt;
+    const next = replacement(drop, group);
     const syncedAt = next?.syncedAt;
-    return { docId: dropped.docId, at, recovered: next !== undefined, recoveryMs: syncedAt === undefined ? null : Math.max(0, syncedAt - at) };
+    return { docId: drop.docId, at, recovered: next !== undefined, recoveryMs: syncedAt === undefined ? null : Math.max(0, syncedAt - at) };
   }));
 }
 
@@ -87,7 +93,7 @@ export function networkDrops(sockets: SocketEntry[]): NetworkDrop[] {
  * invariants wait a bounded time for it before they judge the drop (actors.ts).
  */
 export const awaitingRecovery = (sockets: SocketEntry[]): boolean =>
-  [...socketGroups(sockets).values()].some((group) => group.some((dropped) => dropped.code === NETWORK_DROP && !recovered(dropped, group)));
+  [...socketGroups(sockets).values()].some((group) => group.some((s) => networkDropped(s) && !recovered(s, group)));
 
 /** Invariant 3's socket groups: per page document (else navigation count) and doc. */
 const socketGroups = (sockets: SocketEntry[]): Map<string, SocketEntry[]> => {
@@ -104,7 +110,7 @@ const socketGroups = (sockets: SocketEntry[]): Map<string, SocketEntry[]> => {
  * line for that socket, logged while it lived or just after, is left to invariant 3.
  */
 const recoveredDrops = (sockets: SocketEntry[]): SocketEntry[] =>
-  [...socketGroups(sockets).values()].flatMap((group) => group.filter((s) => s.code === NETWORK_DROP && recovered(s, group)));
+  [...socketGroups(sockets).values()].flatMap((group) => group.filter((s) => networkDropped(s) && recovered(s, group)));
 
 /** Invariant 1: page errors, console errors (unless allowlisted), 5xx, and 4xx unless declared. */
 export function errorProblems(
@@ -179,8 +185,8 @@ export function socketProblems(
       for (const socket of group) {
         if (socket.code === TRY_AGAIN) tryAgainSeen.set(docId, (tryAgainSeen.get(docId) ?? 0) + 1);
       }
-      for (const dropped of group.filter((s) => s.code === NETWORK_DROP)) {
-        if (recovered(dropped, group)) drop += 1;
+      for (const socket of group.filter(networkDropped)) {
+        if (recovered(socket, group)) drop += 1;
         else problems.push(`${docId}: a socket dropped (1006) and no later socket of its document reached sync`);
       }
       recoveredSeen += drop;

@@ -264,6 +264,15 @@ test.describe('a network drop off loopback (invariants 1 and 3, T8.2)', () => {
     expect(socketProblems(lost, new Map(), OFF)).toContain('d: a socket dropped (1006) and no later socket of its document reached sync');
     expect(networkDrops(lost)).toEqual([{ docId: 'd', at: 100, recovered: false, recoveryMs: null }]);
   });
+  test('a socket the page closed while it was still connecting hears 1006 but is no network drop', async () => {
+    const { networkDrops } = await import('../lib/invariants.ts');
+    const asked = [socket(0, 100, 1006, { close: 'asked -, then 1006' }), synced(200)];
+    expect(networkDrops(asked)).toEqual([]);
+    expect(awaitingRecovery([asked[0]])).toBe(false);
+    expect(socketProblems(asked, new Map([['d', 1]]), OFF)).toEqual([]);
+    // Not declared, its reopen is still counted as any other.
+    expect(socketProblems(asked, new Map(), OFF)).not.toEqual([]);
+  });
   test("off loopback only the recovered drop's own log line, while it lived, is left to invariant 3", () => {
     const dropped = socket(0, 100, 1006);
     const census = (text: string, at = 100, sockets = [dropped, synced(200)]) => ({
