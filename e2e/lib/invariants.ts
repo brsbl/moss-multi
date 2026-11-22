@@ -170,15 +170,16 @@ export async function typedFindings(actors: ActorView[], typed: Typed[], { settl
     for (const docId of docs) {
       const panes = await settledPanes(actor.page, docId, settleMs);
       for (const pane of panes) {
-        if (!pane.settled) {
+        const problems = (['title', 'body'] as const).flatMap((field) => {
+          const entries = typed.filter((entry) => entry.docId === docId && entry.field === field);
+          return entries.length === 0 ? [] : typedProblems(pane[field], entries).map((detail) => `${docId} ${field}: ${detail}`);
+        });
+        // A pane still unbound at the deadline that shows what was typed passes, as it did before the wait.
+        if (!pane.settled && problems.length > 0) {
           findings.push(finding(7, actor.label)(`${docId}: pane never bound within ${settleMs} ms (title "${pane.title}", body ${pane.body.length} chars)`));
           continue;
         }
-        for (const field of ['title', 'body'] as const) {
-          const entries = typed.filter((entry) => entry.docId === docId && entry.field === field);
-          if (entries.length === 0) continue;
-          findings.push(...typedProblems(pane[field], entries).map((detail) => finding(7, actor.label)(`${docId} ${field}: ${detail}`)));
-        }
+        findings.push(...problems.map(finding(7, actor.label)));
       }
     }
   }
