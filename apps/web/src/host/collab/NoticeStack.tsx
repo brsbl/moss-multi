@@ -37,7 +37,7 @@ export function NoticeStack({ docId, trashNotice = false }: { docId: string; tra
   const outdated = notice?.terminal === 'outdated';
   const arranged = arrangeNotices({
     terminal: notice !== null && notice.terminal !== null && !outdated,
-    unsaved: payloads.length > 0 || noRoom,
+    unsaved: payloads.length > 0 || noRoom !== null,
     outage: notice !== null && notice.terminal === null,
     restore: restore !== null,
     update: outdated,

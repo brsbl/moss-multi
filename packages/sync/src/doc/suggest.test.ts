@@ -5,7 +5,7 @@
 import * as encoding from 'lib0/encoding';
 import { describe, expect, it } from 'vitest';
 import * as Y from 'yjs';
-import { STATE_CAP_BYTES } from '@moss-multi/protocol/limits';
+import { STATE_CAP_BYTES, TEXT_CHAR_CAP } from '@moss-multi/protocol/limits';
 import { deleteUpdate, recordDigest } from '@moss-multi/core/suggest/apply';
 import { payloadDocsFor } from '../payload-docs.ts';
 import { closeRecord, newSuggestionsClient, readMeta, readRecord, SuggestionsWriter } from '../suggest/records.ts';
@@ -477,11 +477,15 @@ describe('T5.2 leases never run out in ordinary suggesting @p:mean-2', () => {
   });
 });
 
-/** A doc of `paragraphs` paragraphs: 3 000 make the 1.69 MB census doc. */
+const LINE = 'lorem ipsum dolor sit amet '.repeat(20);
+/** Paragraphs of LINE that hold as much text as a note may (TEXT_CHAR_CAP): the large doc of the cost cases. */
+const AT_TEXT_CAP = Math.floor(TEXT_CHAR_CAP / LINE.length);
+
+/** A doc of `paragraphs` paragraphs; AT_TEXT_CAP make a doc at the text limit. */
 function docOf(paragraphs: number): Y.Doc {
   const doc = new Y.Doc();
   const body = doc.get('root', Y.XmlText);
-  const line = 'lorem ipsum dolor sit amet '.repeat(20);
+  const line = LINE;
   doc.transact(() => {
     for (let i = 0; i < paragraphs; i++) {
       const block = new Y.XmlText();
@@ -674,11 +678,11 @@ describe('T5.2 cost: ingest and the lease check are O(frame) @p:mean-2', () => {
     expect(large).toBeLessThan(small * 12 + 40);
   });
 
-  it('a frame at the cap, a delete part of the most spans, and the body-frame lease check cost the same on a small doc and the 1.69 MB doc', () => {
+  it('a frame at the cap, a delete part of the most spans, and the body-frame lease check cost the same on a small doc and a doc at the text limit', () => {
     measure(5);
     const small = measure(5);
-    const large = measure(3_000);
-    expect(large.bytes).toBeGreaterThan(1_600_000);
+    const large = measure(AT_TEXT_CAP);
+    expect(large.bytes).toBeGreaterThan(TEXT_CHAR_CAP);
     console.log(
       `T5.2 cost: suggest-ops at the cap ${small.ops.toFixed(2)} ms (${small.bytes} B doc) vs ${large.ops.toFixed(2)} ms (${large.bytes} B doc); ` +
         `suggest-delete ${small.deletes.toFixed(2)} ms vs ${large.deletes.toFixed(2)} ms; lease check ${small.lease.toFixed(3)} ms vs ${large.lease.toFixed(3)} ms`,
@@ -767,14 +771,14 @@ function measureShapes(live: Y.Doc): Map<string, { ingest: number; lease: number
 }
 
 describe('T5.4 cost at fuzz scale @p:mean-2', () => {
-  it('crafted and fuzzed frames at the cap cost what an honest cap frame costs, to ingest and to lease-check, on a small doc and the 1.69 MB doc', () => {
+  it('crafted and fuzzed frames at the cap cost what an honest cap frame costs, to ingest and to lease-check, on a small doc and a doc at the text limit', () => {
     measureShapes(seededBody());
     const small = measureShapes(seededBody());
-    const large = measureShapes(docOf(3_000));
+    const large = measureShapes(docOf(AT_TEXT_CAP));
     const honest = small.get('honest')!;
     for (const [name, cost] of small) {
       const big = large.get(name)!;
-      console.log(`T5.4 cap shape ${name}: ${cost.bytes} B; ingest ${cost.ingest.toFixed(2)} ms small doc vs ${big.ingest.toFixed(2)} ms 1.69 MB doc; lease check ${cost.lease.toFixed(3)} vs ${big.lease.toFixed(3)} ms`);
+      console.log(`T5.4 cap shape ${name}: ${cost.bytes} B; ingest ${cost.ingest.toFixed(2)} ms small doc vs ${big.ingest.toFixed(2)} ms doc at the text limit; lease check ${cost.lease.toFixed(3)} vs ${big.lease.toFixed(3)} ms`);
       expect(cost.bytes, name).toBeLessThanOrEqual(SUGGEST_CAPS.recordOpsBytes);
       expect(cost.ingest, `${name}: no worse than the honest frame`).toBeLessThan(honest.ingest * 4 + 20);
       expect(big.ingest, `${name}: independent of the doc`).toBeLessThan(cost.ingest * 3 + 5);

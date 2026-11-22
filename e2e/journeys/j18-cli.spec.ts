@@ -1,6 +1,6 @@
 // j18-cli (T7.1): the built moss-multi CLI (packages/cli/dist) against the stack. `cat` writes the doc's bytes with
-// no trailing LF added; a title prefix resolves; `url` prints an address that opens the doc in the web app; a 2 MB
-// pull returns every byte; the device flow signs the terminal in, `rm` reports the trash in words and JSON, and
+// no trailing LF added; a title prefix resolves; `url` prints an address that opens the doc in the web app; a pull
+// of a note at the text limit (1.02 million characters, about 3 MB of markdown) returns every byte; the device flow signs the terminal in, `rm` reports the trash in words and JSON, and
 // `logout` ends the session on the server.
 //
 // Notes are imported through POST /api/docs as declared setup; import is not this journey's promise.
@@ -16,8 +16,9 @@ import { expect, test, ui } from '../lib/test.ts';
 const CLI = fileURLToPath(new URL('../../packages/cli/dist/moss-multi.mjs', import.meta.url));
 const SOLO = 'one person and her own agent key drive the CLI against her own notes';
 const BIND_TIMEOUT = 30_000;
-/** protocol/limits MARKDOWN_CAP_BYTES. */
-const MARKDOWN_CAP_BYTES = 2 * 1024 * 1024;
+/** protocol/limits TEXT_CHAR_CAP and MARKDOWN_MAX_BYTES. */
+const TEXT_CHAR_CAP = 1_020_000;
+const MARKDOWN_MAX_BYTES = 4 * 1024 * 1024;
 
 interface Run { code: number; stdout: Buffer; stderr: string }
 
@@ -87,15 +88,13 @@ test('j18-cli cat: the bytes are exact with no trailing LF; a title prefix resol
   }
 });
 
-test('j18-cli pull: a 2 MB doc pulls every byte into the file and its base @p:agt-1 @p:tech-8', async ({ actors, stack }) => {
+test('j18-cli pull: a note at the text limit pulls every byte into the file and its base @p:agt-1 @p:tech-8', async ({ actors, stack }) => {
   actors.solo(SOLO);
   const ada = await actors.session(await actors.principal('ada'));
   const paragraphs: string[] = [];
-  let size = 0;
-  for (let i = 0; size < 2_088_000; i += 1) {
-    const paragraph = `Paragraph ${i}: ${'the beans climb the trellis and the peas follow them up '.repeat(16)}end ${i}.`;
-    paragraphs.push(paragraph);
-    size += Buffer.byteLength(paragraph) + 2;
+  // Three-byte characters, so the markdown runs past the old 2 MB cap while the text stays within the limit.
+  for (let chars = 0; chars < TEXT_CHAR_CAP - 12_000; chars += paragraphs.at(-1)!.length) {
+    paragraphs.push(`段落 ${paragraphs.length}：${'豆は棚を登り、豌豆がそれに続く。'.repeat(16)}終わり ${paragraphs.length}。`);
   }
   const last = paragraphs.length - 1;
   const docId = await importNote(ada, stack, 'Big garden', paragraphs.join('\n\n'));
@@ -104,14 +103,15 @@ test('j18-cli pull: a 2 MB doc pulls every byte into the file and its base @p:ag
   const env = { MOSS_MULTI_SERVER: stack.baseUrl, MOSS_MULTI_API_KEY: key, MOSS_MULTI_CONFIG_DIR: join(dir, 'config') };
   try {
     const bytes = await served(stack, docId, key);
-    expect(bytes.byteLength, 'the doc sits just under the 2 MiB cap').toBeGreaterThan(2_085_000);
-    expect(bytes.byteLength).toBeLessThanOrEqual(MARKDOWN_CAP_BYTES);
+    expect(bytes.byteLength, 'the doc is far past the old 2 MB cap').toBeGreaterThan(2_800_000);
+    expect(bytes.byteLength).toBeLessThanOrEqual(MARKDOWN_MAX_BYTES);
+    expect(bytes.toString('utf8').replace(/\n/g, '').length, 'and just within the text limit').toBeGreaterThan(TEXT_CHAR_CAP - 13_000);
     const pull = await moss(['pull', docId, 'big.md'], env, dir);
     expect(pull.code, pull.stderr).toBe(0);
     const file = readFileSync(join(dir, 'big.md'));
     expect(file.byteLength, 'every byte arrives').toBe(bytes.byteLength);
     expect(file.equals(bytes), 'byte for byte').toBe(true);
-    expect(file.toString('utf8')).toContain(`end ${last}.`);
+    expect(file.toString('utf8')).toContain(`終わり ${last}。`);
     expect(readFileSync(join(dir, '.moss-multi', docId, 'base.md')).equals(bytes), 'and the base matches').toBe(true);
   } finally {
     rmSync(dir, { recursive: true, force: true });

@@ -1,52 +1,16 @@
 // j01-paste (T3.S6): a large markdown paste lands whole. Moss's plain-text paste split anything from 40,000 characters
 // (or 800 lines) into chunks and dropped every chunk after the first, because the selection it inserted at was gone by
-// the second. Pasting 40k, 200k and 2 MB of mixed markdown, into an empty note and between two paragraphs, must land
-// every character (the doc's export equals the server's import of the same text, moss's normalization), leave the
-// caret after the paste, make one undo step that redoes whole, and reach a collaborator in full. A second paste or a
-// note switch while one lands, typing or an undo right after it, and a paste ending in a list lose nothing either.
+// the second. Pasting 40k, 200k and, just under the note's text limit (A§5.1), 1,019,000 characters of mixed markdown,
+// into an empty note and between two paragraphs, must land every character (the doc's export equals the server's import
+// of the same text, moss's normalization), leave the caret after the paste, make one undo step that redoes whole, and
+// reach a collaborator in full; 1,021,000 characters, just past it, are refused whole with the text notice. A second
+// paste or a note switch while one lands, typing or an undo right after it, and a paste ending in a list lose nothing
+// either.
 //
 // The notes and the reference imports are created through POST /api/docs as declared setup.
-import { exported, fingerprint, MAX_STALL_MS, NEW_STEP_MS, normalized, pasteAndCheck, pastePlain, setup, UNDO } from '../lib/paste.ts';
+import { expectRefusedPaste, exported, fingerprint, MAX_STALL_MS, NEW_STEP_MS, normalized, pasteAndCheck, pastePlain, setup, TEXT_NOTICE, UNDO } from '../lib/paste.ts';
+import { mixedMarkdown, mixedMarkdownOfText, prose } from '../lib/large-notes.ts';
 import { expect, test, ui } from '../lib/test.ts';
-
-const LAST = 'Last line of the paste.';
-
-const WORDS = ['moss', 'grows', 'on', 'the', 'north', 'side', 'of', 'old', 'stones', 'and', 'keeps', 'water', 'through', 'dry',
-  'weeks', 'while', 'notes', 'collect', 'ideas', 'from', 'many', 'people', 'working', 'together', 'in', 'one', 'shared', 'document'];
-
-/** A sentence of about `length` characters. */
-function prose(seed: number, length: number): string {
-  let out = '';
-  for (let k = 0; out.length < length; k += 1) out += `${out ? ' ' : ''}${WORDS[(seed * 7 + k * 3) % WORDS.length]}`;
-  return `${out[0].toUpperCase()}${out.slice(1)}.`;
-}
-
-/**
- * Mixed markdown of at least `size` characters, mostly prose as notes are: headings, inline formatting and links,
- * nested lists, checklists, ordered lists, quotes, tables and code. (Formatting every few words would encode past the
- * doc's state cap at 2 MB, A§5.1.)
- */
-function mixedMarkdown(size: number): string {
-  const parts = ['Pasted start.'];
-  let length = parts[0].length;
-  for (let i = 0; length < size; i += 1) {
-    const section = [
-      `## Section ${i}`,
-      `${prose(i, 220)} It has **bold ${i}**, *italic ${i}* and \`code ${i}\`, then a [link ${i}](https://example.invalid/page/${i}). ${prose(i + 1, 220)}`,
-      prose(i + 2, 420),
-      `- ${prose(i + 3, 60)}\n- ${prose(i + 4, 60)}\n  - ${prose(i + 5, 40)}`,
-      ...(i % 3 === 0 ? [`- [ ] open task ${i}\n- [x] done task ${i}`] : []),
-      ...(i % 5 === 0 ? [`1. first ${i}\n2. second ${i}`] : []),
-      `> ${prose(i + 6, 100)}`,
-      ...(i % 4 === 0 ? [`| Name ${i} | Value ${i} |\n| --- | --- |\n| row ${i} | ${i * 7} |`] : []),
-      ...(i % 10 === 0 ? [`\`\`\`js\nconst value${i} = ${i};\nconsole.log(value${i});\n\`\`\``] : []),
-    ].join('\n\n');
-    parts.push(section);
-    length += section.length + 2;
-  }
-  parts.push(LAST);
-  return parts.join('\n\n');
-}
 
 /** Bullet and numbered lists, alternating, of at least `size` characters, ending with a list of kind `last`. */
 function listMarkdown(size: number, last: 'bullet' | 'numbered'): string {
@@ -62,22 +26,33 @@ function listMarkdown(size: number, last: 'bullet' | 'numbered'): string {
 }
 
 
-const SIZES: [string, number, number][] = [
-  ['40k', 40_000, 60_000],
-  ['200k', 200_000, 90_000],
-  ['2 MB', 2_000_000, 240_000],
+// The largest leg is just under the note's text limit (1,020,000 characters, A§5.1), with room for the typed Z; it is
+// checked without its undo and redo, since an undone paste's structs stay in the note's history and its redo would pass
+// the structure guard.
+const SIZES: [string, () => string, number, number, boolean][] = [
+  ['40k', () => mixedMarkdown(40_000), 40_000, 60_000, true],
+  ['200k', () => mixedMarkdown(200_000), 200_000, 90_000, true],
+  ['1,019,000 characters', () => mixedMarkdownOfText(1_019_000).markdown, 1_019_000, 240_000, false],
 ];
 
-for (const [label, size, timeout] of SIZES) {
-  test(`j01-paste: ${label} of mixed markdown pasted into an empty note lands whole, caret after it, one undo step, on both screens @p:col-1 @p:col-3`, async ({ actors, stack }) => {
+for (const [label, make, size, timeout, history] of SIZES) {
+  test(`j01-paste: ${label} of mixed markdown pasted into an empty note lands whole, caret after it${history ? ', one undo step' : ''}, on both screens @p:col-1${history ? ' @p:col-3' : ''}`, async ({ actors, stack }) => {
     test.setTimeout(timeout * 3);
-    const markdown = mixedMarkdown(size);
+    const markdown = make();
     const { ada, ben, docId, wire, want } = await setup(actors, stack, undefined, { references: { whole: markdown, typed: `${markdown}Z` } });
     expect(want.whole.length, 'the reference export holds the paste').toBeGreaterThan(size * 0.8);
     await ui.body(ada, docId).click();
-    await pasteAndCheck({ ada, ben, docId, wire }, markdown, want, timeout, { maxStallMs: MAX_STALL_MS });
+    await pasteAndCheck({ ada, ben, docId, wire }, markdown, want, timeout, { maxStallMs: MAX_STALL_MS, history });
   });
 }
+
+test('j01-paste: 1,021,000 characters of mixed markdown, just past the text limit, are refused whole and visibly with the text notice @p:col-1', async ({ actors, stack }) => {
+  test.setTimeout(300_000);
+  await expectRefusedPaste(await setup(actors, stack, 'Kept.'), stack, mixedMarkdownOfText(1_021_000).markdown, {
+    notice: TEXT_NOTICE,
+    admission: ({ met }) => expect(met, 'the paste meets the text limit').toBe('text'),
+  });
+});
 
 test('j01-paste: 200k of mixed markdown pasted between two paragraphs lands whole, caret after it, one undo step @p:col-1 @p:col-3', async ({ actors, stack }) => {
   test.setTimeout(300_000);
