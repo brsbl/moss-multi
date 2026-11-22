@@ -329,6 +329,13 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-11-21 — T9.48e measured: the table-separator shape (`---|\n` repeated) of `classifyNoteContentType` on a CI runner ([run 44957664348](https://github.com/brsbl/moss-multi/actions/runs/44957664348), fastest of three) doubles from 16 K to 1 M characters at x2.37, x1.98, x2.26, x2.34, x2.01 and x2.14 (39.3 to 84.0 ms at the 1 MiB step), well under the guard's 3x.
 - 2026-11-21 — T8.V verified: staging and the pilot now carry m3's text, structure and storage limits, the lean stored layout, in-place export and paste rollback, and an outdated protocol-1 web bundle is refused on its doc socket (4426) and REST writes (426) before it can write the old layout.
 
+### T9.48a — what the pin leaves for the owner (deviation 38)
+
+- A window with nothing chosen still opens the first note that arrives, once: an empty vault, a switch in from an empty Home, or the last note trashed, then a collaborator's create.
+- The pinned note becomes the note restored on reload (it is written as last-viewed, as a clicked note is).
+- Not changed by the pin: j12-search's wiki-link test (run 44931221611, attempt 1) failed opening the target from its sidebar row while another note's socket closed and reopened; both notes there were chosen through "+ Note", so it is not this switching. It reads like the row reorder under a click that j00-persist describes; not investigated further.
+- No other journey expects a note created over the API after its shell opened to come on screen unopened: the rest create before the shell loads (j01-autolink) or open the note by address or row.
+
 ## Follow-ups (P2)
 
 Parked from the M0 checker and critic passes, each with the task that owns it.

@@ -180,6 +180,9 @@ import { canCreateNote, noteTargetFolder } from '@moss-multi/host/folders';
 import { standAboveTrashNotice } from '@moss-multi/host/notice-stack';
 // moss-multi seam: phone-shell (T2.7, deviation 11): below 640 px the notes panel overlays the canvas
 import { COMPACT_ACTIONS_PANEL_CLASS, useNarrow, useBelowMd } from '@moss-multi/host/viewport';
+// moss-multi seam: pin-active-note (T9.48a): a note shown because nothing is chosen becomes the choice
+import { activeNoteSelectionAtom } from '@moss/shared/state/atoms';
+import { pinActiveNote, type PinMemory } from '@moss-multi/host/pin-active-note';
 
 const nowInSeconds = (): number => Math.floor(Date.now() / 1000);
 const NOTE_LIST_SYNC_DEBOUNCE_MS = 150;
@@ -1150,6 +1153,8 @@ export function App() {
     trash: null
   });
   const didInitializeStartupSelectionRef = useRef(false);
+  // moss-multi seam: pin-active-note (T9.48a): the pin effect needs to see startup selection finish
+  const [startupSelectionDone, setStartupSelectionDone] = useState(false);
   const commandPaletteRef = useRef<CommandPaletteOverlayHandle>(null);
 
   // moss-multi seam: only the requested note may consume a title-focus intent.
@@ -1748,12 +1753,14 @@ export function App() {
       navigateToNote(noteId);
       viewSelectionRef.current.notes = noteId;
       didInitializeStartupSelectionRef.current = true;
+      setStartupSelectionDone(true);
     };
 
     const initializeStartupSelection = async (): Promise<void> => {
       let availableNotes = store.get(activeNotesAtom);
       if (availableNotes.length === 0 && !initialNoteId) {
         didInitializeStartupSelectionRef.current = true;
+        setStartupSelectionDone(true);
         return;
       }
 
@@ -1771,6 +1778,7 @@ export function App() {
             }
             if (store.get(activeNoteIdAtom)) {
               didInitializeStartupSelectionRef.current = true;
+              setStartupSelectionDone(true);
               return;
             }
             if (record && record.trashedAt == null) {
@@ -1792,6 +1800,7 @@ export function App() {
       availableNotes = store.get(activeNotesAtom);
       if (availableNotes.length === 0) {
         didInitializeStartupSelectionRef.current = true;
+        setStartupSelectionDone(true);
         return;
       }
 
@@ -1818,6 +1827,14 @@ export function App() {
     windowContext,
     windowContextReady
   ]);
+
+  // moss-multi seam: pin-active-note (T9.48a): with nothing chosen, moss shows the newest note and follows whichever
+  // note a collaborator creates or edits next; the note on screen becomes the choice once startup selection is done.
+  const activeNoteSelection = useAtomValue(activeNoteSelectionAtom);
+  const pinMemoryRef = useRef<PinMemory>({ seen: null });
+  useEffect(() => {
+    pinActiveNote(store, { startupDone: startupSelectionDone, view: appMode, navigate: navigateToNote, memory: pinMemoryRef.current });
+  }, [activeNoteId, activeNoteSelection, appMode, navigateToNote, startupSelectionDone, store]);
 
   const runSerializedNoteSwitch = useCallback((task: () => Promise<void>) => {
     noteSwitchQueueRef.current = noteSwitchQueueRef.current.then(task, task);

@@ -34,7 +34,23 @@ diff --git a/packages/shared/src/state/atoms.ts b/packages/shared/src/state/atom
  
      if (!nextValue) {
        return;
-@@ -808,6 +812,11 @@ export const splitGoBackAtom = atom(null, (get, set) => {
+@@ -403,6 +407,15 @@ export const activeNoteIdAtom = atom(
+   }
+ );
+ 
++// moss-multi seam (T9.48a): the stored choice, and whether the active id is derived from the listing instead (nothing
++// stored, or the stored note's record gone), so the host can pin the derived note before a peer's change reorders it.
++export const activeNoteSelectionAtom = atom((get) => {
++  const storedId = get(baseActiveNoteIdAtom);
++  // The index changes when a record is removed; the family then hands out a fresh, empty atom for its id.
++  get(noteIdsAtom);
++  return { storedId, derived: !storedId || !get(noteEntityAtom(storedId)) };
++});
++
+ const getStoredValue = (key: string): string | null => {
+   if (typeof window === 'undefined' || typeof window.localStorage === 'undefined') {
+     return null;
+@@ -808,6 +821,11 @@ export const splitGoBackAtom = atom(null, (get, set) => {
    const newIndex = hist.index - 1;
    const targetNoteId = hist.stack[newIndex];
    if (targetNoteId) {
@@ -46,7 +62,7 @@ diff --git a/packages/shared/src/state/atoms.ts b/packages/shared/src/state/atom
      if (hist.headings) {
        set(pendingScrollTargetAtom, {
          noteId: targetNoteId,
-@@ -826,6 +835,11 @@ export const splitGoForwardAtom = atom(null, (get, set) => {
+@@ -826,6 +844,11 @@ export const splitGoForwardAtom = atom(null, (get, set) => {
    const newIndex = hist.index + 1;
    const targetNoteId = hist.stack[newIndex];
    if (targetNoteId) {

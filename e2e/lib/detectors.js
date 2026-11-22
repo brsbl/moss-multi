@@ -135,15 +135,17 @@ export function remountSince({ names, docId, mark, generation }) {
 }
 
 /**
- * Invariant 7 input: the title and body text of every pane showing the doc.
+ * Invariant 7 input: the title and body text of every pane showing the doc, and whether both fields have settled
+ * (no binding still `unbound`, as a pane mounting after a note switch is).
  * @param {{ names: Names, docId: string }} arg
- * @returns {{ title: string, body: string }[]}
+ * @returns {{ title: string, body: string, settled: boolean }[]}
  */
 export function fieldTexts({ names, docId }) {
   return [...document.querySelectorAll(`[${names.pane}][${names.docId}="${docId}"]`)].map((pane) => {
     const title = pane.querySelector(`[${names.titleBinding}]`);
     // The bound root carries the binding attribute; moss also marks its editor wrapper `data-lexical-editor`.
     const body = pane.querySelector(`[${names.bodyBinding}]`) ?? pane.querySelector(names.lexical);
-    return { title: title ? (title.textContent ?? '') : '', body: body ? (body.textContent ?? '') : '' };
+    const settled = title?.getAttribute(names.titleBinding) !== 'unbound' && body?.getAttribute(names.bodyBinding) !== 'unbound';
+    return { title: title ? (title.textContent ?? '') : '', body: body ? (body.textContent ?? '') : '', settled };
   });
 }

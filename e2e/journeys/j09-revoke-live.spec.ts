@@ -554,8 +554,8 @@ test('j09 sign-out: signing out in one window ends the same session in the other
 
 test('j09 cold: after an idle wake, a revoked doc link and a revoked folder link land no frame @hibernate @slow @p:ppl-2 @p:tech-6', async ({ actors, stack }, info) => {
   test.setTimeout(300_000);
-  // Ada works over the API only: an open shell shows the most recently edited note, so the holders' typing would
-  // switch her window between their notes and keep their DOs awake.
+  // Ada works over the API only: an open shell shows a note (the newest when it loads, and keeps it), and its doc
+  // socket would keep that note's DO awake.
   const ada = await actors.session(await actors.principal('ada'));
   const headers = { origin: stack.baseUrl };
   // Declared setup over the API: a note with an editor link, and a folder holding a subfolder note with an editor
