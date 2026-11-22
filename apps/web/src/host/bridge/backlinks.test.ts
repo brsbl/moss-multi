@@ -220,3 +220,56 @@ it('leaves a note opened while the channel’s socket opens to its reconcile, an
   connecting(false);
   await vi.waitFor(() => expect(server.reads('d2'), 'read once the socket failed').toBe(1));
 });
+
+it('reads a note opened while the channel’s socket opens within a bound, when the handshake neither opens nor fails', async () => {
+  const server = fakeServer();
+  let connecting: (value: boolean) => void = () => undefined;
+  const subscribeWorkspace = (_cb: Receive, _pause: () => void, onConnecting?: (value: boolean) => void) => {
+    if (onConnecting) connecting = onConnecting;
+    return () => undefined;
+  };
+  const bridge = createBridge({ pathname: () => '/', fetch: server.fetch, subscribeWorkspace });
+  onTestFinished(bridge.notes.onDiskChange(vi.fn()));
+  await bridge.notes.getAll();
+  connecting(true);
+  await bridge.notes.getById('d1');
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  expect(server.reads('d1'), 'left to the reconcile at first').toBe(0);
+  await vi.waitFor(() => expect(server.reads('d1'), 'a hung handshake still lets the note read').toBe(1), { timeout: 5000 });
+  await vi.waitFor(async () => expect((await bridge.notes.getById('d1'))?.incomingLinks?.map((link) => link.noteId)).toEqual(['d2']));
+  expect(server.reads('d1')).toBe(1);
+});
+
+it('reads a note opened while the channel’s socket opens when the reconcile’s listing fails, and once only', async () => {
+  const server = fakeServer();
+  let receive!: Receive;
+  let connecting: (value: boolean) => void = () => undefined;
+  let failing = false;
+  const fetch: typeof globalThis.fetch = async (input, init) => {
+    const reply = server.fetch(input, init);
+    if (failing && new URL(String(input), 'http://localhost').pathname === '/api/workspace') return new Response('down', { status: 500 });
+    return reply;
+  };
+  const subscribeWorkspace = (cb: Receive, _pause: () => void, onConnecting?: (value: boolean) => void) => {
+    receive = cb;
+    if (onConnecting) connecting = onConnecting;
+    return () => undefined;
+  };
+  const bridge = createBridge({ pathname: () => '/', fetch, subscribeWorkspace });
+  onTestFinished(bridge.notes.onDiskChange(vi.fn()));
+  const listings = () => server.calls.filter((call) => call.path === '/api/workspace').length;
+  await bridge.notes.getAll();
+  connecting(true);
+  await bridge.notes.getById('d1');
+  failing = true;
+  receive({ type: 'vaults' });
+  connecting(false);
+  await vi.waitFor(() => expect(listings()).toBe(2));
+  // Well inside the hung-handshake bound: the failed listing hands the note its own read.
+  await vi.waitFor(() => expect(server.reads('d1'), 'read once the reconcile failed').toBe(1), { timeout: 500 });
+  failing = false;
+  // The reconcile is retried after a second and now answers.
+  await vi.waitFor(() => expect(listings()).toBe(3), { timeout: 3000 });
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  expect(server.reads('d1'), 'the retried reconcile does not read it again').toBe(1);
+});
