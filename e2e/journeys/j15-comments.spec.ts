@@ -5,6 +5,7 @@
 // thread is listed with its quote. No marker reaches the DOM. Block comments and what a composer keeps are
 // j15-comments-drafts.
 import type { LexicalEditor } from 'lexical';
+import { PNG } from 'pngjs';
 import type { Actor, Actors } from '../lib/actors.ts';
 import { BODY_BINDING_ATTR, DOC_STATE_ATTR, SYNC_UNACKED_ATTR, paneSelector } from '../lib/contract.ts';
 import { grantDoc, type GrantRole } from '../lib/grants.ts';
@@ -120,6 +121,45 @@ async function comment(actor: Actor, text: string): Promise<void> {
   await expect(composer).toBeHidden();
 }
 
+/** The CSS-pixel box of the first rendered `needle` in the body. */
+const textBox = (actor: Actor, id: string, needle: string) => ui.body(actor, id).evaluate((root, needle) => {
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+    const at = node.textContent?.indexOf(needle) ?? -1;
+    if (at < 0) continue;
+    const range = document.createRange();
+    range.setStart(node, at);
+    range.setEnd(node, at + needle.length);
+    const { x, y, width, height } = range.getBoundingClientRect();
+    return { x, y, width, height };
+  }
+  throw new Error(`no rendered text holds "${needle}"`);
+}, needle);
+
+/** Each pixel of a screenshot of `box`, as `r,g,b`. */
+async function pixels(actor: Actor, box: { x: number; y: number; width: number; height: number }): Promise<string[]> {
+  const png = PNG.sync.read(await actor.page.screenshot({ clip: box }));
+  const out: string[] = [];
+  for (let i = 0; i < png.data.length; i += 4) out.push(`${png.data[i]},${png.data[i + 1]},${png.data[i + 2]}`);
+  return out;
+}
+
+/**
+ * The comment's background is really painted on `text` (T9.48b: a rule that names only the editor root reaches nested
+ * text in Chromium, through highlight inheritance, but not in WebKit): most of an unpainted word's box is the page's
+ * background, and little of the painted word's box is.
+ */
+async function expectBackgroundPainted(actor: Actor, id: string, text: string, unpainted: string): Promise<void> {
+  const reference = await pixels(actor, await textBox(actor, id, unpainted));
+  const counts = new Map<string, number>();
+  for (const pixel of reference) counts.set(pixel, (counts.get(pixel) ?? 0) + 1);
+  const [background, seen] = [...counts].sort((a, b) => b[1] - a[1])[0];
+  expect(seen / reference.length, `${actor.label}: "${unpainted}" shows the page's background`).toBeGreaterThan(0.5);
+  const painted = await pixels(actor, await textBox(actor, id, text));
+  const bare = painted.filter((pixel) => pixel === background).length / painted.length;
+  expect(bare, `${actor.label}: the comment's background covers "${text}" (rgb ${background} is the page's)`).toBeLessThan(0.2);
+}
+
 async function expectPainted(actor: Actor, id: string, text: string, message: string): Promise<void> {
   await expect.poll(() => painted(actor, id), { message, timeout: PEER_TIMEOUT }).toContain(text);
 }
@@ -187,6 +227,7 @@ test('j15-comments: A comments, then both type anywhere in both directions; the 
   for (const typed of [' Ada types on', 'Ben first ', 'Ada-inside ', ' sleepy']) expect(text.split(typed).length - 1, `"${typed}" lands once`).toBe(1);
   expect(await painted(ada, id), 'the comment stays on its own words').toContain('quick brown');
   expect(await painted(ben, id)).toContain('quick brown');
+  for (const actor of [ada, ben]) await expectBackgroundPainted(actor, id, 'quick brown', 'lazy');
 
   for (const actor of [ada, ben]) {
     const html = await actor.page.evaluate(() => document.documentElement.outerHTML);

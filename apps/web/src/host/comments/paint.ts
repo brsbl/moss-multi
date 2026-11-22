@@ -11,6 +11,7 @@ import { commentThreadFilterAtom } from '@moss/shared/state/note-atoms';
 import { getDefaultStore } from 'jotai';
 import { $getNodeByKey, $isDecoratorNode, $isElementNode, $isTextNode, type LexicalEditor } from 'lexical';
 import * as Y from 'yjs';
+import { scopeHighlights } from '../highlight-scope.ts';
 import { colorOf } from './atoms.ts';
 import { liveItem, modelFor, type CommentsModel } from './model.ts';
 
@@ -191,6 +192,7 @@ function refreshBlocks(): void {
 function refreshHighlights(): void {
   refreshBlocks();
   if (!supported()) return;
+  scopeHighlights();
   const sets = new Map<string, Range[]>();
   const add = (name: string, ranges: Range[]) => {
     const into = sets.get(name);

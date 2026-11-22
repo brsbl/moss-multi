@@ -3,8 +3,18 @@
 // a checkbox toggle and moved the done items first (run 37718593043: two pairs of 2 MB of mixed markdown swapped).
 //
 // The notes and the reference imports are created through POST /api/docs as declared setup.
-import { MAX_STALL_MS, pasteAndCheck, setup } from '../lib/paste.ts';
+import { pasteAndCheck, setup } from '../lib/paste.ts';
 import { expect, test, ui } from '../lib/test.ts';
+
+/**
+ * Its own bounds, on CI as locally: the longest hold is the 2 s target (paste.ts MAX_STALL_MS). The total held (paste.ts
+ * `maxHeldMs`) grows with the runner's speed more than the calibration does. In Chromium it was 5.3-6.3 s before the
+ * highlight rules were scoped (runs 45018468321, 45020592760), and is 2.2-2.7 s after on a fast runner and 4.3-4.6 s
+ * on a slow one (runs 45020699574, 45023463984): 5.5 s passes the fix and fails most of the old holds split in two.
+ * WebKit holds the tab in many short pieces, 3.7-5.3 s in all (runs 45020729644, 45023479534).
+ */
+const STALL_MS = 2_000;
+const HELD_MS: Record<string, number> = { chromium: 5_500, webkit: 7_000 };
 
 /** A check list of `count` items, open and done alternating, as written: moss sorts done items first only on a toggle. */
 function checklist(count: number): string {
@@ -23,5 +33,8 @@ test('j01-paste-check: a 10,000-item check list pasted between two paragraphs la
   await ui.body(ada, docId).locator('p').filter({ hasText: /^Before\.$/ }).click();
   await ada.page.keyboard.press('End');
   await ada.page.keyboard.press('Enter');
-  await pasteAndCheck({ ada, ben, docId, wire }, markdown, want, 300_000, { maxStallMs: MAX_STALL_MS });
+  await pasteAndCheck({ ada, ben, docId, wire }, markdown, want, 300_000, {
+    maxStallMs: STALL_MS,
+    maxHeldMs: HELD_MS[ada.page.context().browser()?.browserType().name() ?? 'chromium'] ?? HELD_MS.chromium,
+  });
 });

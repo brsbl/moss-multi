@@ -561,7 +561,8 @@ test("j16-review proposals (T9.34): marks keep the note's ink, a mark opens its 
       for (const rule of [...list]) {
         if (!(rule instanceof CSSStyleRule)) continue;
         for (const name of ['suggest-insert', 'suggest-delete']) {
-          if (rule.selectorText.trim() === `::highlight(${name})`) {
+          // The rule names the editor root (T9.48b).
+          if (rule.selectorText.trim() === `[data-lexical-editor]::highlight(${name})`) {
             out[name] = { background: rule.style.backgroundColor, color: rule.style.color, decoration: rule.style.textDecorationColor };
           }
         }

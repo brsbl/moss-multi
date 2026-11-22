@@ -10,6 +10,7 @@ import { payloadMap, payloadText } from '@moss-multi/sync/payload-docs';
 import { openRecords, payloadIdsOf, SpanSet, type Built, type SuggestFork } from '@moss-multi/sync/suggest/client';
 import type { LexicalEditor } from 'lexical';
 import * as Y from 'yjs';
+import { scopeHighlights } from '../../highlight-scope.ts';
 import { charIndex, idKey, isPending, rangesWhere, type CharPlace } from './chars.ts';
 
 const INSERT = 'suggest-insert';
@@ -22,6 +23,7 @@ const highlights = (): Map<string, unknown> | null =>
 function publish(): void {
   const registry = highlights();
   if (!registry) return;
+  scopeHighlights();
   const all = [...layers.values()];
   const insert = all.flatMap((layer) => layer.insert);
   const strike = all.flatMap((layer) => layer.strike);
