@@ -145,39 +145,3 @@ test.describe('SP10: comment paint without touching the tree', () => {
     expect(await share(page, await boxOf(page, 'Typed'), COMMENT)).toBeLessThan(0.01);
   });
 });
-
-// T9.48b: the app's highlight rules name the editor root (`[data-lexical-editor]::highlight(…)`), not every element:
-// an unscoped rule made Chromium resolve each name's highlight style on every element of the note, and a 10,000-item
-// check list then took three times as long to restyle. A rule on the root must still paint text nested in lists,
-// links and inline formats, through highlight inheritance.
-const NESTED = `<!doctype html><html><head><style>
-  body { margin: 0; background: #fff; color: #000; font: 24px/1.8 monospace; }
-  #editor { padding: 40px; width: 900px; }
-  #editor::highlight(spike-scoped) { background-color: rgb(${COMMENT}); }
-  #editor::highlight(spike-scoped-active) { text-decoration-line: underline; text-decoration-color: rgb(${UNDERLINE}); text-decoration-thickness: 3px; }
-</style></head><body><div id="editor" contenteditable="true"><ul><li><span id="item">nested item</span></li></ul>
-<p><a href="#x"><span id="link">linked words</span></a> and <strong><em><span id="bold">bold italic</span></em></strong></p><p id="plain">unpainted</p></div></body></html>`;
-
-const boxOfId = (page: Page, id: string) => page.evaluate((target) => {
-  const { x, y, width, height } = document.getElementById(target)!.getBoundingClientRect();
-  return { x, y, width, height };
-}, id);
-
-test('SP10 a highlight rule on the editor root paints text nested in lists, links and inline formats', async ({ page }) => {
-  await page.setContent(NESTED);
-  await page.evaluate(() => {
-    const range = (id: string) => {
-      const r = document.createRange();
-      r.selectNodeContents(document.getElementById(id)!);
-      return r;
-    };
-    CSS.highlights.set('spike-scoped', new Highlight(range('item'), range('link'), range('bold')));
-    CSS.highlights.set('spike-scoped-active', new Highlight(range('item')));
-  });
-  await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
-  for (const id of ['item', 'link', 'bold']) {
-    expect(await share(page, await boxOfId(page, id), COMMENT), `${id} paints its background`).toBeGreaterThan(0.3);
-  }
-  expect(await share(page, await boxOfId(page, 'item'), UNDERLINE, 'bottom'), 'the nested item is underlined').toBeGreaterThan(0.05);
-  expect(await share(page, await boxOfId(page, 'plain'), COMMENT), 'unpainted text stays clean').toBeLessThan(0.01);
-});

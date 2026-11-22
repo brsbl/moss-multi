@@ -25,39 +25,66 @@ div:has(> [data-dialog-menu]) {
 /* Comment paint (T4.3; docs/design/comments.md §11): CSS Custom Highlights in moss's `.comment-mark` colors
    (MarkdownEditor.css), slot 0 user, 3 agent, 4 external. Hover and the open thread underline the text.
    These and the suggestion rules name the editor root, which its text inherits from: unscoped, Chromium resolved
-   every name on every element, and restyling a 10,000-item list took three times as long (T9.48b). */
-[data-lexical-editor]::highlight(moss-comment-0) { background-color: var(--highlight-comment-user-light); }
-[data-lexical-editor]::highlight(moss-comment-3) { background-color: var(--highlight-chalk-green-light); }
-[data-lexical-editor]::highlight(moss-comment-4) { background-color: var(--highlight-chalk-grey-light); }
+   every name on every element, and restyling a 10,000-item list took three times as long (T9.48b). An engine
+   without highlight inheritance (WebKit) gets `html[data-highlight-each]` and the same rules on every element in
+   the editor (host/highlight-scope.ts). */
+[data-lexical-editor]::highlight(moss-comment-0),
+html[data-highlight-each] [data-lexical-editor] *::highlight(moss-comment-0) { background-color: var(--highlight-comment-user-light); }
+[data-lexical-editor]::highlight(moss-comment-3),
+html[data-highlight-each] [data-lexical-editor] *::highlight(moss-comment-3) { background-color: var(--highlight-chalk-green-light); }
+[data-lexical-editor]::highlight(moss-comment-4),
+html[data-highlight-each] [data-lexical-editor] *::highlight(moss-comment-4) { background-color: var(--highlight-chalk-grey-light); }
 /* moss's mark keeps the UA's black text in light mode and the paragraph ink in dark mode. */
 [data-lexical-editor]::highlight(moss-comment-0),
+html[data-highlight-each] [data-lexical-editor] *::highlight(moss-comment-0),
 [data-lexical-editor]::highlight(moss-comment-3),
-[data-lexical-editor]::highlight(moss-comment-4) { color: black; }
+html[data-highlight-each] [data-lexical-editor] *::highlight(moss-comment-3),
+[data-lexical-editor]::highlight(moss-comment-4),
+html[data-highlight-each] [data-lexical-editor] *::highlight(moss-comment-4) { color: black; }
 [data-theme="dark"] [data-lexical-editor]::highlight(moss-comment-0),
+html[data-theme="dark"][data-highlight-each] [data-lexical-editor] *::highlight(moss-comment-0),
 [data-theme="dark"] [data-lexical-editor]::highlight(moss-comment-3),
-[data-theme="dark"] [data-lexical-editor]::highlight(moss-comment-4) { color: var(--ink-default); }
+html[data-theme="dark"][data-highlight-each] [data-lexical-editor] *::highlight(moss-comment-3),
+[data-theme="dark"] [data-lexical-editor]::highlight(moss-comment-4),
+html[data-theme="dark"][data-highlight-each] [data-lexical-editor] *::highlight(moss-comment-4) { color: var(--ink-default); }
 [data-lexical-editor]::highlight(moss-comment-hover-0),
+html[data-highlight-each] [data-lexical-editor] *::highlight(moss-comment-hover-0),
 [data-lexical-editor]::highlight(moss-comment-hover-3),
+html[data-highlight-each] [data-lexical-editor] *::highlight(moss-comment-hover-3),
 [data-lexical-editor]::highlight(moss-comment-hover-4),
+html[data-highlight-each] [data-lexical-editor] *::highlight(moss-comment-hover-4),
 [data-lexical-editor]::highlight(moss-comment-active-0),
+html[data-highlight-each] [data-lexical-editor] *::highlight(moss-comment-active-0),
 [data-lexical-editor]::highlight(moss-comment-active-3),
-[data-lexical-editor]::highlight(moss-comment-active-4) { text-decoration-line: underline; text-underline-offset: 2px; }
-[data-lexical-editor]::highlight(moss-comment-hover-0) { text-decoration-color: var(--highlight-chalk-yellow); }
-[data-lexical-editor]::highlight(moss-comment-active-0) { text-decoration-color: var(--highlight-comment-user); }
+html[data-highlight-each] [data-lexical-editor] *::highlight(moss-comment-active-3),
+[data-lexical-editor]::highlight(moss-comment-active-4),
+html[data-highlight-each] [data-lexical-editor] *::highlight(moss-comment-active-4) { text-decoration-line: underline; text-underline-offset: 2px; }
+[data-lexical-editor]::highlight(moss-comment-hover-0),
+html[data-highlight-each] [data-lexical-editor] *::highlight(moss-comment-hover-0) { text-decoration-color: var(--highlight-chalk-yellow); }
+[data-lexical-editor]::highlight(moss-comment-active-0),
+html[data-highlight-each] [data-lexical-editor] *::highlight(moss-comment-active-0) { text-decoration-color: var(--highlight-comment-user); }
 [data-lexical-editor]::highlight(moss-comment-hover-3),
-[data-lexical-editor]::highlight(moss-comment-active-3) { text-decoration-color: var(--highlight-chalk-green); }
+html[data-highlight-each] [data-lexical-editor] *::highlight(moss-comment-hover-3),
+[data-lexical-editor]::highlight(moss-comment-active-3),
+html[data-highlight-each] [data-lexical-editor] *::highlight(moss-comment-active-3) { text-decoration-color: var(--highlight-chalk-green); }
 [data-lexical-editor]::highlight(moss-comment-hover-4),
-[data-lexical-editor]::highlight(moss-comment-active-4) { text-decoration-color: var(--highlight-chalk-grey); }
+html[data-highlight-each] [data-lexical-editor] *::highlight(moss-comment-hover-4),
+[data-lexical-editor]::highlight(moss-comment-active-4),
+html[data-highlight-each] [data-lexical-editor] *::highlight(moss-comment-active-4) { text-decoration-color: var(--highlight-chalk-grey); }
 [data-theme="dark"] [data-lexical-editor]::highlight(moss-comment-hover-0),
-[data-theme="dark"] [data-lexical-editor]::highlight(moss-comment-active-0) { text-decoration-color: color-mix(in srgb, var(--highlight-chalk-yellow) 50%, var(--ink-default)); }
+html[data-theme="dark"][data-highlight-each] [data-lexical-editor] *::highlight(moss-comment-hover-0),
+[data-theme="dark"] [data-lexical-editor]::highlight(moss-comment-active-0),
+html[data-theme="dark"][data-highlight-each] [data-lexical-editor] *::highlight(moss-comment-active-0) { text-decoration-color: color-mix(in srgb, var(--highlight-chalk-yellow) 50%, var(--ink-default)); }
 
 /* Suggestion paint (docs/design/suggestions.md §7): derived highlights and an overlay, never the tree. */
-[data-lexical-editor]::highlight(suggest-insert) {
+[data-lexical-editor]::highlight(suggest-insert),
+html[data-highlight-each] [data-lexical-editor] *::highlight(suggest-insert) {
   background-color: var(--highlight-green);
   text-decoration: underline;
   text-decoration-color: var(--accent-brand);
 }
-[data-lexical-editor]::highlight(suggest-delete) {
+[data-lexical-editor]::highlight(suggest-delete),
+html[data-highlight-each] [data-lexical-editor] *::highlight(suggest-delete) {
   color: var(--accent-terracotta);
   text-decoration: line-through;
   text-decoration-color: var(--accent-terracotta);
