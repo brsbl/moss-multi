@@ -11,7 +11,7 @@ import {
 } from '../lib/contract.ts';
 import { grantDoc } from '../lib/grants.ts';
 import {
-  BIND_TIMEOUT, button, caret, cards, closePanel, confirmation, confirmClose, content, openIn, openPanel, panel, pressClose, reviewSwitch, settled as acked,
+  BIND_TIMEOUT, button, caret, cards, closePanel, confirmation, confirmClose, content, frames, openIn, openPanel, panel, pressClose, reviewSwitch, settled as acked,
   sharedNote,
 } from '../lib/suggest.ts';
 import { expect, test, ui } from '../lib/test.ts';
@@ -393,6 +393,37 @@ test('j16-review: withdraw removes the inserted text from every view while the n
   await expect(ada.page.locator(`[${SUGGEST_MARK_ATTR}="insert"]`), 'its mark leaves Edit mode').toHaveCount(0, { timeout: BIND_TIMEOUT });
   for (const actor of [ben, carl, ada]) await expect(ui.body(actor, docId)).toContainText('Keep every original word.');
   expect(await content(ada, docId), 'the note is byte-identical').toBe(before);
+});
+
+test("j16-review: a rebuilt fork leaves the author's open list and its focus where they are @p:mean-2 @p:R17", async ({ actors }) => {
+  const { ada, ben, docId } = await sharedNote(actors);
+  await openIn(ben, docId, 'suggest');
+  await openIn(ada, docId, 'edit');
+  await actors.requireDistinct(2);
+  // The reject rebuilds the author's fork (§5).
+  ben.expectReconnects(1, docId);
+  ben.expectHttp(409, new RegExp(`/api/docs/${docId}/suggestions/[^/]+/preview$`));
+
+  await suggestText(ben, docId, 'original word', 8, ' plus');
+  await expect(button(ada)).toHaveAttribute('aria-label', /1 open/, { timeout: BIND_TIMEOUT });
+  // Ben opens his list from the keyboard: the caret stays in his editor's state and focus stays on the count.
+  const count = button(ben);
+  await expect(count).toHaveAttribute('aria-label', /1 open/, { timeout: BIND_TIMEOUT });
+  await count.focus();
+  await ben.page.keyboard.press('Enter');
+  await expect(cards(ben, 'open')).toHaveCount(1, { timeout: BIND_TIMEOUT });
+  await expect(count).toBeFocused();
+
+  // Ada rejects it while Ben watches the list.
+  await confirmClose(ada, (await openPanel(ada)).locator(`[${SUGGESTION_CARD_ATTR}][${SUGGESTION_STATUS_ATTR}="open"]`), 'Reject');
+  await expect(cards(ben, 'rejected')).toHaveCount(1, { timeout: BIND_TIMEOUT });
+  await expect(ui.body(ben, docId), 'the rebuilt fork').not.toContainText('plus', { timeout: BIND_TIMEOUT });
+  await expect(ui.body(ben, docId)).toHaveAttribute(BODY_BINDING_ATTR, 'live', { timeout: BIND_TIMEOUT });
+  // The rebuilt editor paints on the next frames; it must not take focus from the list Ben has open.
+  await frames(ben);
+  await ben.page.waitForTimeout(500);
+  await expect(cards(ben, 'rejected'), 'the list stays open').toHaveCount(1);
+  await expect(count, 'focus stays on the count').toBeFocused();
 });
 
 test("j16-review: a struck delete opens its card from the owner's body, and the card lists what it deletes @p:mean-2 @p:R17", async ({ actors }) => {
