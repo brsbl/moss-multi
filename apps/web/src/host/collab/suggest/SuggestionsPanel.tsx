@@ -578,7 +578,8 @@ export function SuggestionsButton({ docId, source, showCount = true, anchor, peo
           <Popover.Content
             {...contentPlacement}
             avoidCollisions={!at}
-            collisionPadding={16}
+            // The pane's single view is the pane's own size: no margin to keep from the screen's edge.
+            collisionPadding={place?.kind === 'pane' ? 0 : 16}
             // Never taller than its room: its rows scroll and its decisions and close stay reachable.
             style={{ maxHeight: place ? `${place.maxHeight}px` : 'min(60vh, var(--available-height, 60vh))', ...(place ? { width: `${place.width}px` } : {}), ...(place?.kind === 'pane' ? { height: `${place.maxHeight}px` } : {}) }}
             className={`z-50 flex flex-col overflow-hidden outline-none focus:outline-none focus-visible:ring-0 ${surfaceClass}`}
