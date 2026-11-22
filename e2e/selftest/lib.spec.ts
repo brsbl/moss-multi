@@ -4,7 +4,7 @@
 import { chmodSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { request, type Page } from '@playwright/test';
+import { request, type Page, type TestInfo } from '@playwright/test';
 import { Actors } from '../lib/actors.ts';
 import { ALLOWLIST, expiredEntries, isAllowed, type AllowEntry } from '../lib/allowlist.ts';
 import { inductionProblems } from '../lib/hibernate.ts';
@@ -258,9 +258,10 @@ test.describe('engine evidence', () => {
   // the invariants fail on a live page and attaches the evidence; the same teardown on a clean page attaches none.
   test('a forced WebKit failure attaches every item of the engine evidence', async ({ browser, server, browserName }) => {
     test.skip(browserName !== 'webkit', 'the WebKit projects carry the engine evidence');
-    const engineFiles = () => test.info().attachments.filter((a) => a.name.startsWith('engine'));
-    const fresh = () => {
-      const own = new Actors(browser, test.info(), { stack: null, runToken: 'selftest' });
+    let mark = 0;
+    const engineFiles = () => test.info().attachments.slice(mark).filter((a) => a.name.startsWith('engine'));
+    const fresh = (info: TestInfo = test.info()) => {
+      const own = new Actors(browser, info, { stack: null, runToken: 'selftest' });
       own.solo('fixture pages have no principals; the guard has its own selftest');
       return own;
     };
@@ -268,6 +269,16 @@ test.describe('engine evidence', () => {
     await ui.waitLive(await clean.anonymous(`${server.url}/clean.html`, { label: 'passing' }), 'doc-a');
     await clean.settle();
     expect(engineFiles(), 'a passing teardown attaches no engine evidence').toEqual([]);
+
+    // A test whose body failed: the teardown reads the status the runner set (here a view of this test's info that
+    // reports the body failed) and captures without any invariant finding, as the selftest fixture's teardown does.
+    const info = test.info();
+    const bodyFailed = { file: info.file, tags: info.tags, annotations: info.annotations, status: 'failed', expectedStatus: 'passed', attach: info.attach.bind(info) } as unknown as TestInfo;
+    const failedBody = fresh(bodyFailed);
+    await ui.waitLive(await failedBody.anonymous(`${server.url}/clean.html`, { label: 'body' }), 'doc-a');
+    await failedBody.settle({ assert: false });
+    expect(engineFiles().map((a) => a.name), 'a failed body is captured').toEqual(['engine.json', 'engine-closes.json']);
+    mark = info.attachments.length;
 
     const actors = fresh();
     const actor = await actors.anonymous(`${server.url}/clean.html`, { label: 'failing' });
@@ -278,7 +289,7 @@ test.describe('engine evidence', () => {
     expect(error?.message, 'the teardown fails the test').toContain('invariant 1 [failing]');
     expect(engineFiles().map((a) => a.name), 'the evidence is attached before the contexts close, their times after').toEqual(['engine.json', 'engine-closes.json']);
     expect(JSON.parse(String(engineFiles()[1].body)).contextCloses).toEqual([{ label: 'failing', ms: expect.any(Number) }]);
-    const attachment = test.info().attachments.find((a) => a.name === 'engine.json');
+    const attachment = engineFiles().find((a) => a.name === 'engine.json');
     expect(attachment, 'engine.json is attached').toBeTruthy();
     const evidence = JSON.parse(String(attachment?.body));
     expect(evidence.browserLog.some((line: string) => /<launched> pid=/.test(line)), 'the browser log').toBe(true);
