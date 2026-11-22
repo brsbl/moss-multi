@@ -397,8 +397,10 @@ function textLines(roots: readonly Element[], top: number, bottom: number): Box[
 }
 
 /** Where `docId`'s suggestion opened at `mark` goes (place.ts), or null without its pane. */
+const paneOf = (docId: string): Element | null => document.querySelector(`[${EDITOR_PANE_ATTR}][${DOC_ID_ATTR}="${CSS.escape(docId)}"]`);
+
 function placeAt(docId: string, mark: DOMRect | null, height: number): Placement | null {
-  const pane = document.querySelector(`[${EDITOR_PANE_ATTR}][${DOC_ID_ATTR}="${CSS.escape(docId)}"]`);
+  const pane = paneOf(docId);
   if (!mark || !pane) return null;
   const box = pane.getBoundingClientRect();
   const bar = pane.querySelector(`[${TOP_BAR_ATTR}]`)?.getBoundingClientRect();
@@ -477,17 +479,26 @@ export function SuggestionsButton({ docId, source, showCount = true, anchor, peo
   const markAnchor = useMemo(() => {
     // A repaint can replace the mark under it: the last place it was seen holds until the next paint.
     let last: DOMRect | null = null;
+    // Read from the pane as it is now (it can still be sliding when the sidebar closes); the positioner follows the
+    // pane through `contextElement`.
+    const pane = paneOf(docId);
     return {
       current: {
+        contextElement: pane ?? undefined,
         getBoundingClientRect: () => {
           const where = place;
-          if (where && where.kind !== 'beside') return new DOMRect(where.kind === 'docked' ? where.left + where.width : where.left, where.top, 0, 0);
+          const box = pane?.getBoundingClientRect();
+          const right = box ? Math.min(box.right, window.innerWidth) - 16 : where && where.kind === 'beside' ? where.right : 0;
+          if (where && where.kind !== 'beside') {
+            const top = box ? Math.max(pane?.querySelector(`[${TOP_BAR_ATTR}]`)?.getBoundingClientRect().bottom ?? box.top, box.top) : where.top;
+            return where.kind === 'docked' ? new DOMRect(right, top + 8, 0, 0) : new DOMRect(box?.left ?? where.left, top, 0, 0);
+          }
           const mark = (last = at?.() ?? last ?? new DOMRect());
-          return where ? new DOMRect(where.right, mark.top, 0, mark.height) : mark;
+          return where ? new DOMRect(right, mark.top, 0, mark.height) : mark;
         },
       },
     };
-  }, [at, place]);
+  }, [at, place, docId]);
   // The thread's drawn height, measured only while it is beside its line (a panel's height is the pane's): its header's
   // parent is the thread.
   const besideRef = useCallback((header: HTMLElement | null) => {

@@ -649,12 +649,12 @@ test("j16-review proposals (T9.34): marks keep the note's ink, a mark opens its 
   await expect(surface.locator(`[${SUGGESTION_CARD_ATTR}][${SUGGESTION_ACTIVE_ATTR}]`)).toHaveCount(1, { timeout: BIND_TIMEOUT });
   const back = surface.getByRole('button', { name: 'Back to note', exact: true });
   await expect(back).toBeVisible();
-  const view = await surface.evaluate((element, selector) => {
+  // The pane may still be settling from the narrower window: the view follows it.
+  await expect.poll(() => surface.evaluate((element, selector) => {
     const rect = element.getBoundingClientRect();
     const pane = document.querySelector(selector)!.getBoundingClientRect();
     return { left: Math.round(rect.left - pane.left), right: Math.round(pane.right - rect.right) };
-  }, `[data-editor-pane][data-doc-id="${docId}"]`);
-  expect(view, 'the view fills the pane').toEqual({ left: 0, right: 0 });
+  }, `[data-editor-pane][data-doc-id="${docId}"]`), { message: 'the view fills the pane' }).toEqual({ left: 0, right: 0 });
   await expect(surface.getByRole('button', { name: 'Accept' }), 'its decisions stay reachable').toBeInViewport();
   await back.click();
   await expect(surface).toBeHidden();
