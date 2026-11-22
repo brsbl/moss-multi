@@ -254,7 +254,13 @@ export async function typeTitle(actor: Actor, docId: string, text: string, { ent
 
 /** Types at the end of the body. */
 export async function typeBody(actor: Actor, docId: string, text: string): Promise<void> {
-  await body(actor, docId).click();
+  // A new note's title takes focus once it opens (moss's focusTitle waits for that), which off loopback can come after
+  // the body binds: the body is clicked once the title is open, until it holds the focus.
+  await pane(actor, docId).locator(`[${TITLE_BINDING_ATTR}="live"]`).waitFor({ timeout: 5_000 }).catch(() => undefined);
+  await expect(async () => {
+    await body(actor, docId).click();
+    expect(await body(actor, docId).evaluate((element) => element.contains(document.activeElement)), `${actor.label}: the body has the focus`).toBe(true);
+  }).toPass({ timeout: 10_000 });
   await actor.page.keyboard.press(toEnd);
   await actor.page.keyboard.type(text);
   actor.typed({ docId, field: 'body', text, ordered: true });

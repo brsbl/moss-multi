@@ -272,6 +272,10 @@ test.describe('a network drop off loopback (invariants 1 and 3, T8.2)', () => {
     expect(socketProblems(asked, new Map([['d', 1]]), OFF)).toEqual([]);
     // Not declared, its reopen is still counted as any other.
     expect(socketProblems(asked, new Map(), OFF)).not.toEqual([]);
+    // The browser's line for that close is the page's own; another socket's is still a console error.
+    const line = (url: string) => [{ type: 'error', text: `WebSocket connection to '${url}' failed: x`, url: '', at: 100 }];
+    expect(errorProblems({ console: line(asked[0].url), pageErrors: [], http: [], sockets: asked }, [], 'j01', OFF)).toEqual([]);
+    expect(errorProblems({ console: line('wss://h/parties/doc-d-o/d?_pk=9'), pageErrors: [], http: [], sockets: asked }, [], 'j01', OFF)).not.toEqual([]);
   });
   test("off loopback only the recovered drop's own log line, while it lived, is left to invariant 3", () => {
     const dropped = socket(0, 100, 1006);

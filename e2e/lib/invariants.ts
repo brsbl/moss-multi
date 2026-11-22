@@ -112,6 +112,10 @@ const socketGroups = (sockets: SocketEntry[]): Map<string, SocketEntry[]> => {
 const recoveredDrops = (sockets: SocketEntry[]): SocketEntry[] =>
   [...socketGroups(sockets).values()].flatMap((group) => group.filter((s) => networkDropped(s) && recovered(s, group)));
 
+/** The sockets the page closed while they were still connecting: the browser logs that failure as its own. */
+const closedConnecting = (sockets: SocketEntry[]): SocketEntry[] =>
+  sockets.filter((s) => s.code === NETWORK_DROP && !!s.close?.startsWith('asked'));
+
 /** Invariant 1: page errors, console errors (unless allowlisted), 5xx, and 4xx unless declared. */
 export function errorProblems(
   census: { console: ConsoleEntry[]; pageErrors: PageError[]; http: HttpEntry[]; sockets?: SocketEntry[] },
@@ -120,10 +124,11 @@ export function errorProblems(
   { offLoopback = false }: Network = {},
 ): string[] {
   const problems = census.pageErrors.map((e) => `page error: ${e.message}`);
-  const dropped = offLoopback ? recoveredDrops(census.sockets ?? []) : [];
+  const dropped = offLoopback ? [...recoveredDrops(census.sockets ?? []), ...closedConnecting(census.sockets ?? [])] : [];
   for (const entry of census.console) {
     if (entry.type !== 'error') continue;
-    // The browser logs the drop invariant 3 judges: that socket's URL (its own _pk), while it lived or just after.
+    // The browser logs the drop invariant 3 judges, or the page's own close of a socket still connecting: that
+    // socket's URL (its own _pk), while it lived or just after.
     const failed = SOCKET_FAILED.exec(entry.text)?.[1];
     if (failed && dropped.some((s) => s.url === failed && entry.at >= s.openedAt && entry.at <= (s.closedAt ?? s.openedAt) + FAILED_LOG_MS)) continue;
     // A declared 4xx also logs a load failure for that resource; it is the same, declared, event.
