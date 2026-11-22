@@ -3,11 +3,12 @@
 // the sever, the reach sweep and the UI verbs.
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { request } from '@playwright/test';
+import { request, type Page } from '@playwright/test';
 import { ALLOWLIST, expiredEntries, isAllowed, type AllowEntry } from '../lib/allowlist.ts';
 import { inductionProblems } from '../lib/hibernate.ts';
 import { classifyInfra, closeEachConnection, InfraBlocked, isInfraBlocked } from '../lib/infra.ts';
-import { socketProblems } from '../lib/invariants.ts';
+import { BODY_BINDING_ATTR, DOC_ID_ATTR, EDITOR_PANE_ATTR, TITLE_BINDING_ATTR } from '../lib/contract.ts';
+import { socketProblems, typedFindings, type ActorView } from '../lib/invariants.ts';
 import { budgetProblem, latencyRows, Measure, percentile } from '../lib/measure.ts';
 import { assertTestEmail, parseSetCookie, principalProblems } from '../lib/principals.ts';
 import MossReporter, { emptyShardProblem } from '../lib/reporter.ts';
@@ -33,6 +34,42 @@ test.describe('exact bytes (invariant 7)', () => {
     expect(typedProblems('two one', [typed('one'), typed('two')])).not.toEqual([]);
     expect(typedProblems('two one', [typed('one'), typed('two', 'ben')])).toEqual([]);
     expect(typedProblems('two one', [typed('one', 'ada', false), typed('two', 'ada', false)])).toEqual([]);
+  });
+});
+
+test.describe('settled panes (invariant 7)', () => {
+  // A pane mid-mount (a note switch at teardown) shows an empty title until its binding settles (T9.48a).
+  const pane = `<div ${EDITOR_PANE_ATTR} ${DOC_ID_ATTR}="d"><div ${TITLE_BINDING_ATTR}="unbound"></div><div ${BODY_BINDING_ATTR}="live"></div></div>`;
+  const title: Typed = { docId: 'd', field: 'title', text: 'Button plan', author: 'ben', ordered: true };
+  const view = (page: Page): ActorView => ({ label: 'ada', page, telemetry: null as never, declaredHttp: [], reconnects: new Map(), observations: new Map() });
+
+  test('a pane whose title is not bound yet is judged once it binds', async ({ browser }) => {
+    const page = await browser.newPage();
+    await page.setContent(pane);
+    await page.evaluate(({ attr, text }) => setTimeout(() => {
+      const field = document.querySelector(`[${attr}]`);
+      if (field) { field.textContent = text; field.setAttribute(attr, 'live'); }
+    }, 300), { attr: TITLE_BINDING_ATTR, text: title.text });
+    expect(await typedFindings([view(page)], [title])).toEqual([]);
+    await page.close();
+  });
+
+  test('a pane that never binds is its own finding, not a missing string', async ({ browser }) => {
+    const page = await browser.newPage();
+    await page.setContent(pane);
+    const found = (await typedFindings([view(page)], [title], { settleMs: 500 })).map((f) => f.detail);
+    expect(found).toHaveLength(1);
+    expect(found[0]).toContain('pane never bound');
+    expect(found[0]).not.toContain('appears 0 time(s)');
+    await page.close();
+  });
+
+  test('a terminal pane is judged as it stands', async ({ browser }) => {
+    const page = await browser.newPage();
+    await page.setContent(pane.replace('"unbound"', '"terminal"'));
+    const found = (await typedFindings([view(page)], [title], { settleMs: 500 })).map((f) => f.detail);
+    expect(found).toEqual([expect.stringContaining('appears 0 time(s)')]);
+    await page.close();
   });
 });
 
