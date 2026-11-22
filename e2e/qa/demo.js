@@ -712,7 +712,7 @@ export const STEPS = {
         if (!(await message.evaluate((m) => m !== null))) throw new Error(`no message "${reaction.on}"`);
         const mine = () => message.evaluate((m, emoji) => [...m.querySelectorAll('button[aria-pressed="true"]')].some((b) => (b.getAttribute('aria-label') ?? '').startsWith(`${emoji} `)), reaction.emoji);
         if (!(await mine())) {
-          const actions = await message.evaluateHandle((m) => [...m.querySelectorAll('button')].find((b) => (b.getAttribute('aria-label') ?? '').startsWith('Comment actions for ')));
+          const actions = await message.evaluateHandle((m) => m.querySelector('button[aria-label="Add reaction"]'));
           await actions.click();
           await press(page, 'menuitem', `React with ${reaction.emoji}`);
           await until(`${me}'s ${reaction.emoji} shows`, mine);

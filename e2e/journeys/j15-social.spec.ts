@@ -223,10 +223,9 @@ test('j15-social: a non-author sees no Edit or Delete, and a raw delete or edit 
   await openThread(ben, id, 'Only Ada may change this');
 
   await expect(thread(ben).getByRole('button', { name: 'Delete thread' }), "Ben cannot delete Ada's thread").toHaveCount(0);
-  await message(ben, 'Only Ada may change this').getByRole('button', { name: /^Comment actions for / }).click();
-  await expect(ben.page.getByRole('menuitem', { name: /^Edit / }), 'no Edit for a non-author').toHaveCount(0);
-  await expect(ben.page.getByRole('menuitem', { name: /^Delete / }), 'no Delete for a non-author').toHaveCount(0);
-  await ben.page.keyboard.press('Escape');
+  // With no Edit or Delete for him, a non-author's message has no actions menu, only Add reaction (T9.39).
+  await expect(message(ben, 'Only Ada may change this').getByRole('button', { name: /^Comment actions for / }), 'no Edit or Delete for a non-author').toHaveCount(0);
+  await expect(message(ben, 'Only Ada may change this').getByRole('button', { name: 'Add reaction' })).toBeVisible();
 
   const commentId = await gutter(ben).first().getAttribute('data-comment-gutter-id');
   expect(commentId).toBeTruthy();
