@@ -1,6 +1,6 @@
 # moss-multi progress
 
-**Overall: 88% done** (269 of 304 planned tasks verified)
+**Overall: 89% done** (270 of 304 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
@@ -13,7 +13,7 @@
 | M6 History | Versions, view, diff, identity-preserving restore | 20 / 20 | in progress |
 | M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 26 / 26 | in progress |
 | M8 Ship | Everything on a permanent staging URL with demo content | 17 / 17 | |
-| M9 Polish | Understand every control without help: fixes found by using the whole product | 29 / 43 | |
+| M9 Polish | Understand every control without help: fixes found by using the whole product | 30 / 43 | |
 
 A task counts only after an independent checker passes it on green CI. Each milestone also ends with the cumulative journey suite green in Chromium and WebKit and a naive-user critic pass.
 
@@ -291,6 +291,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-11-21 — T9.41 verified: unsaved suggestion text and a peer's restore show as quiet cards in the pane's bottom region with the connection notices, one leading at a time; each closed suggestion's text can be copied, shown or dismissed on its own, a terminal card offers "Recover unsaved text", and an outdated bundle's reload also waits in the app menu.
 - 2026-11-22 — T9.V verified: the polish fixes now run on m8's text, structure and storage limits, lean stored layout, in-place export, paste rollback and client protocol 2, so comments, suggestions, restore, CLI push and sync, and duplicate all hold a note to the same limits, with the full lane and memory job green in both engines on the m9 head.
 - 2026-11-22 — T9.36 verified: Share is a compact dialog whose first line names the note, folder or vault; every role is chosen from a quiet trigger opening Moss's checked menu of the roles allowed there, with Remove access last, people with access are one flat list, and a link keeps its role, Copy and Revoke on its own row.
+- 2026-11-22 — T9.48a verified: a window with nothing chosen now stays on the note it shows when a collaborator creates or edits another note, and a multi-pane typing check waits for each pane to bind and names a pane that never binds, with j06 green in both engines at ten repeats.
 
 ## T1.1s identity audit
 
@@ -339,6 +340,12 @@ A task counts only after an independent checker passes it on green CI. Each mile
 ## Follow-ups (P2)
 
 Parked from the M0 checker and critic passes, each with the task that owns it.
+
+### From T9.48a's checker (f95db38, 2026-11-22)
+
+- T9.48a (An untouched window stays on its note) checker P2: invariant 7 reports "pane never bound" only when the pane is still unbound at the deadline and its typed text is wrong; a pane that never binds but already shows the right text passes, where the brief asks for the distinct finding whenever a pane never settles.
+- T9.48a (An untouched window stays on its note) checker P2: the two both-engine j06 repeat_each=10 runs ran on facce7b6 and b355332c, not on the head f95db38, which only merges m9 on top and leaves the pin, atoms.ts, App.tsx, detectors, invariants, j06 and the navigation helpers unchanged; the full lane on the head is green.
+- T9.48a (An untouched window stays on its note) checker P2: flakes outside this task, not re-verified: in WebKit the j16-review withdraw test (j16-review.spec.ts:369) failed 5 of 10 on plain m9 (run 45011036461), and j13-vaults once showed "This note is in Trash" where it expects the deleted connection banner (run 45003026012).
 
 ### From T9.36's checker (591bf50, 2026-11-22)
 
