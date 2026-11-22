@@ -1,6 +1,6 @@
 # moss-multi progress
 
-**Overall: 89% done** (271 of 304 planned tasks verified)
+**Overall: 89% done** (272 of 304 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
@@ -13,7 +13,7 @@
 | M6 History | Versions, view, diff, identity-preserving restore | 20 / 20 | in progress |
 | M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 26 / 26 | in progress |
 | M8 Ship | Everything on a permanent staging URL with demo content | 17 / 17 | |
-| M9 Polish | Understand every control without help: fixes found by using the whole product | 31 / 43 | |
+| M9 Polish | Understand every control without help: fixes found by using the whole product | 32 / 43 | |
 
 A task counts only after an independent checker passes it on green CI. Each milestone also ends with the cumulative journey suite green in Chromium and WebKit and a naive-user critic pass.
 
@@ -293,6 +293,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-11-22 — T9.36 verified: Share is a compact dialog whose first line names the note, folder or vault; every role is chosen from a quiet trigger opening Moss's checked menu of the roles allowed there, with Remove access last, people with access are one flat list, and a link keeps its role, Copy and Revoke on its own row.
 - 2026-11-22 — T9.48a verified: a window with nothing chosen now stays on the note it shows when a collaborator creates or edits another note, and a multi-pane typing check waits for each pane to bind and names a pane that never binds, with j06 green in both engines at ten repeats.
 - 2026-11-22 — T9.34 verified: suggestions use Moss's comment surfaces: the list is flat rows with proposed text in the note's ink and quiet Accept and Reject, and a click on a suggestion's mark opens it as Moss's comment thread beside its line, or docked as a panel the note reflows beside, or filling a narrow pane.
+- 2026-11-22 — T9.48d verified: opening or focusing a note now sends one backlinks read instead of racing several, a note opened while the workspace socket connects gets its backlinks from that socket's reconcile (or within 2 s if the handshake hangs), and a failed read is retried on the next focus.
 
 ## T1.1s identity audit
 
@@ -349,6 +350,11 @@ Parked from the M0 checker and critic passes, each with the task that owns it.
 - T9.34 (Suggestions use Moss's comment surfaces, and proposed text keeps the note's ink) checker P2: the one-line Review suggestions entry (kept for T9.1) and its gap push the list's first row down compared with Moss's comments list; tighten its spacing in T9.46.
 - T9.34 (Suggestions use Moss's comment surfaces, and proposed text keeps the note's ink) checker P2: Withdraw in the row's actions menu is terracotta, the surface's only coloured decision (no Moss open-menu reference settled it).
 - T9.34 (Suggestions use Moss's comment surfaces, and proposed text keeps the note's ink) checker P2: a thread placed beside its line is not placed again for layout-only changes after opening (a wrapping title edit, a later pane layout change): the observer watches only body text and pane geometry is polled only in the first second.
+
+### From T9.48d's checker (65fae77, 2026-11-22)
+
+- T9.48d (One note open reads its backlinks once) checker P2: a note opened while the workspace socket stays stuck connecting waits the full 2 s fallback before its backlinks read (2493 ms instead of about 460 ms on the local stack with the socket held CONNECTING); the backlinks still arrive.
+- T9.48d (One note open reads its backlinks once) checker P2: the full-lane run 45027110464 went green only on its second attempt; attempt 1 failed two unrelated WebKit tests, j00-import G1 (HTML block height) and j16-review withdraw. The push run 45027105058 on the same head was green first time.
 
 ### From T9.48a's checker (f95db38, 2026-11-22)
 
