@@ -319,6 +319,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - A window with nothing chosen still opens the first note that arrives, once: an empty vault, a switch in from an empty Home, or the last note trashed, then a collaborator's create.
 - The pinned note becomes the note restored on reload (it is written as last-viewed, as a clicked note is).
 - Not changed by the pin: j12-search's wiki-link test (run 44931221611, attempt 1) failed opening the target from its sidebar row while another note's socket closed and reopened; both notes there were chosen through "+ Note", so it is not this switching. It reads like the row reorder under a click that j00-persist describes; not investigated further.
+- No other journey expects a note created over the API after its shell opened to come on screen unopened: the rest create before the shell loads (j01-autolink) or open the note by address or row.
 
 ## Follow-ups (P2)
 
