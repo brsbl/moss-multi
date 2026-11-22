@@ -6,7 +6,7 @@ import { ConfirmationDialog } from '@moss/shared/components/ui/confirmation-dial
 import { Input } from '@moss/shared/components/ui/input';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@moss/shared/components/ui/tooltip';
 import { Check, Copy, KeyRound, Plus, X } from 'lucide-react';
-import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
+import { useCallback, useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import { useAuthState } from '../auth.ts';
 import { UNREACHABLE } from '../auth-state.ts';
 import { isLeaveCancelled } from '../leave.ts';
@@ -39,7 +39,10 @@ export function AgentsSection(): ReactNode {
   const [revoking, setRevoking] = useState<Agent | null>(null);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // A refused copy is said beside what it failed to copy: 'key' for the shown key, else the agent's id.
+  const [copyFailed, setCopyFailed] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const keyTitle = useId();
   const newKeyButton = useRef<HTMLButtonElement | null>(null);
   const keyField = useRef<HTMLInputElement | null>(null);
   const idField = useRef<HTMLInputElement | null>(null);
@@ -81,6 +84,7 @@ export function AgentsSection(): ReactNode {
     if (pending) return;
     setPending(true);
     setError(null);
+    setCopyFailed(null);
     setNotice(null);
     try {
       await work();
@@ -122,7 +126,7 @@ export function AgentsSection(): ReactNode {
     void run(async () => {
       const answer = await call(`/api/agents/${encodeURIComponent(agent.id)}`, { method: 'DELETE' }).catch((error: unknown) => { throw isLeaveCancelled(error) ? error : new Error(UNREACHABLE); });
       if (!answer.ok) throw new Error(answer.body?.message ?? 'The key wasn’t revoked. Try again.');
-      if (minted?.id === agent.id) setMinted(null);
+      if (minted?.id === agent.id) { setMinted(null); setCopyFailed(null); }
       if (shownId === agent.id) setShownId(null);
       await load();
       setNotice(`Revoked ${agent.name}’s key.`);
@@ -131,17 +135,17 @@ export function AgentsSection(): ReactNode {
   }
 
   async function copyKey(key: string): Promise<void> {
-    setError(null);
+    setCopyFailed(null);
     const ok = await copyText(key);
     setKeyCopied(ok);
     if (ok) return;
-    setError(COPY_FAILED('key'));
+    setCopyFailed('key');
     keyField.current?.focus();
     keyField.current?.select();
   }
 
   async function copyId(agent: Agent): Promise<void> {
-    setError(null);
+    setCopyFailed(null);
     if (await copyText(agent.id)) {
       setIdCopied(agent.id);
       setShownId(null);
@@ -150,16 +154,19 @@ export function AgentsSection(): ReactNode {
     }
     setIdCopied(null);
     setShownId(agent.id);
-    setError(COPY_FAILED('ID'));
+    setCopyFailed(agent.id);
   }
 
+  // A shown key must be put away first: the server keeps only its hash, so a second key would lose it.
+  const keyShown = minted !== null;
+  const revokingMade = revoking && agents ? createdLabel(revoking, agents) : null;
   const collision = creating && name.trim() ? agents?.find((agent) => sameName(agent.name, name)) : undefined;
 
   return (
     <div data-collab-chrome="" className="space-y-2">
       <div className="flex items-center justify-between">
         <span className={SECTION_LABEL}>Agents</span>
-        <button ref={newKeyButton} type="button" className={ACTION} aria-expanded={creating} disabled={pending}
+        <button ref={newKeyButton} type="button" className={ACTION} aria-expanded={creating} disabled={pending || keyShown}
           onClick={() => {
             if (creating) return closeForm();
             setError(null);
@@ -172,18 +179,19 @@ export function AgentsSection(): ReactNode {
       </div>
       <div className="rounded-lg border border-border-subtle bg-surface-raised-card p-3">
         {creating ? (
-          <form aria-label="New agent key" onSubmit={mint} className="mb-3">
+          <form aria-label="New agent key" onSubmit={mint} className="mb-3"
+            onKeyDown={(event) => {
+              // Escape anywhere in the field's row closes only the field, never Settings.
+              if (event.key !== 'Escape') return;
+              event.preventDefault();
+              event.stopPropagation();
+              closeForm();
+            }}>
             <div className="flex items-center gap-2">
               <KeyRound aria-hidden className="h-3.5 w-3.5 shrink-0 text-ink-faint" />
               <Input autoFocus aria-label="Agent name" placeholder="Agent name, e.g. Claude Code" autoComplete="off" maxLength={80}
                 value={name} readOnly={pending}
                 onChange={(event) => setName(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key !== 'Escape') return;
-                  event.preventDefault();
-                  event.stopPropagation();
-                  closeForm();
-                }}
                 className="h-7 min-w-0 flex-1 px-1.5 text-xs" />
               <button type="submit" className={ACTION} disabled={pending}>Create key</button>
             </div>
@@ -195,8 +203,8 @@ export function AgentsSection(): ReactNode {
           </form>
         ) : null}
         {minted ? (
-          <div className="mb-3 space-y-1.5 border-b border-border-subtle pb-3">
-            <p className="text-xs font-medium text-ink-default">Key for {minted.name}</p>
+          <div role="group" aria-labelledby={keyTitle} className="mb-3 space-y-1.5 border-b border-border-subtle pb-3">
+            <p id={keyTitle} className="text-xs font-medium text-ink-default">Key for {minted.name}</p>
             <div className="flex items-center gap-1">
               <Input ref={keyField} readOnly aria-label={`API key for ${minted.name}`} value={minted.key}
                 onFocus={(event) => event.currentTarget.select()}
@@ -205,10 +213,11 @@ export function AgentsSection(): ReactNode {
                 {keyCopied ? 'Copied' : 'Copy key'}
               </button>
             </div>
+            {copyFailed === 'key' ? <p role="alert" className="text-xs text-accent-terracotta">{COPY_FAILED('key')}</p> : null}
             <div className="flex items-center justify-between gap-2">
               <p className="text-xs text-ink-faint">Copy this key now. It won’t be shown again.</p>
               <button type="button" className={ACTION}
-                onClick={() => { setMinted(null); setRefocus((n) => n + 1); }}>
+                onClick={() => { setMinted(null); setCopyFailed(null); setRefocus((n) => n + 1); }}>
                 Done
               </button>
             </div>
@@ -236,7 +245,7 @@ export function AgentsSection(): ReactNode {
                           {idCopied === agent.id ? <Check aria-hidden className="h-3.5 w-3.5" /> : <Copy aria-hidden className="h-3.5 w-3.5" />}
                         </button>
                       </TooltipTrigger>
-                      <TooltipContent side="top" className="text-xs">{idCopied === agent.id ? 'Copied' : 'Copy ID'}</TooltipContent>
+                      <TooltipContent side="left" className="text-xs">{idCopied === agent.id ? 'Copied' : 'Copy ID'}</TooltipContent>
                     </Tooltip>
                     <Tooltip>
                       <TooltipTrigger asChild>
@@ -253,6 +262,7 @@ export function AgentsSection(): ReactNode {
                       onFocus={(event) => event.currentTarget.select()}
                       className="ml-5 mt-1 h-7 w-[calc(100%-1.25rem)] px-1.5 font-mono text-xs" />
                   ) : null}
+                  {copyFailed === agent.id ? <p role="alert" className="ml-5 mt-1 text-xs text-accent-terracotta">{COPY_FAILED('ID')}</p> : null}
                 </li>
               ))}
             </ul>
@@ -278,7 +288,7 @@ export function AgentsSection(): ReactNode {
         open={revoking !== null}
         onOpenChange={(open) => { if (!open) setRevoking(null); }}
         title={`Revoke ${revoking?.name ?? ''}’s key?`}
-        description="The key stops working at once, and anything signed in with it is disconnected."
+        description={`${revokingMade ? `The key made ${revokingMade}` : 'The key'} stops working at once, and anything signed in with it is disconnected.`}
         confirmLabel="Revoke key"
         cancelLabel="Cancel"
         variant="danger"
