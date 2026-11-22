@@ -346,6 +346,8 @@ export const STRUCTURE_NOTICE = 'This note is too big to add to: it has too many
 export const BYTES_NOTICE = 'This note is at its size limit, so your last change was not saved.';
 /** A large paste cut short by a limit is rolled back (T3.B32). */
 export const PASTE_ROLLED_BACK_NOTICE = "The paste didn't fit, so nothing was pasted.";
+/** A rollback that kept the pasted blocks another writer had edited. */
+export const PASTE_PARTLY_KEPT_NOTICE = "The paste didn't fit. It was removed, except for what someone else had already edited.";
 
 /**
  * A paste's admission figures (the `moss-paste-admission` mark): what it adds (bytes, characters, structs), what the

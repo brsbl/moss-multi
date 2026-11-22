@@ -17,7 +17,9 @@ import type { Actor, Actors } from '../lib/actors.ts';
 import { DOC_STATE_ATTR, INPUT_REFUSAL_ATTR, paneSelector } from '../lib/contract.ts';
 import { cookieHeader, openDocClient, type DocClient } from '../lib/doc-client.ts';
 import { grantDoc } from '../lib/grants.ts';
-import { exported, fingerprint, importNote, PASTE_ROLLED_BACK_NOTICE, pastePlain, UNDO } from '../lib/paste.ts';
+import {
+  BYTES_NOTICE, exported, fingerprint, importNote, PASTE_PARTLY_KEPT_NOTICE, PASTE_ROLLED_BACK_NOTICE, pastePlain, STRUCTURE_NOTICE, TEXT_NOTICE, UNDO,
+} from '../lib/paste.ts';
 import { signIn } from '../lib/principals.ts';
 import type { Stack } from '../lib/stack.ts';
 import { expect, test, ui } from '../lib/test.ts';
@@ -169,7 +171,18 @@ async function cutPaste(actors: Actors, stack: Stack, select: boolean, before?: 
   await watchSettled(ada, docId);
   before?.(ada, docId);
   ada.sever!.restore();
-  await expect(ada.page.locator(`[${INPUT_REFUSAL_ATTR}]`), 'the cut is announced').toContainText(PASTE_ROLLED_BACK_NOTICE, { timeout: 240_000 });
+  const refusal = ada.page.locator(`[${INPUT_REFUSAL_ATTR}]`);
+  const announced = await expect(refusal, 'the cut is announced').toContainText(PASTE_ROLLED_BACK_NOTICE, { timeout: 240_000 }).then(() => true, () => false);
+  if (!announced) {
+    // Off loopback the log keeps only numbers: which notice showed, how much of the paste landed, the room left.
+    const shown = (await refusal.allTextContents()).join(' ');
+    const kind = [PASTE_PARTLY_KEPT_NOTICE, STRUCTURE_NOTICE, TEXT_NOTICE, BYTES_NOTICE].findIndex((notice) => shown.includes(notice)) + 1;
+    expect(kind, 'the cut is announced, not another notice (1 partly kept, 2 structure, 3 text, 4 bytes)').toBe(0);
+    expect(Number(shown.length > 0), 'the cut is announced, not an unnamed notice').toBe(0);
+    expect(count(ben.text(), 'Alpha'), 'the cut is announced: the paste did not land whole').toBeLessThan(20_000);
+    expect(STRUCT_CAP - structs(ben), 'the cut is announced: the room left under the guard').toBeLessThan(0);
+    throw new Error('the cut is never announced');
+  }
   return { ada, ben, peer: page, docId, before: exportBefore, bravos };
 }
 
