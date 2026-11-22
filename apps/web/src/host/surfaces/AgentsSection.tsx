@@ -205,7 +205,7 @@ export function AgentsSection(): ReactNode {
             </div>
             <div className="flex items-center justify-between gap-2">
               <p className="text-xs text-ink-faint">Copy this key now. It won’t be shown again.</p>
-              <button type="button" className={`${ACTION} -mr-2`}
+              <button type="button" className={ACTION}
                 onClick={() => { setMinted(null); requestAnimationFrame(() => newKeyButton.current?.focus()); }}>
                 Done
               </button>
