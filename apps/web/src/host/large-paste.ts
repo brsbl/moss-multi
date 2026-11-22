@@ -6,10 +6,11 @@
 // it lands in batches of units, the main thread free between them, all one undo step. Any input in the meantime (a
 // key, a click, another paste, an undo, the pane closing) first lands the rest at once, so nothing is left pending.
 import { createBinding, syncLexicalUpdateToYjs, type Provider } from '@lexical/yjs';
-import { CLIENT_FRAME_MAX_BYTES, STATE_CAP_BYTES } from '@moss-multi/protocol/limits';
-import { encodePayloadFrame, PAYLOAD_UPDATE } from '@moss-multi/protocol/sync';
+import { CLIENT_FRAME_MAX_BYTES, STATE_CAP_BYTES, STRUCT_CAP, TEXT_CHAR_CAP } from '@moss-multi/protocol/limits';
+import { DOC_LIMIT_NOTICE, encodePayloadFrame, PAYLOAD_UPDATE, type DocLimit } from '@moss-multi/protocol/sync';
+import { countChars, payloadSize, structCount, type PayloadSize } from '@moss-multi/sync/note-size';
 import { excludedPropertiesFor } from '@moss-multi/sync/excluded-properties';
-import { isPayloadType, payloadDocsFor, payloadMap, seedPayload, type SlicedRedo } from '@moss-multi/sync/payload-docs';
+import { isPayloadType, namedPayloadIds, payloadDocsFor, payloadMap, seedPayload, type SlicedRedo } from '@moss-multi/sync/payload-docs';
 import { seedOf } from '@moss-multi/sync/registers';
 import { forkOf } from '@moss-multi/sync/suggest/forks';
 import { splitUpdate } from '@moss-multi/sync/update-pieces';
@@ -21,7 +22,7 @@ import {
 } from 'lexical';
 import * as Y from 'yjs';
 import { PIECE_BYTES } from './collab/outbox.ts';
-import { countedPayloadBytes, PASTE_LIMIT_BYTES, WRITE_REFUSED } from './collab/doc-session.ts';
+import { countedPayloadBytes, PASTE_LIMIT_BYTES, trackPaste, WRITE_REFUSED, type PasteTrack } from './collab/doc-session.ts';
 import { markLanding, runBatchGeometry } from './collab/landing.ts';
 import { DirLift, LARGE_CHILDREN } from './dir-lift.ts';
 import { markUnacked } from './collab/unacked.ts';
@@ -61,6 +62,8 @@ export class Measure {
   readonly #stop: () => void;
 
   constructor(editor: LexicalEditor, readonly doc = new Y.Doc()) {
+    // A scratch doc's one struct standing for the live client's clock (scratchDoc) is not the paste's.
+    this.#base = structCount(doc);
     const binding = createBinding(editor, quiet, 'root', this.doc, new Map([['root', this.doc]]), excludedPropertiesFor(editor));
     const stopSync = editor.registerUpdateListener(({ prevEditorState, editorState, dirtyElements, dirtyLeaves, normalizedNodes, tags }) => {
       syncLexicalUpdateToYjs(binding, quiet, prevEditorState, editorState, dirtyElements, dirtyLeaves, normalizedNodes, tags);
@@ -75,10 +78,16 @@ export class Measure {
     };
   }
 
+  /** What the measured writes added to the note's limits (A§5.1), as `end` read them. */
+  readonly added: PayloadSize = { chars: 0, structs: 0 };
+  readonly #base: number;
+
   /** The bytes the doc holds; the measure ends. */
   end(): number {
     this.#stop();
     const bytes = Y.encodeStateAsUpdate(this.doc).byteLength;
+    this.added.chars = countChars(this.doc);
+    this.added.structs = structCount(this.doc) - this.#base;
     this.doc.destroy();
     return bytes;
   }
@@ -152,18 +161,67 @@ export function noteBytes(doc: Y.Doc): number {
 const FRAME_SLACK = 64;
 
 /**
- * Below the cap with a little headroom for what the estimate leaves out (PASTE_LIMIT_BYTES); every frame within the
- * frame cap. The figures are a User Timing mark (`moss-paste-admission`), so a refusal can be told apart from a bug.
+ * Structs a paste's own batches may split beyond its scratch replay (the caret's text run, each batch's edges), so a
+ * paste admitted here is never refused part way by the DocDO's guard.
  */
-export function pasteFits(doc: Y.Doc | undefined, bytes: number, largestFrame: number): boolean {
+export const PASTE_STRUCT_SLACK = 256;
+
+/** The note's text and structs as the DocDO counts them (A§5.1): the note's doc and the payload docs its tree names. */
+export function heldSize(doc: Y.Doc): PayloadSize {
+  const held = { chars: countChars(doc), structs: structCount(doc) };
+  // A payload doc this tab still holds for a deleted block counts nothing, as the DocDO stops counting it.
+  const docs = payloadDocsFor(doc);
+  for (const id of namedPayloadIds(doc)) {
+    const payload = docs.get(id);
+    if (!payload) continue;
+    const size = payloadSize(payload);
+    held.chars += size.chars;
+    held.structs += size.structs;
+  }
+  return held;
+}
+
+/**
+ * The limit a paste adding `bytes` and `adds` would pass, or null: the text and structure caps (A§5.1), the state cap
+ * with a little headroom for what the estimate leaves out (PASTE_LIMIT_BYTES), and the frame cap for every frame
+ * (reported as `state`). The figures are a User Timing mark (`moss-paste-admission`), so a refusal can be told apart
+ * from a bug.
+ */
+export function pasteLimit(doc: Y.Doc | undefined, bytes: number, largestFrame: number, adds: PayloadSize = { chars: 0, structs: 0 }): DocLimit | null {
   const figures = doc ? heldBytes(doc) : null;
   const held = figures ? Math.max(figures.local, figures.server) : null;
-  const fit = largestFrame <= CLIENT_FRAME_MAX_BYTES - FRAME_SLACK && (held === null || held + bytes <= PASTE_LIMIT_BYTES);
+  const size = doc ? heldSize(doc) : null;
+  let limit: DocLimit | null = null;
+  if (size && adds.chars > 0 && size.chars + adds.chars > TEXT_CHAR_CAP) limit = 'text';
+  else if (size && adds.structs > 0 && size.structs + adds.structs + PASTE_STRUCT_SLACK > STRUCT_CAP) limit = 'structure';
+  else if (largestFrame > CLIENT_FRAME_MAX_BYTES - FRAME_SLACK || (held !== null && held + bytes > PASTE_LIMIT_BYTES)) limit = 'state';
   performance.mark('moss-paste-admission', {
-    detail: { adds: bytes, held, heldLocal: figures?.local ?? null, heldServer: figures?.server ?? null, limit: PASTE_LIMIT_BYTES, largestFrame, fit },
+    detail: {
+      adds: bytes, held, heldLocal: figures?.local ?? null, heldServer: figures?.server ?? null, limit: PASTE_LIMIT_BYTES, largestFrame, fit: limit === null,
+      chars: adds.chars, heldChars: size?.chars ?? null, structs: adds.structs, heldStructs: size?.structs ?? null, met: limit,
+    },
   });
-  return fit;
+  return limit;
 }
+
+/** How long a paste waits for the payload docs its note names that are still arriving (heldSize counts them). */
+const ARRIVAL_WAIT_MS = 10_000;
+
+/**
+ * Yields while a payload doc the note names has not arrived from the server yet, so the paste is checked with its
+ * text and structs counted; at most ARRIVAL_WAIT_MS, and not at all once `flushing()` (other input lands the paste).
+ */
+export function* payloadsArrive(doc: Y.Doc | undefined, flushing: () => boolean): Generator<void, void> {
+  if (!doc) return;
+  const docs = payloadDocsFor(doc);
+  const named = [...namedPayloadIds(doc)];
+  const until = Date.now() + ARRIVAL_WAIT_MS;
+  while (!flushing() && Date.now() < until && named.some((id) => docs.awaiting(id))) yield;
+}
+
+/** Whether the paste fits every limit (pasteLimit). */
+export const pasteFits = (doc: Y.Doc | undefined, bytes: number, largestFrame: number, adds?: PayloadSize): boolean =>
+  pasteLimit(doc, bytes, largestFrame, adds) === null;
 
 /** A payload's value as its first frame carries it (registers.ts seedOf): text, or a chart's or sketch's keys. */
 export type PayloadSeed = string | ReadonlyMap<string, unknown>;
@@ -180,9 +238,11 @@ const payloadFrameBytes = (update: Uint8Array): number => encodePayloadFrame(PRO
  * Encoded for real, since a chart's keys encode several times larger than its JSON. Returns their bytes summed and the
  * largest, a step at a time; stops at the first one past `frameCap`, which refuses the paste anyway.
  */
-export function* measurePayloads(seeds: readonly PayloadSeed[], frameCap = CLIENT_FRAME_MAX_BYTES): Generator<void, { bytes: number; largest: number }> {
+export function* measurePayloads(seeds: readonly PayloadSeed[], frameCap = CLIENT_FRAME_MAX_BYTES): Generator<void, { bytes: number; largest: number } & PayloadSize> {
   let bytes = 0;
   let largest = 0;
+  let chars = 0;
+  let structs = 0;
   for (const seed of seeds) {
     const doc = new Y.Doc();
     let size = 0;
@@ -208,13 +268,16 @@ export function* measurePayloads(seeds: readonly PayloadSeed[], frameCap = CLIEN
       }
       if (step.length > 0 && size <= frameCap) write();
     }
+    const added = payloadSize(doc);
+    chars += added.chars;
+    structs += added.structs;
     doc.destroy();
     bytes += size;
     largest = Math.max(largest, size);
     if (largest > frameCap) break;
     yield;
   }
-  return { bytes, largest };
+  return { bytes, largest, chars, structs };
 }
 
 /** The payload seeds of `nodes` and everything in them, in document order. */
@@ -384,6 +447,9 @@ export class Placer {
   #next = 0;
   #gap: NodeKey | undefined;
   #done = false;
+  /** The units the last batch placed, by cost, and how many: the measure and the pacer read them. */
+  placedCost = 0;
+  placedUnits = 0;
 
   /** With `release`, each part's JSON is dropped once placed, so a large paste's plan shrinks as it lands. */
   constructor(readonly plan: PastePlan, readonly release = false) {
@@ -406,8 +472,12 @@ export class Placer {
     const n = units.length;
     if (n === 0) return;
     let k = 0;
-    for (let cost = 0; k < n && (k === 0 || cost + units[k].cost <= budget); k += 1) cost += units[k].cost;
+    let cost = 0;
+    for (; k < n && (k === 0 || cost + units[k].cost <= budget); k += 1) cost += units[k].cost;
+    if (k === n - 1) cost += units[k].cost;
     if (k >= n - 1) k = n;
+    this.placedCost = k === n ? cost : cost + units[n - 1].cost;
+    this.placedUnits = k === n ? n : k + 1;
     const wanted = (part: Part) => part.lo < k || part.hi === n - 1;
     let common = k < n ? units[n - 1].parent : null;
     while (common && common.lo > k - 1) common = common.parent;
@@ -435,13 +505,20 @@ export class Placer {
   $next(budget: number): void {
     const { units } = this.plan;
     const last = units.length - 1;
-    for (let cost = 0; this.#next < last && (cost === 0 || cost + units[this.#next].cost <= budget); this.#next += 1) {
+    const from = this.#next;
+    let cost = 0;
+    for (; this.#next < last && (cost === 0 || cost + units[this.#next].cost <= budget); this.#next += 1) {
       cost += units[this.#next].cost;
       this.#place(units[this.#next]);
     }
+    this.placedCost = cost;
+    this.placedUnits = this.#next - from;
     if (this.#next < last) return;
     const gap = attached(this.#gap);
-    if ($isElementNode(gap) && gap.isEmpty()) gap.remove();
+    if ($isElementNode(gap) && gap.isEmpty()) {
+      gap.remove();
+      performance.mark('moss-paste-gap');
+    }
     this.#done = true;
   }
 
@@ -558,8 +635,8 @@ const MAX_TOP_BATCH = 20_000;
 
 /**
  * Units per batch, sized from how long the last batch's work and its layout took. Each batch is a User Timing measure
- * named `label` (its units, work, layout and the time since the batch before in `detail`), so a profile or a test can
- * tell a batch from other work.
+ * named `label` (its units, the parts placed when known, work, layout and the time since the batch before in `detail`),
+ * so a profile or a test can tell a batch from other work.
  */
 class Pacer {
   budget = FIRST_BATCH;
@@ -570,9 +647,9 @@ class Pacer {
 
   /**
    * Runs a batch of `used` units (`run`, which may return the units it used instead), then lays the note out
-   * (`layout`), and sizes the next batch.
+   * (`layout`), and sizes the next batch. `placed` reports how many parts the batch placed.
    */
-  time(used: number, run: () => number | void, layout?: () => void): void {
+  time(used: number, run: () => number | void, layout?: () => void, placed?: () => number): void {
     const started = performance.now();
     const before = this.#ended === null ? 0 : started - this.#ended;
     const counted = run();
@@ -582,7 +659,7 @@ class Pacer {
     this.#ended = performance.now();
     const work = Math.max(0.001, ran - started);
     const laid = this.#ended - ran;
-    performance.measure(this.label, { start: started, detail: { units: used, workMs: Math.round(work), layoutMs: Math.round(laid), beforeMs: Math.round(before) } });
+    performance.measure(this.label, { start: started, detail: { units: used, ...(placed ? { placed: placed() } : {}), workMs: Math.round(work), layoutMs: Math.round(laid), beforeMs: Math.round(before) } });
     const room = Math.max(TARGET_MS / 3, TARGET_MS - laid);
     if (this.max !== MAX_TOP_BATCH) {
       // List items and table rows: sized by the whole time (each item can cost time linear in its list).
@@ -638,6 +715,10 @@ class PasteJob {
   #timer: ReturnType<typeof setTimeout> | undefined;
   #flushing = false;
   #ended = false;
+  /** The paste's items as they land, rolled back if a limit cuts it short (T3.B32). */
+  track: PasteTrack | null = null;
+  /** A limit cut it short: nothing more of it lands. */
+  aborted = false;
   /** The paste's lists and tables go without `dir` while batches fill them (dir-lift.ts). */
   readonly #dir = new DirLift();
 
@@ -690,11 +771,24 @@ class PasteJob {
     }
   };
 
+  /** A limit cut the paste short (T3.B32): nothing more of it lands. */
+  readonly abort = (): void => {
+    if (this.#ended) return;
+    this.aborted = true;
+    clearTimeout(this.#timer);
+    try {
+      this.#steps.return();
+    } catch {
+      // running: it lands nothing more once this job has ended
+    }
+    this.#end();
+  };
+
   readonly #tick = (): void => {
     this.#timer = undefined;
     let done = true;
     try {
-      done = !!this.#steps.next().done;
+      done = this.#ended || !!this.#steps.next().done;
     } finally {
       if (done) this.#end();
       else this.#timer = setTimeout(this.#tick, 0);
@@ -714,11 +808,15 @@ class PasteJob {
       if (editor._updating || editor._pendingEditorState !== null) {
         const stop = editor.registerUpdateListener(() => {
           stop();
+          this.track?.finish();
           if (!jobs.has(editor)) markLanding(editor, false);
         });
       } else {
+        this.track?.finish();
         markLanding(editor, false);
       }
+    } else {
+      this.track?.finish();
     }
     markUnacked(this, false);
   }
@@ -746,6 +844,14 @@ class PasteJob {
   restoreDir(): void {
     this.#dir.restore();
   }
+}
+
+/** The element the pane scrolls `editor` in: the root's nearest scrolling ancestor. */
+export function scrollerOf(editor: LexicalEditor): HTMLElement | null {
+  for (let element = editor.getRootElement(); element; element = element.parentElement) {
+    if (/(auto|scroll)/.test(getComputedStyle(element).overflowY) && element.scrollHeight > element.clientHeight) return element;
+  }
+  return document.scrollingElement as HTMLElement | null;
 }
 
 /** Whether `point` names a node still in the note, at an offset it has. */
@@ -779,7 +885,7 @@ function $selectLive(selection: BaseSelection | null): boolean {
  * The scratch replay: the bytes the paste adds to the note and its payload docs, and its largest frame. Its own
  * function, so the scratch editor and doc are garbage once it returns, not held while the paste lands.
  */
-function* rehearse(request: PasteRequest, max: number, live: Y.Doc | undefined): Generator<void, { bytes: number; largestFrame: number }> {
+function* rehearse(request: PasteRequest, max: number, live: Y.Doc | undefined): Generator<void, { bytes: number; largestFrame: number; adds: PayloadSize }> {
   const { plan } = request;
   const pacer = new Pacer('moss-paste-rehearsal', max);
   const scratch = scratchEditor(request.nodes);
@@ -794,7 +900,8 @@ function* rehearse(request: PasteRequest, max: number, live: Y.Doc | undefined):
   }
   const noteBytes = measure.end();
   const payloads = yield* measurePayloads(plan.payloads);
-  return { bytes: noteBytes + payloads.bytes, largestFrame: Math.max(measure.largestPiece, payloads.largest) };
+  const adds = { chars: measure.added.chars + payloads.chars, structs: measure.added.structs + payloads.structs };
+  return { bytes: noteBytes + payloads.bytes, largestFrame: Math.max(measure.largestPiece, payloads.largest), adds };
 }
 
 /** Lands `request`: its scratch replay, then its batches or its refusal. */
@@ -804,9 +911,11 @@ function* landPaste(job: PasteJob, request: PasteRequest): Generator<void, void>
   const max = plan.units.every((unit) => unit.parent === null) ? MAX_TOP_BATCH : MAX_BATCH;
 
   // 1. The scratch replay: what the paste adds, refused whole when past the cap or a frame past the frame cap.
-  const { bytes, largestFrame } = yield* rehearse(request, max, noteDoc(editor));
-  if (!pasteFits(noteDoc(editor), bytes, largestFrame)) {
-    refuseInput(WRITE_REFUSED['doc-cap']);
+  const { bytes, largestFrame, adds } = yield* rehearse(request, max, noteDoc(editor));
+  yield* payloadsArrive(noteDoc(editor), () => job.flushing);
+  const limit = pasteLimit(noteDoc(editor), bytes, largestFrame, adds);
+  if (limit) {
+    refuseInput(limit === 'state' ? WRITE_REFUSED['doc-cap'] : DOC_LIMIT_NOTICE[limit]);
     return;
   }
   yield;
@@ -827,11 +936,18 @@ function* landPaste(job: PasteJob, request: PasteRequest): Generator<void, void>
   // so tagged never reaches the doc: each batch commits it first, on its own.
   const settle = () => editor.read(noop);
   settle();
+  job.track = trackPaste(noteDoc(editor), job.abort);
+  if (job.track) job.track.scrollTop = scrollerOf(editor)?.scrollTop;
   const live = editor.getEditorState()._selection;
-  pacing.time(first, () => editor.update(() => {
-    if (!$selectLive(live) && !request.$restore()) $getRoot().selectEnd();
-    placer.$first(first, request.$insert);
-  }, { discrete: true }), layout);
+  // Each batch reports the units it placed: the last is usually short of its budget.
+  const placed = () => placer.placedUnits;
+  pacing.time(first, () => {
+    editor.update(() => {
+      if (!$selectLive(live) && !request.$restore()) $getRoot().selectEnd();
+      placer.$first(first, request.$insert);
+    }, { discrete: true });
+    return placer.placedCost;
+  }, layout, placed);
   let batches = 1;
   while (!placer.done) {
     job.liftDir(placer);
@@ -843,10 +959,14 @@ function* landPaste(job: PasteJob, request: PasteRequest): Generator<void, void>
     const release = undo?.hold?.();
     const nested = editor._updating;
     const budget = pacing.budget;
-    pacing.time(budget, () => editor.update(() => $keepElementPoints(() => placer.$next(budget)), { discrete: true, onUpdate: release }), layout);
+    pacing.time(budget, () => {
+      editor.update(() => $keepElementPoints(() => placer.$next(budget)), { discrete: true, onUpdate: release });
+      return placer.placedCost;
+    }, layout, placed);
     if (!nested) release?.();
   }
   job.restoreDir();
+  performance.mark('moss-paste-restore-dir');
   undo?.stopCapturing();
   // Its redo lands in slices too: the step is stamped as a paste's (redoInSlices). The stamp is a token, not the
   // request: the step lives as long as the undo stack, and the plan (every unit's JSON) need not.
@@ -891,7 +1011,8 @@ function* redoSlices(job: PasteJob, slices: SlicedRedo, max: number): Generator<
       if (!slices.done && !job.flushing) yield;
     }
   } finally {
-    slices.finish();
+    // Cut short by a limit, the rest is never redone: the session binds the server's copy and rolls it back.
+    if (!job.aborted) slices.finish();
     settle();
     job.restoreDir();
   }
@@ -913,6 +1034,9 @@ function $redoInSlices(editor: LexicalEditor): boolean {
   const slices = undo.redoInSlices(stamp);
   if (!slices) return false;
   const job = new PasteJob(editor, (each) => redoSlices(each, slices, max));
+  // A redo lands in many updates as the paste did, so a limit can cut it short too.
+  job.track = trackPaste(noteDoc(editor), job.abort);
+  if (job.track) job.track.scrollTop = scrollerOf(editor)?.scrollTop;
   jobs.set(editor, job);
   job.start();
   return true;

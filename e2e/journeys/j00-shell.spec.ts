@@ -179,7 +179,7 @@ test('light and dark switch through moss Settings and persist for that viewer on
   const light = await bodyBackground(ada.page);
 
   const choose = async (label: 'Light' | 'Dark') => {
-    await ada.page.getByRole('button', { name: 'Settings', exact: true }).click();
+    await ui.openSettingsDialog(ada.page);
     await ada.page.getByRole('radiogroup', { name: 'Theme' }).getByRole('radio', { name: label, exact: true }).click();
     await measure.until('theme switch', async () => (await html.getAttribute('data-theme')) === label.toLowerCase());
     await expect(html).toHaveAttribute('data-theme', label.toLowerCase());
@@ -294,7 +294,7 @@ test('no hidden or staged affordance renders in the shell, its menus or Settings
       await expect(page.getByRole('menu')).toBeHidden();
     }
 
-    await page.getByRole('button', { name: 'Settings', exact: true }).click();
+    await ui.openSettingsDialog(page);
     await expect(page.getByRole('radiogroup', { name: 'Theme' }), `${actor.label}: Settings opens`).toBeVisible();
     expect(await probeHits(page, 'settings'), `${actor.label}: Settings`).toEqual([]);
     await page.keyboard.press('Escape');
@@ -480,7 +480,7 @@ test('every DS menu, dialog and tooltip opens inside a data-overlay-surface, eve
   const [ada] = await twoShells(actors);
   const { page } = ada;
 
-  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  await ui.openSettingsDialog(page);
   await expect(page.getByRole('dialog')).toBeVisible();
   await actors.checkpoint('settings-open');
   await page.keyboard.press('Escape');

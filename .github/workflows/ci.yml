@@ -184,6 +184,32 @@ jobs:
           if-no-files-found: ignore
           retention-days: 3
 
+  # T3.B31a, T3.B31c: the heap each note at the caps needs to create, wake and export in workerd (V8's heap cap
+  # bisected, 3 of 3 fresh runs), against absolute budgets; notes past each cap are refused with that limit; the tables
+  # land in the job summary. One note per job: each note's bisection takes minutes.
+  memory:
+    needs: plan
+    if: needs.plan.outputs.checks == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        note: ['^text cap', '^structure cap: .* one-line', '^structure cap: .* list items', '^structure cap: the largest table', '^structure ceiling: .* one-line', '^structure ceiling: .* list items', '^structure ceiling: the largest table', '^past the', '^200k of mixed', '^scattered edits']
+    steps:
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: DocDO memory in workerd
+        run: node scripts/measure-memory.mjs
+        env:
+          MEASURE_MEMORY_CASES: ${{ matrix.note }}
+        timeout-minutes: 25
+
   build:
     needs: plan
     if: needs.plan.outputs.build == 'true'
@@ -255,6 +281,14 @@ jobs:
       - name: Stop the smoke stack
         if: always()
         run: node scripts/stack.mjs stop --run-id "$SMOKE_RUN" || true
+      - name: Upload the smoke stack's log
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: build-wrangler-log-${{ github.run_attempt }}
+          path: .local-stack/runs/${{ env.SMOKE_RUN }}/wrangler.log
+          retention-days: 7
+          if-no-files-found: ignore
       # env.staging laid over a copy of these bytes, then checked by wrangler without credentials (T8.D). The tested
       # dist carries a redirected config, which takes no --env, so this is the staging dry run: the config holds the
       # same keys a CLOUDFLARE_ENV=staging build writes.
@@ -781,7 +815,7 @@ jobs:
 
   ci-ok:
     if: always()
-    needs: [plan, checks, build, e2e, macos, oracle, parity, viewer, editor, editor-host, canary, demo]
+    needs: [plan, checks, build, e2e, macos, oracle, parity, viewer, editor, editor-host, memory, canary, demo]
     runs-on: ubuntu-latest
     timeout-minutes: 3
     steps:

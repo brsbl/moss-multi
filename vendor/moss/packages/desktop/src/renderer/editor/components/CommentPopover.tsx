@@ -60,7 +60,7 @@ import { resolveCanvasCollisionBoundary } from '../utils/canvas-collision-bounda
 import {
   carrying, editNeedsSave, failedDraftText, failedReplies, isMine, onDraftFailed, submitted, useCanComment, useNoteBound,
 } from '@moss-multi/host/comments/adapter';
-import { CommentReactions, QuickReactions } from '@moss-multi/host/comments/Reactions';
+import { AddReaction, CommentReactions } from '@moss-multi/host/comments/Reactions';
 import { MentionScope } from '@moss-multi/host/comments/mentions';
 
 const TOOLBAR_HEIGHT = 72;
@@ -376,6 +376,9 @@ function CommentMessage({
                   </TooltipContent>
                 </Tooltip>
               ) : !resolved && (!shared || commentable) /* moss-multi seam: comments: a reader has no actions */ ? (
+                <>
+                {shared && <AddReaction noteId={noteId} comment={comment} />}{/* moss-multi seam: comments */}
+                {(!shared || canEdit || onSendToAgent) /* moss-multi seam: comments: no empty menu */ && (
                 <DropdownMenu modal={false}>
                   <DropdownMenuTrigger asChild>
                     <button
@@ -387,7 +390,6 @@ function CommentMessage({
                     </button>
                   </DropdownMenuTrigger>
                   <DropdownMenuContent align="end" sideOffset={4} className="min-w-32">
-                    {shared && <QuickReactions noteId={noteId} comment={comment} separated={canEdit || Boolean(onSendToAgent)} />}{/* moss-multi seam: comments */}
                     {canEdit && (
                       <DropdownMenuItem
                         className="gap-2 text-xs"
@@ -420,6 +422,8 @@ function CommentMessage({
                     )}
                   </DropdownMenuContent>
                 </DropdownMenu>
+                )}
+                </>
               ) : (
                 <span data-comment-actions-placeholder className="h-6 w-6 shrink-0" aria-hidden />
               )}

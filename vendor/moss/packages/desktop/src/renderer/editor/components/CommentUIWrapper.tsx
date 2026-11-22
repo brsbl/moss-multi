@@ -709,7 +709,9 @@ export const CommentUIWrapper = ({ noteId, paneId, onNavigateToNote }: CommentUI
   const handleSetThreadResolved = useCallback((rootId: string, resolved: boolean) => {
     // moss-multi seam: comments
     if (bound(editor)) {
-      mutate(editor, { type: 'resolve', rootId, resolved });
+      // moss's path below re-reads the active thread, which then leaves a filter that hides it; the record arrives later
+      const filter = store.get(commentThreadFilterAtom(noteId));
+      if (mutate(editor, { type: 'resolve', rootId, resolved }) && filter !== 'all') handlePopoverOpenChange(false);
       return;
     }
     const currentMap = store.get(noteCommentsMapAtom(noteId));
@@ -730,7 +732,7 @@ export const CommentUIWrapper = ({ noteId, paneId, onNavigateToNote }: CommentUI
         comment: result.map[active.id] ?? active
       }));
     }
-  }, [noteId, setActiveComment, store]);
+  }, [editor, handlePopoverOpenChange, noteId, setActiveComment, store]);
 
   const handleNavigateToMention = useCallback((title: string, mentionId?: string) => {
     if (!onNavigateToNote) return;

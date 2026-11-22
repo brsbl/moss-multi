@@ -1,14 +1,14 @@
-// j17-history (T6.3; A§14): the History view. History in the note's top bar turns the editor pane into glyphdown's
-// history page built from moss's DS: the version list with its badges, View (a read-only editor) and Diff vs
-// current, Restore through moss's ConfirmationDialog, and VersionHistoryEmptyState with a first named checkpoint.
+// j17-history (T6.3, T9.42; A§14): the History view. More actions → Version history turns the editor pane into a
+// 280 px version list beside the selected version, shown as the note (a read-only editor) with Compare with current
+// off; naming the current note is a small disclosure; Restore asks through moss's ConfirmationDialog by name.
 // A restore while a peer types keeps the peer's insert and a comment's anchor; a failed fetch says so.
 import { readFileSync } from 'node:fs';
 import type { Locator } from '@playwright/test';
 import type { LexicalEditor } from 'lexical';
 import type { Actor, Actors } from '../lib/actors.ts';
 import {
-  ACTION_FEEDBACK_ATTR, BODY_BINDING_ATTR, DOC_STATE_ATTR, HISTORY_BUTTON_ATTR, HISTORY_VIEW_ATTR, LEXICAL_EDITOR_SELECTOR, paneSelector,
-  RESTORE_NOTICE_ATTR, VERSION_CONTENT_ATTR, VERSION_ID_ATTR, VERSION_ROW_ATTR, VERSION_TITLE_ATTR,
+  ACTION_FEEDBACK_ATTR, BODY_BINDING_ATTR, BOTTOM_REGION_ATTR, CONNECTION_BANNER_ATTR, ROLE_BAND_ATTR, DOC_STATE_ATTR, HISTORY_BUTTON_ATTR, HISTORY_VIEW_ATTR, LEXICAL_EDITOR_SELECTOR, paneSelector,
+  RESTORE_NOTICE_ATTR, VERSION_BADGE_ATTR, VERSION_CONTENT_ATTR, VERSION_ID_ATTR, VERSION_ROW_ATTR, VERSION_TITLE_ATTR,
 } from '../lib/contract.ts';
 import { grantDoc, linkDoc } from '../lib/grants.ts';
 import { expect, test, ui } from '../lib/test.ts';
@@ -59,14 +59,15 @@ async function sharedNote(
   return { id, ada, ben, adaPrincipal };
 }
 
-const historyButton = (actor: Actor, id: string): Locator => ui.pane(actor, id).locator(`[${HISTORY_BUTTON_ATTR}]`);
+/** More actions → Version history (T9.30). */
+const pressHistory = async (actor: Actor, id: string): Promise<void> => (await ui.openNoteMenu(actor, id)).locator(`[${HISTORY_BUTTON_ATTR}]`).click();
 const historyView = (actor: Actor, id: string): Locator => ui.pane(actor, id).locator(`[${HISTORY_VIEW_ATTR}]`);
 const rows = (actor: Actor, id: string): Locator => historyView(actor, id).locator(`[${VERSION_ROW_ATTR}]`);
 const content = (actor: Actor, id: string): Locator => historyView(actor, id).locator(`[${VERSION_CONTENT_ATTR}]`);
 
-/** History from the top bar: the pane shows the view, settled past loading. */
+/** History from More actions: the pane shows the view, settled past loading. */
 async function openHistory(actor: Actor, id: string): Promise<Locator> {
-  await historyButton(actor, id).click();
+  await pressHistory(actor, id);
   const view = historyView(actor, id);
   await expect(view, `${actor.label}: History opens in the editor pane`).toBeVisible();
   await expect(view, `${actor.label}: the versions load`).not.toHaveAttribute(HISTORY_VIEW_ATTR, 'loading', { timeout: BIND_TIMEOUT });
@@ -79,10 +80,19 @@ async function closeHistory(actor: Actor, id: string): Promise<void> {
   await expect(ui.body(actor, id), `${actor.label}: the note is back`).toBeVisible();
 }
 
-/** Saves a named version from the open view, the empty state's or the list's. */
+/** Opens the naming disclosure unless it is open: the version-name field. */
+async function nameField(actor: Actor, id: string): Promise<Locator> {
+  const view = historyView(actor, id);
+  const field = view.getByRole('textbox', { name: 'Version name', exact: true });
+  if (!(await field.isVisible())) await view.getByRole('button', { name: 'Save named version', exact: true }).click();
+  await expect(field).toBeVisible();
+  return field;
+}
+
+/** Saves a named version of the current note from the open view, through its disclosure. */
 async function saveNamed(actor: Actor, id: string, name: string): Promise<void> {
   const view = historyView(actor, id);
-  await view.getByRole('textbox', { name: 'Version name', exact: true }).fill(name);
+  await (await nameField(actor, id)).fill(name);
   await view.getByRole('button', { name: 'Save version', exact: true }).click();
   await expect(rows(actor, id).filter({ hasText: name }), `${actor.label}: "${name}" is listed`).toHaveCount(1, { timeout: BIND_TIMEOUT });
 }
@@ -171,9 +181,9 @@ test('j17-history: an auto version is written within seconds of the last socket 
   const autoRow = historyView(again, id).locator(`[${VERSION_ROW_ATTR}][${VERSION_ID_ATTR}="${auto!.id}"]`);
   await expect(autoRow, 'the auto version is listed').toHaveCount(1);
   await expect(autoRow).toHaveAttribute(VERSION_ROW_ATTR, 'auto');
-  await expect(autoRow, 'with its Auto badge').toContainText('Auto');
+  await expect(historyView(again, id).locator(`[${VERSION_BADGE_ATTR}]`), 'no coloured category chip on any row').toHaveCount(0);
   await autoRow.click();
-  await historyView(again, id).getByRole('button', { name: 'View', exact: true }).click();
+  await expect(content(again, id), 'the version opens as the note').toHaveAttribute(VERSION_CONTENT_ATTR, 'view');
   await expect(content(again, id), 'the version holds the last edit').toContainText('Ben edits before leaving.');
   await closeHistory(again, id);
 });
@@ -185,12 +195,13 @@ test('j17-history: a first named checkpoint from the empty state and one from th
 
   const view = await openHistory(ada, id);
   await expect(view, 'no version yet: the empty state').toHaveAttribute(HISTORY_VIEW_ATTR, 'empty');
-  await expect(view.getByText('No checkpoints', { exact: true }), "moss's VersionHistoryEmptyState").toBeVisible();
+  await expect(view.getByText('No versions yet', { exact: true }), 'a quiet empty state').toBeVisible();
   await actors.checkpoint('history-empty');
   await saveNamed(ada, id, 'First checkpoint');
   await expect(view).toHaveAttribute(HISTORY_VIEW_ATTR, 'ready');
   await expect(row(ada, id, 'First checkpoint')).toHaveAttribute(VERSION_ROW_ATTR, 'named');
-  await expect(row(ada, id, 'First checkpoint'), 'with its Named badge').toContainText('Named');
+  await expect(content(ada, id), 'the saved version opens as the note').toHaveAttribute(VERSION_CONTENT_ATTR, 'view');
+  await expect(compare(ada, id), 'with Compare off').toHaveAttribute('aria-pressed', 'false');
 
   // Ben changes the note while Ada looks at the version.
   // The note leads with an image, so Ben's caret goes to the end of the text, not to wherever a click lands.
@@ -201,14 +212,16 @@ test('j17-history: a first named checkpoint from the empty state and one from th
   await ui.waitAcked(ben, id);
 
   await row(ada, id, 'First checkpoint').click();
-  await view.getByRole('button', { name: 'Diff vs current', exact: true }).click();
+  await compare(ada, id).click();
+  await expect(compare(ada, id)).toHaveAttribute('aria-pressed', 'true');
   const diff = content(ada, id);
   await expect(diff).toHaveAttribute(VERSION_CONTENT_ATTR, 'diff');
+  await expect(diff, 'the comparison says its direction').toContainText('since this version');
   await expect(diff.locator('ins').filter({ hasText: 'Ben was here.' }), "Diff vs current shows Ben's change as added since").toHaveCount(1, { timeout: PEER_TIMEOUT });
   await expect(diff.locator(`[${VERSION_TITLE_ATTR}]`), 'Diff shows the whole title').toHaveText(longTitle);
   await actors.checkpoint('history-diff');
 
-  await view.getByRole('button', { name: 'View', exact: true }).click();
+  await compare(ada, id).click();
   const shown = content(ada, id);
   await expect(shown).toHaveAttribute(VERSION_CONTENT_ATTR, 'view');
   await expect(shown.locator(`[${VERSION_TITLE_ATTR}]`), 'View shows the whole title').toHaveText(longTitle);
@@ -292,7 +305,7 @@ test('j17-history: a restore while the peer types keeps the peer\'s insert and t
   await openHistory(ada, id);
   const point = historyView(ada, id).locator(`[${VERSION_ROW_ATTR}="restore-point"]`);
   await expect(point, 'the restore point is listed').toHaveCount(1);
-  await expect(point, 'with its Restore point badge').toContainText('Restore point');
+  await expect(point, 'named in words, not a chip').toContainText('Before a restore');
   await closeHistory(ada, id);
 });
 
@@ -396,17 +409,17 @@ test('j17-history: a versions fetch that fails shows an error, never "No checkpo
   const isVersions = (url: URL) => url.pathname === versionsPath;
   await ada.page.route(isVersions, (route) =>
     route.fulfill({ status: 429, contentType: 'application/json', body: JSON.stringify({ error: 'rate-limited' }) }));
-  await historyButton(ada, id).click();
+  await pressHistory(ada, id);
   const view = historyView(ada, id);
   await expect(view, 'the failed fetch is an error state').toHaveAttribute(HISTORY_VIEW_ATTR, 'error', { timeout: BIND_TIMEOUT });
   await expect(view.getByRole('alert'), 'said in words').toContainText('could not be loaded');
-  await expect(view.getByText('No checkpoints'), 'never the empty state').toHaveCount(0);
-  await expect(view.getByRole('button', { name: 'Save version', exact: true }), 'nothing offers a first checkpoint over an unknown list').toHaveCount(0);
+  await expect(view.getByText('No versions yet'), 'never the empty state').toHaveCount(0);
+  await expect(view.getByRole('button', { name: 'Save named version', exact: true }), 'nothing offers a first checkpoint over an unknown list').toHaveCount(0);
 
   await ada.page.unroute(isVersions);
   await view.getByRole('button', { name: 'Try again', exact: true }).click();
   await expect(view, 'a retry loads the real list').toHaveAttribute(HISTORY_VIEW_ATTR, 'empty', { timeout: BIND_TIMEOUT });
-  await expect(view.getByText('No checkpoints', { exact: true })).toBeVisible();
+  await expect(view.getByText('No versions yet', { exact: true })).toBeVisible();
 
   // Moving between versions while one is still loading never leaves it stuck loading.
   await saveNamed(ada, id, 'Version one');
@@ -441,6 +454,8 @@ async function versionMarkdown(actor: Actor, id: string, name: string): Promise<
   return ((await response.json()) as { version: { markdown: string } }).version.markdown;
 }
 
+const compare = (actor: Actor, id: string): Locator => historyView(actor, id).getByRole('button', { name: 'Compare with current', exact: true });
+
 /** Every request this actor's page sends that `match` picks, as they are sent. */
 function requests(actor: Actor, match: (method: string, path: string) => boolean): string[] {
   const seen: string[] = [];
@@ -468,10 +483,11 @@ test('j17-history: a named save and Diff vs current wait until this tab\'s typin
   await ben.page.keyboard.type(' Unsent words.');
   ben.typed({ docId: id, field: 'body', text: ' Unsent words.', ordered: false });
   const view = await openHistory(ben, id);
-  await view.getByRole('textbox', { name: 'Version name', exact: true }).fill('Held save');
-  const save = view.getByRole('button', { name: 'Save version', exact: true });
+  await (await nameField(ben, id)).fill('Held save');
+  const save = view.locator('form button[type="submit"]');
   await save.click();
   await expect(save, 'the save waits, busy').toBeDisabled();
+  await expect(save, 'and says so').toHaveText('Saving…');
   await ben.page.waitForTimeout(1_500);
   expect(saves, 'no save is posted while Ben\'s typing is unacked').toEqual([]);
   sever.deliverHeld();
@@ -488,6 +504,7 @@ test('j17-history: a named save and Diff vs current wait until this tab\'s typin
   const readsBefore = reads.length;
   await openHistory(ben, id);
   await expect(row(ben, id, 'Held save')).toHaveAttribute('aria-pressed', 'true');
+  await compare(ben, id).click();
   await ben.page.waitForTimeout(1_500);
   expect(reads.length, 'the current note is not read while Ben\'s typing is unacked').toBe(readsBefore);
   sever.deliverHeld();
@@ -502,9 +519,10 @@ test('j17-history: a named save and Diff vs current wait until this tab\'s typin
   const savesBefore = saves.length;
   const readsBeforeRefusal = reads.length;
   const refused = await openHistory(ben, id);
-  await expect(refused.getByRole('alert').first(), 'Diff vs current refuses an unsynced note').toContainText('not synced', { timeout: BIND_TIMEOUT });
+  await compare(ben, id).click();
+  await expect(refused.getByRole('alert').first(), 'Compare with current refuses an unsynced note').toContainText('not synced', { timeout: BIND_TIMEOUT });
   expect(reads.length, 'the refused diff read nothing').toBe(readsBeforeRefusal);
-  await refused.getByRole('textbox', { name: 'Version name', exact: true }).fill('Refused save');
+  await (await nameField(ben, id)).fill('Refused save');
   await refused.getByRole('button', { name: 'Save version', exact: true }).click();
   await expect(refused.locator('form').getByRole('alert'), 'the save refuses an unsynced note').toContainText('not synced', { timeout: BIND_TIMEOUT });
   expect(saves.length, 'the refused save posted nothing').toBe(savesBefore);
@@ -519,7 +537,6 @@ test('j17-history: View shows a property-less note that starts with a rule whole
   const { id, ada, adaPrincipal } = await sharedNote(actors, stack.baseUrl, { title: 'Leading rule', seed: golden });
   await openHistory(ada, id);
   await saveNamed(ada, id, 'Rules');
-  await historyView(ada, id).getByRole('button', { name: 'View', exact: true }).click();
   const editor = content(ada, id).locator(`${LEXICAL_EDITOR_SELECTOR}[contenteditable]`);
   await expect(editor, 'the prose between the leading rules shows').toContainText('A body that starts with a rule, with no frontmatter before it.');
   await expect(editor).toContainText('title: not frontmatter');
@@ -533,7 +550,6 @@ test('j17-history: View shows a property-less note that starts with a rule whole
   await ui.waitLive(again, withProperties);
   await openHistory(again, withProperties);
   await saveNamed(again, withProperties, 'With properties');
-  await historyView(again, withProperties).getByRole('button', { name: 'View', exact: true }).click();
   const shown = content(again, withProperties).locator(`${LEXICAL_EDITOR_SELECTOR}[contenteditable]`);
   await expect(shown).toContainText('The body under its properties.');
   await expect(shown, 'the properties are not shown as body text').not.toContainText('status: draft');
@@ -673,7 +689,6 @@ test("j17-history: someone else's restore is named in a band in every open windo
   await expect(view).toBeVisible();
   await expect(view.locator(`[${VERSION_ROW_ATTR}][${VERSION_ID_ATTR}="${point!.id}"]`), 'History opens on the restore point')
     .toHaveAttribute('aria-pressed', 'true', { timeout: BIND_TIMEOUT });
-  await view.getByRole('button', { name: 'View', exact: true }).click();
   await expect(content(ben, id), 'the note before the restore').toContainText('Ada added this.', { timeout: BIND_TIMEOUT });
   await closeHistory(ben, id);
 
@@ -681,4 +696,119 @@ test("j17-history: someone else's restore is named in a band in every open windo
   await expect(restoreNotice(visitor, id), 'Dismiss clears the band').toHaveCount(0);
   await restoreNotice(ben, id).getByRole('button', { name: 'Dismiss', exact: true }).click();
   await expect(restoreNotice(ben, id)).toHaveCount(0);
+});
+
+/** The gap between the region's notice and the row under it (T9.30). */
+const REGION_GAP_PX = 8;
+
+test("j17-history: a peer's restore is a card in the pane's bottom region just above the reader's row; when the connection is lost the outage leads there, its Restore details shows the restore, and the restore comes back once the connection does (T9.41) @p:mean-3", async ({ actors, stack }) => {
+  const { id, ada, adaPrincipal } = await sharedNote(actors, stack.baseUrl);
+  const caraPrincipal = await actors.principal('cara');
+  await grantDoc(ada, id, caraPrincipal, 'viewer');
+  const cara = await actors.open(caraPrincipal, { path: `/d/${id}`, severable: true, viewport: { width: 1440, height: 1000 } });
+  await ui.waitOpen(cara, id, 'readonly');
+  const sever = cara.sever;
+  if (!sever) throw new Error('Cara must be severable');
+  await openHistory(ada, id);
+  await saveNamed(ada, id, 'Before the change');
+  await closeHistory(ada, id);
+  await ui.typeBody(ada, id, ' Ada added this.');
+  actors.typed.splice(actors.typed.findIndex((entry) => entry.text === ' Ada added this.'), 1);
+  await ui.waitAcked(ada, id);
+  await expect.poll(() => bodyText(cara, id), { timeout: PEER_TIMEOUT }).toContain('Ada added this.');
+  await restoreNamed(ada, id, 'Before the change');
+  await expectSeed(cara, id);
+
+  const region = ui.pane(cara, id).locator(`[${BOTTOM_REGION_ATTR}]`);
+  const roleRow = region.locator(`[${ROLE_BAND_ATTR}]`);
+  const notice = restoreNotice(cara, id);
+  const sentence = `${adaPrincipal.name} restored an earlier version of this note.`;
+  await expect(notice, 'the restore is named').toContainText(sentence, { timeout: 2_000 });
+  await expect(region.locator(`[${RESTORE_NOTICE_ATTR}]`), 'in the pane\'s one bottom region').toHaveCount(1);
+  await expect(roleRow, 'above the reader\'s row').toBeVisible();
+  /** `card` stands directly above the reader's row, 8 px clear of it. */
+  const standsOnRow = async (card: Locator, what: string) => {
+    const [cardBox, rowBox] = await Promise.all([card.boundingBox(), roleRow.boundingBox()]);
+    if (!cardBox || !rowBox) throw new Error(`${what} is not laid out`);
+    expect(Math.abs(rowBox.y - (cardBox.y + cardBox.height) - REGION_GAP_PX), `${what} stands ${REGION_GAP_PX} px above the row`).toBeLessThan(1.5);
+  };
+  await standsOnRow(notice, 'the restore notice');
+
+  // The connection is lost: the outage leads in the same place, and the restore waits behind its Restore details.
+  cara.expectReconnects(2, id);
+  sever.blackhole();
+  const outage = region.locator(`[${CONNECTION_BANNER_ATTR}="offline"]`);
+  await expect(outage, 'the outage notice shows in the region').toBeVisible({ timeout: 25_000 });
+  await expect(ui.pane(cara, id).locator(`[${CONNECTION_BANNER_ATTR}]`), 'one connection notice').toHaveCount(1);
+  await expect(notice, 'the restore yields to the outage').toHaveCount(0);
+  await standsOnRow(outage, 'the outage notice');
+  await outage.getByRole('button', { name: 'Restore details', exact: true }).click();
+  await expect(region.locator(`[${RESTORE_NOTICE_ATTR}]`), 'Restore details shows the restore in the region').toContainText(sentence);
+  await actors.checkpoint('history-restore-during-outage');
+
+  sever.restore();
+  await expect(outage, 'the outage clears on reconnect').toHaveCount(0, { timeout: 30_000 });
+  await expect(notice, 'the restore notice resumes').toContainText(sentence);
+  await standsOnRow(notice, 'the resumed restore notice');
+  await notice.getByRole('button', { name: 'Dismiss', exact: true }).click();
+  await expect(notice).toHaveCount(0);
+});
+
+test('j17-history: a version reads as the note beside a 280 px list; Restore waits for the preview and asks by name with Cancel focused; at 390 px the preview replaces the list (T9.42) @p:mean-3', async ({ actors, stack }) => {
+  const { id, ada } = await sharedNote(actors, stack.baseUrl);
+  const view = await openHistory(ada, id);
+  const field = view.getByRole('textbox', { name: 'Version name', exact: true });
+  await expect(field, 'naming the current note is a disclosure, closed at first').toHaveCount(0);
+  await saveNamed(ada, id, 'Plan A');
+  await expect(field, 'it closes once the version is saved').toHaveCount(0);
+  await expect(content(ada, id), 'the version opens as the note').toHaveAttribute(VERSION_CONTENT_ATTR, 'view');
+  await expect(compare(ada, id), 'Compare with current is off').toHaveAttribute('aria-pressed', 'false');
+  await expect(view.locator(`[${VERSION_BADGE_ATTR}]`), 'no coloured category chips').toHaveCount(0);
+  const list = view.getByRole('list', { name: 'Versions', exact: true });
+  await expect.poll(() => view.locator('aside').evaluate((el) => Math.round(el.getBoundingClientRect().width)), { message: 'the list is 280 px' }).toBe(280);
+  await closeHistory(ada, id);
+
+  // Restore is unavailable until the selected version's preview has loaded.
+  const one = new RegExp(`^/api/docs/${id}/versions/[^/]+$`);
+  const isOne = (url: URL) => one.test(url.pathname);
+  let release: () => void = () => undefined;
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await ada.page.route(isOne, async (route) => {
+    await held;
+    await route.continue().catch(() => undefined);
+  });
+  await openHistory(ada, id);
+  const restore = view.getByRole('button', { name: 'Restore', exact: true });
+  await expect(restore, 'Restore waits for the preview').toBeDisabled();
+  release();
+  await expect(content(ada, id)).toContainText('The quick brown fox', { timeout: BIND_TIMEOUT });
+  await expect(restore, 'and is offered once it shows').toBeEnabled();
+  await ada.page.unroute(isOne);
+
+  await restore.click();
+  const dialog = ada.page.locator('[data-remote-web-surface-blocking-dialog]');
+  await expect(dialog).toBeVisible();
+  await expect(dialog, 'the confirmation names the version').toContainText('“Plan A”');
+  await expect(dialog, 'says the change is for everyone').toContainText('for everyone');
+  await expect(dialog, 'and that the note as it is now is kept').toContainText('kept in History');
+  await expect(dialog.getByRole('button', { name: 'Cancel', exact: true }), 'Cancel is the safe default').toBeFocused();
+  await actors.checkpoint('history-restore-confirm-named');
+  await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+  await expect(view, 'Cancel leaves History as it was').toBeVisible();
+  expect((await listed(ada, id)).some((v) => v.kind === 'restore-point'), 'and restores nothing').toBe(false);
+
+  // At 390 px the selected version replaces the list, with an explicit way back to it.
+  await ada.page.setViewportSize({ width: 390, height: 844 });
+  await expect(content(ada, id), 'the preview shows').toBeVisible();
+  await expect(list, 'in place of the list').toBeHidden();
+  await view.getByRole('button', { name: 'Back to versions', exact: true }).click();
+  await expect(list).toBeVisible();
+  await expect(content(ada, id)).toBeHidden();
+  await row(ada, id, 'Plan A').click();
+  await expect(content(ada, id), 'choosing a version shows it').toBeVisible();
+  await view.getByRole('button', { name: 'Back to versions', exact: true }).click();
+  await closeHistory(ada, id);
 });

@@ -1,20 +1,26 @@
-// A reader's access (T9.10), in Moss's bottom band (its Trash notice, CanvasAreaContent): a viewer or commenter is told
+// A reader's access (T9.10), in the pane's one bottom row (T9.30): a viewer or commenter is told
 // they cannot edit, signed in or on a link, and the band follows the role. A key typed into a note body or title the
 // role cannot edit is refused out loud through the one refusal notice, once per notice.
 import {
-  BODY_BINDING_ATTR, DOC_ID_ATTR, EDIT_MODE_ATTR, EDITOR_PANE_ATTR, ROLE_BAND_ATTR, TITLE_BINDING_ATTR,
+  BODY_BINDING_ATTR, DOC_ID_ATTR, EDIT_MODE_ATTR, EDITOR_PANE_ATTR, REVIEW_BAND_ATTR, ROLE_BAND_ATTR, TITLE_BINDING_ATTR,
 } from '@moss-multi/protocol/dom-contract';
 import type { Role } from '@moss-multi/protocol/roles';
-import type { ReactNode } from 'react';
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@moss/shared/components/ui/tooltip';
+import { useId, useState, type ComponentType, type ReactNode } from 'react';
 import { knownRole, useDocRole } from '../access.ts';
 import { useAuthState } from '../auth.ts';
 import { useHistoryOpen } from '../history/HistoryView.tsx';
 import { refusalMessage, refuseInput } from '../refusal.ts';
-import { signInToDoMore } from '../surfaces/ShareEntryPoints.tsx';
+import { signInHere } from '../surfaces/ShareEntryPoints.tsx';
+import { BOTTOM_ROW, BOTTOM_ROW_ACTION, BOTTOM_ROW_SLOT } from './bottom-row.ts';
+import { useOpenSuggestions, useShownMode } from './suggest/mode.ts';
+import { ReviewRow, useEscapeLeavesReview } from './suggest/SuggestChrome.tsx';
 import { useTerminal } from './terminal.ts';
 
-const LEAD: Partial<Record<Role, string>> = { viewer: 'View only.', commenter: 'Comment only.' };
-const CANNOT_EDIT = "You can't edit this note.";
+// Moss's Tooltip passes Radix's open state through; its declared props name only children.
+const ControlledTooltip = Tooltip as ComponentType<{ children: ReactNode; open: boolean; onOpenChange: (open: boolean) => void }>;
+
+const LEAD: Partial<Record<Role, string>> = { viewer: 'View only', commenter: 'Comment only' };
 
 /** What a key aimed at a field the role cannot edit says. */
 const REFUSED: Partial<Record<Role, string>> = {
@@ -33,28 +39,72 @@ export function useRoleBand(docId: string | null): string | null {
 }
 
 /**
- * The band. A signed-out link visitor's holds "Sign in to do more" below 640 px, where the top bar's copy hides; from
- * 640 px up the top bar keeps it and the band says why.
+ * The reader's access in two words that explain themselves (T9.35): Moss's tooltip on hover and keyboard focus, the
+ * accessible description, and a press or tap says it in the refusal notice just above, for touch.
+ */
+function Access({ lead, help, describedBy }: { lead: string; help: string; describedBy: string }): ReactNode {
+  const [tip, setTip] = useState(false);
+  return (
+    <TooltipProvider>
+      <ControlledTooltip open={tip} onOpenChange={setTip}>
+        <TooltipTrigger asChild>
+          <button
+            type="button"
+            aria-describedby={describedBy}
+            onClick={() => { setTip(false); refuseInput(help); }}
+            className="cursor-default text-xs text-ink-muted"
+          >
+            {lead}
+          </button>
+        </TooltipTrigger>
+        <TooltipContent side="top">{help}</TooltipContent>
+      </ControlledTooltip>
+    </TooltipProvider>
+  );
+}
+
+/**
+ * The band: the reader's access in two words (T9.33). A signed-out link visitor's holds a plain "Sign in" at every
+ * width, which promises nothing the link does not give (T9.35); the top bar has none (T9.30). In Review with a
+ * suggestion open, the same one row says so and offers Done back to the plain read-only note, which Escape also does;
+ * with none open it is the access alone.
  */
 export function RoleBand({ docId }: { docId: string }): ReactNode {
   const lead = useRoleBand(docId);
-  const signedOut = useAuthState().status === 'signed-out';
+  const role = useDocRole(docId);
+  const mode = useShownMode(docId);
+  const open = useOpenSuggestions(docId);
+  const auth = useAuthState();
+  const id = useId();
+  const reviewing = lead !== null && mode === 'review' && open > 0;
+  useEscapeLeavesReview(docId, role, reviewing);
+  // A tab whose session ended offers its banner's "Sign in" instead (T9.17).
+  const signedOut = auth.status === 'signed-out' && !auth.ended;
   if (!lead) return null;
+  const signIn = signedOut ? (
+    <>
+      {' '}
+      <button type="button" onClick={signInHere} className={BOTTOM_ROW_ACTION}>
+        Sign in
+      </button>
+    </>
+  ) : null;
+  const help = (role ? REFUSED[role] : undefined) ?? lead;
+  if (reviewing) {
+    return (
+      <ReviewRow docId={docId} role={role} reader text={`Reviewing suggestions · ${lead}`} attrs={{ [ROLE_BAND_ATTR]: '', [REVIEW_BAND_ATTR]: '' }}>
+        {signIn}
+      </ReviewRow>
+    );
+  }
   return (
-    <div className="pointer-events-none absolute bottom-8 left-1/2 z-40 w-max max-w-[calc(100%-2rem)] -translate-x-1/2">
-      <div {...{ [ROLE_BAND_ATTR]: '' }} className="pointer-events-auto flex items-center gap-2 rounded-lg border border-border-subtle/50 bg-surface-raised-card px-4 py-2.5 shadow-floating backdrop-blur-sm">
-        <span className="text-xs text-ink-muted">
-          {lead}{' '}
-          {signedOut ? (
-            <>
-              <button type="button" onClick={signInToDoMore} className="font-medium text-ink-default hover:text-ink-muted sm:hidden">
-                Sign in to do more
-              </button>
-              <span className="hidden sm:inline">{CANNOT_EDIT}</span>
-            </>
-          ) : CANNOT_EDIT}
-        </span>
+    <div className={BOTTOM_ROW_SLOT}>
+      <div {...{ [ROLE_BAND_ATTR]: '' }} className={BOTTOM_ROW}>
+        <Access lead={lead} help={help} describedBy={id} />
+        {signIn}
       </div>
+      {/* Outside the row, so the row reads as its words. */}
+      <span id={id} hidden>{help}</span>
     </div>
   );
 }

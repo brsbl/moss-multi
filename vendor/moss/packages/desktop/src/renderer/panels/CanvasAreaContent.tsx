@@ -4576,7 +4576,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
               style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
               data-note-tab-title="true"
             >
-              <div className="flex min-w-0 flex-1 items-center overflow-hidden">
+              <div className="flex min-w-0 flex-1 items-center overflow-hidden max-[479px]:hidden" /* moss-multi seam: phone-shell (T9.30): too narrow to read, the location yields to the note's own title */>
                 <NoteBreadcrumb note={note} onNavigate={isNotesPanelHidden ? onExpandNotesPanel : undefined} />
                 {(note.folderPath === 'Notes' || !note.folderPath) && (
                   <span
@@ -4602,7 +4602,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
               )}
             </div>
           ) : (
-            <div className={cn('flex min-w-0 items-center overflow-hidden', offWhileSearching)} style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
+            <div className={cn('flex min-w-0 items-center overflow-hidden max-[479px]:hidden', offWhileSearching)} /* moss-multi seam: phone-shell (T9.30): too narrow to read, the location yields to the note's own title */ style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
               <NoteBreadcrumb note={note} onNavigate={isNotesPanelHidden ? onExpandNotesPanel : undefined} />
               {note.folderPath === 'Notes' && note.title !== 'Untitled' && (
                 <span className="cursor-default truncate text-xs text-ink-faint opacity-50">{note.title}</span>
@@ -4615,7 +4615,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
       {/* Right: metadata toggle + find bar + copy + more + panel toggle */}
       {hideRightControls ? <div className="flex-1" /> : (
       <div className={cn('flex shrink-0 items-center gap-1.5', showFocusedSearchBar && 'max-sm:min-w-0 max-sm:flex-1')} style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
-        <div className={cn('contents', offWhileSearching)}>{mossMultiPane.topBarCollab /* moss-multi seam: bound-pane (A§2.2): Share, connection, face pile, bell */}</div>
+        <div className={cn('contents', offWhileSearching)}>{mossMultiPane.topBarCollab /* moss-multi seam: bound-pane (A§2.2): people, unread and open-suggestion cues (T9.30) */}</div>
         {!showFocusedSearchBar && onOpenSearch ? (
           <TooltipProvider>
             <Tooltip>
@@ -4623,7 +4623,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
                 <button
                   type="button"
                   onClick={onOpenSearch}
-                  className="hidden h-7 w-7 cursor-pointer items-center justify-center rounded text-ink-faint transition-colors hover:text-ink-muted hover:bg-surface-note-hover/40 focus-visible:outline-none sm:flex" // moss-multi seam: phone-shell (T2.7): folds into More actions below 640 px
+                  className="flex h-7 w-7 cursor-pointer items-center justify-center rounded text-ink-faint transition-colors hover:text-ink-muted hover:bg-surface-note-hover/40 focus-visible:outline-none"
                   aria-label="Search in note"
                 >
                   <Search aria-hidden className="h-3.5 w-3.5" />
@@ -4643,7 +4643,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
             <div className="mx-0.5 hidden h-5 w-px bg-border-subtle sm:block" />
           </>
         ) : null}
-        {!showFocusedSearchBar && <div className="mx-0.5 hidden h-5 w-px bg-border-subtle sm:block" /* moss-multi seam: phone-shell (T2.7) */ />}
+        {!showFocusedSearchBar && <div className="mx-0.5 h-5 w-px bg-border-subtle" />}
         {/* Copy note link */}
         <TooltipProvider>
           <Tooltip>
@@ -4652,7 +4652,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
                 type="button"
                 onMouseDown={preserveEditorSelectionOnMouseDown}
                 onClick={() => { void handleCopyNoteLink(); }}
-                className="hidden h-7 w-7 cursor-pointer items-center justify-center rounded-md text-ink-faint transition-colors hover:text-ink-muted hover:bg-surface-note-hover/40 focus-visible:outline-none sm:flex" // moss-multi seam: phone-shell (T2.7): folds into More actions below 640 px
+                className={cn('flex h-7 w-7 cursor-pointer items-center justify-center rounded-md text-ink-faint transition-colors hover:text-ink-muted hover:bg-surface-note-hover/40 focus-visible:outline-none', offWhileSearching)} // moss-multi seam: phone-shell (T2.7): an open search takes the row below 640 px
                 aria-label="Copy note link"
               >
                 <Link aria-hidden className="h-3.5 w-3.5" />
@@ -4720,18 +4720,6 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
             </Tooltip>
           </TooltipProvider>
           <DropdownMenuContent align="end" side="bottom" sideOffset={6} className="min-w-0 w-max">
-            {/* moss-multi seam: phone-shell (T2.7): below 640 px, search and copy link live here */}
-            {!showFocusedSearchBar && onOpenSearch ? (
-              <DropdownMenuItem className="gap-2 text-xs sm:hidden" onSelect={onOpenSearch}>
-                <Search aria-hidden className="h-3.5 w-3.5" />
-                Search in note
-              </DropdownMenuItem>
-            ) : null}
-            <DropdownMenuItem className="gap-2 text-xs sm:hidden" onSelect={() => { void handleCopyNoteLink(); }}>
-              <Link aria-hidden className="h-3.5 w-3.5" />
-              Copy note link
-            </DropdownMenuItem>
-            <DropdownMenuSeparator className="sm:hidden" />
             {/* Copy */}
             <DropdownMenuItem className="gap-2 text-xs" onSelect={handleCopyMarkdown}>
               <FileText aria-hidden className="h-3.5 w-3.5" />
@@ -4761,6 +4749,7 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
               <FileDigit aria-hidden className="h-3.5 w-3.5" />
               Note stats
             </DropdownMenuItem>
+            {mossMultiPane.noteMenuItems /* moss-multi seam: note-menu (T9.30): Share, Suggestions, Suggest changes, Version history */}
             {/* moss-multi seam: trash (T2.3): Trash and Restore note are the owner's (A§8) */}
             {!isExternal && !canTrashNote(note?.id ?? '') ? null : (<>
             <DropdownMenuSeparator />
@@ -4858,15 +4847,14 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
         </Dialog.Root>
         {canShowActionsPanelToggle ? (
           <>
-            {/* moss-multi seam: phone-shell (T2.7): ActionsPanelWrapper renders only from md up, so neither does its toggle */}
-            <div className="mx-0.5 hidden h-5 w-px bg-border-subtle md:block" />
+            <div className={cn('mx-0.5 h-5 w-px bg-border-subtle', offWhileSearching)} /* moss-multi seam: phone-shell (T2.7) */ />
             <TooltipProvider>
               <Tooltip>
                 <TooltipTrigger asChild>
                   <button
                     type="button"
                     onClick={onExpandActionsPanel}
-                    className="relative hidden h-7 w-7 shrink-0 cursor-pointer items-center justify-center rounded text-ink-faint transition-colors hover:text-ink-muted hover:bg-surface-note-hover/40 focus-visible:outline-none md:flex"
+                    className={cn('relative flex h-7 w-7 shrink-0 cursor-pointer items-center justify-center rounded text-ink-faint transition-colors hover:text-ink-muted hover:bg-surface-note-hover/40 focus-visible:outline-none', offWhileSearching)} // moss-multi seam: phone-shell (T2.7): below md the panel overlays the note
                     aria-label="Show actions panel"
                   >
                     <PanelRight className="h-4 w-4" strokeWidth={1.5} aria-hidden />

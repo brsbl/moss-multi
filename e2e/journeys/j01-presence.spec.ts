@@ -47,16 +47,47 @@ test('j01 presence: three clients have stable distinct colors, matching carets a
     return after !== null && after.x !== before!.x;
   }, { timeout: 1000, intervals: [20] }).toBe(true);
   await expect(caret).toHaveAttribute('data-presence-color', benColor!);
-  const chipFill = await peer.evaluate(element => getComputedStyle(element).backgroundColor);
+  // The top bar's initials are neutral (T9.30); the caret and selection paint the colour the chip names.
+  const chipFill = await ada.page.evaluate((color) => {
+    const probe = document.createElement('span');
+    probe.style.backgroundColor = color;
+    document.body.append(probe);
+    const fill = getComputedStyle(probe).backgroundColor;
+    probe.remove();
+    return fill;
+  }, benColor!);
   expect(chipFill).not.toBe('rgba(0, 0, 0, 0)');
   await expect(caret).toHaveCSS('background-color', chipFill);
   await ben.page.keyboard.press('Shift+ArrowLeft');
   const selection = ada.page.locator('[data-remote-selection]');
   await expect(selection).toHaveAttribute('data-presence-color', benColor!);
   await expect(selection.locator(':scope > span:not([data-remote-caret])')).toHaveCSS('background-color', chipFill);
+  // One People here pile names every other session (T9.32); its roster rows carry each caret's colour as a swatch.
+  const people = ada.page.locator('[data-top-bar]').getByRole('button', { name: /^People here/ });
+  await expect(people).toHaveAttribute('aria-label', 'People here, 2 other sessions');
+  await people.click();
+  const row = ada.page.getByRole('menuitem').filter({ hasText: ben.principal!.name });
+  await expect(row).toHaveCount(1);
+  await expect(row.locator('[data-presence-swatch]')).toHaveAttribute('data-presence-color', benColor!);
+  await ada.page.keyboard.press('Escape');
+  await expect(row).toBeHidden();
   await ben.page.keyboard.press('ArrowRight');
   await ben.page.keyboard.type(' typing');
-  await expect(caret.locator('[data-cursor-label]')).toBeVisible();
+  const label = caret.locator('[data-cursor-label]');
+  await expect(label).toBeVisible();
+  // The name is Moss's tooltip material in the whitespace gutter, never a peer-coloured tag over the text.
+  await expect(label).toHaveCSS('font-weight', '300');
+  await expect(label).toHaveCSS('font-size', '10px');
+  expect(await label.evaluate((el) => getComputedStyle(el).backgroundColor)).not.toBe(chipFill);
+  const overText = await label.evaluate((el) => {
+    const box = el.getBoundingClientRect();
+    const body = el.closest('[data-editor-pane]')!.querySelector('[data-body-binding="live"]')!;
+    return [...body.children].some((block) => {
+      const r = block.getBoundingClientRect();
+      return box.left < r.right && r.left < box.right && box.top < r.bottom && r.top < box.bottom;
+    });
+  });
+  expect(overText, 'the name never covers a line of the note').toBe(false);
   await actors.checkpoint('signature-presence');
   await expect(caret.locator('[data-cursor-label]')).toBeHidden({ timeout: 3000 });
   await ben.goto('/');
@@ -79,6 +110,12 @@ test('j01 presence: one principal in two windows sees the other client and undo 
   await expect(ui.body(ben, id)).toContainText(' Ada');
   await ui.typeBody(ben, id, ' Ben');
   await expect(ui.body(ada, id)).toContainText(' Ben');
+  // The same person's other window is its own session, told apart by a window suffix, never merged (T9.32).
+  const people = ada.page.locator('[data-top-bar]').getByRole('button', { name: /^People here/ });
+  await expect(people).toHaveAttribute('aria-label', 'People here, 1 other session');
+  await people.click();
+  await expect(ada.page.getByRole('menuitem')).toHaveText([`${ada.principal!.name} · window 2`]);
+  await ada.page.keyboard.press('Escape');
   await ui.body(ada, id).click(); await ada.page.keyboard.press('ControlOrMeta+z');
   await expect(ui.body(ada, id)).toContainText(' Ben');
   await expect(ui.body(ada, id)).not.toContainText(' Ada');
@@ -99,10 +136,10 @@ test('j01 presence: a spoofed awareness name never reaches a peer @p:col-2', asy
     const user = { principalId: ben.principal!.id, name: ben.principal!.name, isAgent: false, color: 'var(--chart-blue)', colorSettled: true, slot: 0 };
     provider.awareness.setLocalState({ name: user.name, color: user.color, user });
     const chip = ada.page.locator(`[data-presence-client="${doc.clientID}"]`);
-    await expect(chip).toHaveAttribute('title', user.name);
+    await expect(chip).toHaveAttribute('data-presence-name', user.name);
     provider.awareness.setLocalState({ name: 'Forged owner', color: user.color, user: { ...user, name: 'Forged owner' } });
     await ada.page.waitForTimeout(500);
-    await expect(chip).toHaveAttribute('title', user.name);
-    await expect(ada.page.getByTitle('Forged owner')).toHaveCount(0);
+    await expect(chip).toHaveAttribute('data-presence-name', user.name);
+    await expect(ada.page.locator('[data-presence-name="Forged owner"]')).toHaveCount(0);
   } finally { provider.awareness.setLocalState(null); provider.destroy(); doc.destroy(); }
 });

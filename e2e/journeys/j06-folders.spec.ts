@@ -16,6 +16,7 @@ import {
   TERMINAL_REASON_ATTR, NAMES,
 } from '../lib/contract.ts';
 import { grant } from '../lib/grants.ts';
+import { pageSockets } from '../lib/invariants.ts';
 import type { Principal } from '../lib/principals.ts';
 import { expect, test, ui } from '../lib/test.ts';
 
@@ -159,8 +160,7 @@ test('j06-folders: an editor on a shared vault creates a folder the owner sees l
   await grantVault(ada, cyPrincipal, 'viewer');
 
   const ben = await actors.open(benPrincipal);
-  await ben.page.getByRole('button', { name: 'Vault: Home', exact: true }).click();
-  await ben.page.getByRole('menuitem', { name: 'Home editor', exact: true }).click();
+  await ui.switchVault(ben.page, 'Home Can edit');
   await newFolder(ben, 'Ben research');
   await expect(ui.folderRow(ben, 'Ben research'), "Ben's folder shows in Ada's vault").toBeVisible();
   await expect(ui.folderRow(ada, 'Ben research'), 'Ada sees it without a reload').toBeVisible({ timeout: PEER_SIDEBAR_MS });
@@ -178,8 +178,7 @@ test('j06-folders: an editor on a shared vault creates a folder the owner sees l
 
   // Cy can read the vault but is offered no folder creation, rename or trash.
   const cy = await actors.open(cyPrincipal);
-  await cy.page.getByRole('button', { name: 'Vault: Home', exact: true }).click();
-  await cy.page.getByRole('menuitem', { name: 'Home viewer', exact: true }).click();
+  await ui.switchVault(cy.page, 'Home Can view');
   await expect(ui.folderRow(cy, 'Ben research')).toBeVisible();
   await expect(cy.page.getByRole('button', { name: 'Folder actions', exact: true }), 'a viewer gets no New Folder').toHaveCount(0);
   await expandFolder(cy, 'Ben research');
@@ -241,8 +240,7 @@ test('j06-folders: a folder change refused by the server reads as a sentence, ne
   await expect(ui.folderRow(ada, 'Archive')).toBeVisible();
 
   const ben = await actors.open(benPrincipal);
-  await ben.page.getByRole('button', { name: 'Vault: Home', exact: true }).click();
-  await ben.page.getByRole('menuitem', { name: 'Home editor', exact: true }).click();
+  await ui.switchVault(ben.page, 'Home Can edit');
   await expect(ui.folderRow(ben, 'Archive')).toBeVisible();
 
   // Ben's sidebar falls behind: his workspace refreshes are held while Ada changes the vault.
@@ -289,7 +287,7 @@ test('j06-folders: a folder change refused by the server reads as a sentence, ne
 });
 
 // T3.B17: "+ Note", Cmd/Ctrl+N and drags ask the folder or the item itself, as the server does, never the vault root.
-type Listing = { vault: { id: string }; folders: { id: string; path: string }[]; docs: { id: string; folderPath: string }[] };
+type Listing = { vault: { id: string }; folders: { id: string; path: string }[]; docs: { id: string; folderPath: string; title: string; updatedAt: number }[] };
 
 /** Declared setup through the API, as `actor`: folders and notes, and the actor's own Home listing. */
 function setup(actor: Actor) {
@@ -349,13 +347,14 @@ test('j06-folders: a vault viewer who owns one folder and edits another creates 
   await grant(ada, { folderId: open }, benPrincipal, 'editor');
   const ownedNote = await api.note('Owned plan', owned);
   const openNote = await api.note('Open plan', open);
+  // Ada chose no note: her window shows one of the two and keeps it from here on (T9.48a).
+  await expect.poll(() => ui.paneIds(ada), { message: "Ada's window shows a setup note", timeout: BIND_TIMEOUT })
+    .toEqual([expect.stringMatching(new RegExp(`^(${ownedNote}|${openNote})$`))]);
+  await ui.waitLive(ada, (await ui.paneIds(ada))[0]);
 
   const ben = await actors.open(benPrincipal);
-  await ben.page.getByRole('button', { name: 'Vault: Home', exact: true }).click();
-  await ben.page.getByRole('menuitem', { name: 'Home viewer', exact: true }).click();
+  await ui.switchVault(ben.page, 'Home Can view');
   await expect(ui.folderRow(ben, 'Owned')).toBeVisible();
-  // Ben's moves kick every socket open on the moved notes to re-ask its access (T2.5), Ada's window's included.
-  ada.expectReconnects(2);
   const creates = sent(ben, 'POST', /^\/api\/docs$/);
   const moves = sent(ben, 'PATCH', MOVES);
 
@@ -629,4 +628,104 @@ test('j06-folders: Forward to a note trashed since she left it shows it in Trash
   ada.observations.delete(b);
   await expect(ada.page.getByText(/This note is in Trash/), "Forward shows B's Trash view, as moss's own arrow does").toBeVisible({ timeout: BIND_TIMEOUT });
   await expect(ada.page, 'a trashed note has no address: it names A, the last live note').toHaveURL(at(a));
+});
+
+// T9.48a: a window where no note was ever chosen shows the newest note. It stays on that note while collaborators
+// create notes and edit others, which reorders the listing; it used to follow the newest one.
+
+/** The largest `updatedAt` each doc has had in a listing this page received, from now on. */
+function listedTimes(actor: Actor): Map<string, number> {
+  const seen = new Map<string, number>();
+  actor.page.on('response', (response) => {
+    if (new URL(response.url()).pathname !== '/api/workspace' || !response.ok()) return;
+    void response.json().then((body: { docs?: { id: string; updatedAt: number }[] }) => {
+      for (const doc of body.docs ?? []) seen.set(doc.id, Math.max(seen.get(doc.id) ?? 0, doc.updatedAt));
+    }, () => undefined);
+  });
+  return seen;
+}
+
+/** Two frames, so a listing the page just received has rendered. */
+const rendered = (actor: Actor) => actor.page.evaluate(() =>
+  new Promise<void>((done) => { requestAnimationFrame(() => requestAnimationFrame(() => done())); }));
+
+/** The window still shows `docId` alone, at its address, over the one doc socket it ever opened. */
+async function expectStill(actor: Actor, docId: string): Promise<void> {
+  expect(await ui.paneIds(actor), `${actor.label}: the window still shows the same note`).toEqual([docId]);
+  expect(new URL(actor.page.url()).pathname, `${actor.label}: and the address names it`).toBe(`/d/${docId}`);
+  expect(pageSockets(actor.telemetry.sockets).map((s) => s.docId), `${actor.label}: one doc socket, on that note`).toEqual([docId]);
+}
+
+/** An edit's trailing `updated_at` write lands 5 s after its first (TOUCH_INTERVAL_MS). */
+const TRAILING_TOUCH_MS = 15_000;
+
+test('j06-folders: a window with no note chosen keeps the note it shows while a collaborator creates and edits another @p:note-4', async ({ actors }) => {
+  const ada = await openShell(actors, 'ada');
+  const benPrincipal = await actors.principal('ben');
+  await expect(ada.page.locator(`[${SIDEBAR_ROW_ATTR}]`), 'Ada starts from an empty vault').toHaveCount(0);
+  const vaultId = await grantVault(ada, benPrincipal, 'editor');
+  const api = setup(ada);
+  const listed = listedTimes(ada);
+
+  // A note appears in Ada's empty vault, and her window, where nothing was chosen, shows it.
+  const ben = await actors.open(benPrincipal);
+  await ben.page.locator(`html[${APP_STATE_ATTR}="ready"]`).waitFor({ state: 'attached', timeout: BOOT_TIMEOUT });
+  const first = await setup(ben).note('First plan', vaultId);
+  await ui.waitLive(ada, first);
+  await expect(ada.page, 'the address follows the note on screen').toHaveURL(new RegExp(`/d/${first}$`));
+
+  // Ben creates a second note and types its title: a create, a first touch and, 5 s later, a trailing touch.
+  await ui.switchVault(ben.page, 'Home Can edit');
+  // Ben chose nothing in Ada's vault either: his window shows its one note before he makes another.
+  await ui.waitLive(ben, first);
+  const second = await ui.createNote(ben);
+  await ui.typeTitle(ben, second, 'Second plan');
+  const doc = async () => (await api.listing()).docs.find((d) => d.id === second);
+  await expect.poll(async () => (await doc())?.title, { message: 'the title projects', timeout: PEER_SIDEBAR_MS }).toBe('Second plan');
+  const touched = (await doc())?.updatedAt ?? 0;
+  await expect.poll(async () => (await doc())?.updatedAt ?? 0, { message: 'the trailing touch lands', timeout: TRAILING_TOUCH_MS })
+    .toBeGreaterThan(touched);
+  const trailing = (await doc())?.updatedAt ?? 0;
+  await expect(noteRow(ada, second), "Ada's sidebar shows Ben's note").toContainText('Second plan', { timeout: PEER_SIDEBAR_MS });
+  await expect.poll(() => listed.get(second) ?? 0, { message: "Ada's window receives the trailing touch", timeout: PEER_SIDEBAR_MS })
+    .toBeGreaterThanOrEqual(trailing);
+  await rendered(ada);
+  await expectStill(ada, first);
+  await actors.requireDistinct(2);
+});
+
+test('j06-folders: a window that switched in from an empty Home keeps its note while a collaborator edits an older one @p:note-4', async ({ actors }) => {
+  const ben = await openShell(actors, 'ben');
+  const adaPrincipal = await actors.principal('ada');
+  const benApi = setup(ben);
+  const home = await benApi.home();
+  const older = await benApi.note('Older plan', home);
+  const newer = await benApi.note('Newer plan', home);
+  await grant(ben, { folderId: home }, adaPrincipal, 'editor');
+
+  // Ada's own Home is empty; she switches into Ben's vault and clicks nothing, so her window shows its newest note.
+  const ada = await actors.open(adaPrincipal);
+  await ada.page.locator(`html[${APP_STATE_ATTR}="ready"]`).waitFor({ state: 'attached', timeout: BOOT_TIMEOUT });
+  await expect(ada.page.locator(`[${SIDEBAR_ROW_ATTR}]`), "Ada's Home is empty").toHaveCount(0);
+  await ui.switchVault(ada.page, 'Home Can edit');
+  await expect.poll(() => ui.paneIds(ada), { message: 'her window shows one of the two notes', timeout: BIND_TIMEOUT })
+    .toEqual([expect.stringMatching(new RegExp(`^(${older}|${newer})$`))]);
+  const [shown] = await ui.paneIds(ada);
+  await ui.waitLive(ada, shown);
+  const other = shown === older ? newer : older;
+
+  // Ben edits the other note, which was not newer: its first touch makes it the newest.
+  await ui.openNote(ben, other);
+  await ui.typeTitle(ben, other, ' revised');
+  const times = async () => {
+    const docs = (await benApi.listing()).docs;
+    return { shown: docs.find((d) => d.id === shown)?.updatedAt ?? 0, other: docs.find((d) => d.id === other)?.updatedAt ?? 0 };
+  };
+  await expect.poll(async () => { const t = await times(); return t.other > t.shown; }, { message: 'the edit makes it the newest', timeout: PEER_SIDEBAR_MS })
+    .toBe(true);
+  // The title projects after the touch, so a sidebar showing it has the touched listing.
+  await expect(noteRow(ada, other), "Ada's sidebar shows Ben's edit").toContainText('revised', { timeout: PEER_SIDEBAR_MS });
+  await rendered(ada);
+  await expectStill(ada, shown);
+  await actors.requireDistinct(2);
 });

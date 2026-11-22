@@ -1,11 +1,24 @@
 // Settings' Account section (T0.10), the web build's one addition to moss Settings: who is signed in, and Sign
 // out. Moss has no accounts, so it uses Settings' own section vocabulary (micro label over a bordered card).
-import { useState, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { auth, useAuthState } from '../auth.ts';
+
+// The app menu's Account (T9.30) opens Settings scrolled to this section.
+let reveal = false;
+export function revealAccountSection(): void {
+  reveal = true;
+}
 
 export function AccountSection(): ReactNode {
   const state = useAuthState();
   const [error, setError] = useState<string | null>(null);
+  const section = useRef<HTMLDivElement | null>(null);
+  const shown = state.status === 'signed-in' || state.status === 'signing-out';
+  useEffect(() => {
+    if (!shown || !reveal || !section.current) return;
+    reveal = false;
+    section.current.scrollIntoView({ block: 'nearest' });
+  }, [shown]);
   if (state.status !== 'signed-in' && state.status !== 'signing-out') return null;
   const signingOut = state.status === 'signing-out';
 
@@ -16,7 +29,7 @@ export function AccountSection(): ReactNode {
   }
 
   return (
-    <div data-collab-chrome="" className="space-y-2">
+    <div ref={section} data-collab-chrome="" className="space-y-2">
       <span className="text-micro font-medium uppercase tracking-wider text-ink-faint">Account</span>
       <div className="rounded-lg border border-border-subtle bg-surface-raised-card p-3">
         <div className="flex items-center justify-between gap-2">

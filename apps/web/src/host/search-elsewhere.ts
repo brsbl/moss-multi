@@ -15,3 +15,19 @@ export function openInResultVault(result: object | undefined, open: () => void):
     .then(open);
   return true;
 }
+
+/** The name of the other vault a displayed result sits in (T9.31), shown on its row; undefined in the vault on screen. */
+export function resultVaultName(result: object): string | undefined {
+  const bridge = getBridge();
+  const vault = bridge ? bridge[WORKSPACE].resultVault(result) : null;
+  return vault ? bridge?.[WORKSPACE].getSnapshot()?.vaults?.find((listed) => listed.id === vault)?.name : undefined;
+}
+
+/** Where the panel's search is: typed and waiting on the index, answered, or failed (T9.31). */
+export type SearchState = 'idle' | 'pending' | 'settled' | 'error';
+
+/** The empty-result caption for each state; settled (and idle) keep Moss's own words. */
+export const SEARCH_CAPTION: Partial<Record<SearchState, string>> = {
+  pending: 'Searching…',
+  error: 'Couldn’t search right now. Try again.',
+};

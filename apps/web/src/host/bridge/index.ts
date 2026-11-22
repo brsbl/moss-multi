@@ -111,7 +111,8 @@ export interface BridgeOptions {
   pathname: () => string;
   /** The share token this tab was opened with (`?share=`), threaded through every read (A§18). */
   share?: () => string | null;
-  subscribeWorkspace?: (receive: (event: WorkspaceEvent) => void, pause: () => void) => () => void;
+  /** `connecting`: the channel's socket is opening, and its reconcile will read what a note open would. */
+  subscribeWorkspace?: (receive: (event: WorkspaceEvent) => void, pause: () => void, connecting: (value: boolean) => void) => () => void;
   fetch?: typeof fetch;
   storage?: Pick<Storage, 'getItem' | 'setItem' | 'removeItem'> | null;
   browser?: BrowserHooks;
@@ -149,6 +150,8 @@ const NOTE_INTELLIGENCE_KEY = 'moss-multi:note-intelligence';
 const VAULT_KEY = 'moss-multi:active-vault';
 /** Notes whose backlinks this tab keeps current: the ones it opened most recently. */
 const BACKLINK_WATCH = 4;
+/** A note opened while the workspace socket opens waits this long for its reconcile, then reads its own backlinks. */
+export const BACKLINK_AWAIT_MS = 2_000;
 const layoutKey = (id: string) => `moss-multi:layout:${id}`;
 const collapsedKey = (id: string) => `moss-multi:collapsed-headings:${id}`;
 /** The one PDF export session a tab holds: the next Save as PDF replaces it, so session storage never accumulates. */
@@ -329,6 +332,7 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
   let refreshing = false;
   let refreshRetry: ReturnType<typeof setTimeout> | null = null;
   const pauseWorkspace = () => {
+    readAwaiting();
     channelGeneration += 1;
     pendingIds.clear();
     refreshAll = false;
@@ -380,6 +384,7 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
         const ids = [...pendingIds];
         const pushed = [...reopenIds];
         const full = refreshAll;
+        const since = invalidatedAt;
         pendingIds.clear();
         refreshAll = false;
         const version = loadVersion;
@@ -409,7 +414,7 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
         if (changedVaults) workspaceListeners.forEach((listener) => listener());
         diskListeners.forEach((listener) => listener(full ? [] : ids, []));
         const namedAfter = named(data.docs);
-        rereadBacklinks(full ? null : ids, (id) => namedBefore.get(id) !== namedAfter.get(id));
+        rereadBacklinks(full ? null : ids, (id) => namedBefore.get(id) !== namedAfter.get(id), since);
         // A pane terminal on a note that is live after all re-asks (A§8). A note this tab saw in Trash is left to the
         // restore, which remounts its pane with a fresh session.
         for (const id of pushed) reopenIds.delete(id);
@@ -417,6 +422,8 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
         if (reopen.length) reopenDocs?.(reopen);
       }
     } catch {
+      // A note left to this reconcile reads its own backlinks rather than wait on the retry.
+      readAwaiting();
       if (generation === channelGeneration) {
         refreshAll = true;
         // Through the listing prerequisite, as any other refresh.
@@ -435,6 +442,7 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
     void (listing ?? notes()).then(() => {
       if (generation === channelGeneration) return refreshWorkspace();
     }).catch(() => {
+      readAwaiting();
       if (generation !== channelGeneration || refreshRetry) return;
       refreshRetry = setTimeout(() => {
         refreshRetry = null;
@@ -448,13 +456,42 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
   const watched: string[] = [];
   /** Each watched note's backlinks read in flight; dropping the note aborts it, and a newer read supersedes it. */
   const reading = new Map<string, AbortController>();
+  /**
+   * Clock for backlinks reads against workspace events: each read and each event takes the next tick. A read started
+   * after an event, in flight or answered, already sees that event's change.
+   */
+  let tick = 0;
+  let invalidatedAt = 0;
+  const readSince = new Map<string, number>();
+  /**
+   * Notes opened while the channel's socket opens: its reconcile reads them, or they are read when the socket or the
+   * reconcile's listing fails, or after BACKLINK_AWAIT_MS.
+   */
+  const awaiting = new Set<string>();
+  let connecting = false;
+  let awaitTimer: ReturnType<typeof setTimeout> | null = null;
+  const readAwaiting = () => {
+    if (awaitTimer) clearTimeout(awaitTimer);
+    awaitTimer = null;
+    for (const id of [...awaiting]) {
+      awaiting.delete(id);
+      if (watched.includes(id)) void readBacklinks(id);
+    }
+  };
+  const channelConnecting = (value: boolean) => {
+    connecting = value;
+    // An opened socket's reconcile is pending and reads them; a failed or stopped one leaves them to read now.
+    if (!value && !refreshAll) readAwaiting();
+  };
   /** Notes outside the listing that byId opened by their URL through askDocAccess (B238). */
   const admitted = new Set<string>();
   const readBacklinks = async (id: string) => {
     const path = `/api/docs/${encodeURIComponent(id)}/backlinks`;
     const cancel = new AbortController();
+    awaiting.delete(id);
     reading.get(id)?.abort();
     reading.set(id, cancel);
+    readSince.set(id, ++tick);
     try {
       const { status, answer } = await heldRead((signal) => {
         // Checked at each send: a trash or revocation may have landed while the read waited out a leave.
@@ -468,13 +505,17 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
       if (reading.get(id) !== cancel) return;
       reading.delete(id);
       if (!answer) {
+        readSince.delete(id);
         if (status === 404) {
           admitted.delete(id);
           drop(id);
         }
         return;
       }
-      if (!Array.isArray(answer.backlinks)) return;
+      if (!Array.isArray(answer.backlinks)) {
+        readSince.delete(id);
+        return;
+      }
       const links = answer.backlinks.map((row): NoteLink => {
         const live = liveTitle(row.id);
         return { noteId: row.id, title: live === null ? toNoteMetadata(row).title : displayTitle(live),
@@ -489,10 +530,14 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
       diskListeners.forEach((listener) => listener([id], []));
     } catch {
       /* The next workspace event or note switch reads them again. */
-      if (reading.get(id) === cancel) reading.delete(id);
+      if (reading.get(id) === cancel) {
+        reading.delete(id);
+        readSince.delete(id);
+      }
     }
   };
   const unwatch = (id: string) => {
+    awaiting.delete(id);
     const at = watched.indexOf(id);
     if (at !== -1) watched.splice(at, 1);
   };
@@ -501,6 +546,7 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
     unwatch(id);
     reading.get(id)?.abort();
     reading.delete(id);
+    readSince.delete(id);
     backlinks.delete(id);
   };
   // A session that ends as deleted or revoked drops its note at once, before any listing says so (B178).
@@ -513,11 +559,13 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
   /**
    * After the listing caught up with a workspace event for `changed` (null: every doc): a watched note that left it
    * (trashed, unshared) is dropped, and the rest are read again unless the only change was the note's own edit, which
-   * changes no note's links to it; its rename does.
+   * changes no note's links to it; its rename does. A read started after the newest event the listing covers (`since`)
+   * already sees it, so a first load's reconcile does not read the open's note again.
    */
-  const rereadBacklinks = (changed: string[] | null, renamed: (id: string) => boolean) => {
+  const rereadBacklinks = (changed: string[] | null, renamed: (id: string) => boolean, since: number) => {
     for (const id of [...watched]) {
       if (!watchable(id)) unwatch(id);
+      else if ((readSince.get(id) ?? 0) > since) continue;
       else if (changed === null || renamed(id) || changed.some((other) => other !== id)) void readBacklinks(id);
     }
   };
@@ -530,17 +578,28 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
     if (admitted.has(id) && known.get(id)?.trashedAt == null) return true;
     return workspaceSnapshot?.docs.some((doc) => doc.id === id && doc.trashedAt == null) ?? false;
   };
-  /** Opening or focusing a note reads its backlinks once; workspace events keep a watched note's current. */
+  /**
+   * Opening or focusing a note reads its backlinks once, and never replaces a read in flight (one open does both);
+   * workspace events keep a watched note's current.
+   */
   const watchBacklinks = (id: string) => {
     if (!watchable(id)) return;
     const at = watched.indexOf(id);
     if (at !== -1) watched.splice(at, 1);
     watched.unshift(id);
-    watched.splice(BACKLINK_WATCH);
-    if (at === -1 || !backlinks.has(id)) void readBacklinks(id);
+    for (const evicted of watched.splice(BACKLINK_WATCH)) awaiting.delete(evicted);
+    if (at !== -1 && (backlinks.has(id) || reading.has(id) || awaiting.has(id))) return;
+    if (!connecting) {
+      void readBacklinks(id);
+      return;
+    }
+    awaiting.add(id);
+    // A handshake that neither opens nor fails does not hold the note's backlinks past the bound.
+    awaitTimer ??= setTimeout(readAwaiting, BACKLINK_AWAIT_MS);
   };
   const receiveWorkspace = (event: WorkspaceEvent) => {
     if (event.type !== 'meta' && event.type !== 'vaults') return;
+    invalidatedAt = ++tick;
     if (event.type === 'vaults' || event.folderIds.length) refreshAll = true;
     if (event.type === 'meta') {
       for (const id of event.docIds) {
@@ -949,7 +1008,7 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
       },
       onDiskChange: (callback?: Listener<[string[], string[]]>) => {
         if (callback) diskListeners.add(callback);
-        if (!stopWorkspace && diskListeners.size && subscribe) stopWorkspace = subscribe(receiveWorkspace, pauseWorkspace);
+        if (!stopWorkspace && diskListeners.size && subscribe) stopWorkspace = subscribe(receiveWorkspace, pauseWorkspace, channelConnecting);
         return () => {
           if (callback) diskListeners.delete(callback);
           if (!diskListeners.size) {
@@ -1200,8 +1259,9 @@ export function installBridge(
     sessionEnded: whenSessionEnded,
     share: () => new URLSearchParams(window.location.search).get('share'),
     leaving: installLeaving(),
-    subscribeWorkspace: (receive, pause) => subscribeWorkspace({
+    subscribeWorkspace: (receive, pause, connecting) => subscribeWorkspace({
       onPause: pause,
+      onConnecting: connecting,
       auth: authStore,
       socket: () => new WebSocket(`${window.location.origin.replace(/^http/, 'ws')}/api/workspace/ws`),
       visible: () => document.visibilityState === 'visible',

@@ -45,16 +45,26 @@ export const TERMINAL_REASON_ATTR = 'data-terminal-reason';
 export const TERMINAL_REASONS = ['deleted', 'revoked', 'session-ended', 'unavailable', 'conn-limit', 'outdated'] as const;
 export type TerminalReason = (typeof TERMINAL_REASONS)[number];
 
-/** The reserved notice band under each pane's top bar (A§10.5): in flow, empty and zero-height until it has news. */
+/** The reserved notice band under each pane's top bar (A§10.5): in flow and zero-height; input refusals show in it. */
 export const NOTICE_BAND_ATTR = 'data-notice-band';
+/** The pane's one bottom region (T9.30): its mode or capability row nearest the bottom, its notices just above (T9.41). */
+export const BOTTOM_REGION_ATTR = 'data-bottom-region';
 
 /**
- * The banner in the notice band: `retrying` while a first sync is late, `offline` while a synced doc is not
+ * The connection notice, floating in the pane's bottom region (T9.40): `retrying` while a first sync is late, `offline` while a synced doc is not
  * delivering, `halted` after a refused write stopped the doc, or the terminal reason.
  */
 export const CONNECTION_BANNER_ATTR = 'data-connection-banner';
 export const CONNECTION_BANNERS = ['retrying', 'offline', 'halted', ...TERMINAL_REASONS] as const;
 export type ConnectionBanner = (typeof CONNECTION_BANNERS)[number];
+
+/**
+ * The quiet pending-write cue in the pane's bottom region (T9.40): `pending` once a write has waited 2 s for its ack,
+ * `settled` for the 1 s after the last ack, with no words. Absent otherwise.
+ */
+export const CONNECTION_CUE_ATTR = 'data-connection-cue';
+export const CONNECTION_CUES = ['pending', 'settled'] as const;
+export type ConnectionCue = (typeof CONNECTION_CUES)[number];
 
 /** On the pane: the effective role. */
 export const ROLE_ATTR = 'data-role';
@@ -117,6 +127,8 @@ export const SUGGEST_MARK_ATTR = 'data-suggest-mark';
 export const REVIEW_BAND_ATTR = 'data-review-band';
 /** The band at the canvas's bottom that tells a viewer or commenter they cannot edit the note. */
 export const ROLE_BAND_ATTR = 'data-role-band';
+/** The pane's bottom mode row while it suggests (T9.30): "Suggesting", and Stop suggesting for an editor. */
+export const MODE_ROW_ATTR = 'data-mode-row';
 /** On the pane: suggest frames sent and refused by this pane's fork (test readouts). */
 export const SUGGEST_SENT_ATTR = 'data-suggest-sent';
 export const SUGGEST_REFUSED_ATTR = 'data-suggest-refused';

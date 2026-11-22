@@ -64,8 +64,8 @@ test('j16-paste-undo: an undone paste inside a paragraph, and an undone Enter, l
   await expect.poll(() => painted(ada, 'suggest-delete'), { message: 'nothing struck for the owner' }).toEqual([]);
   await expect(ui.pane(ada, docId).locator(`[${SUGGEST_MARK_ATTR}]`), 'no insert marks').toHaveCount(0);
   // A record that changes nothing is rejected by the system once idle: no pending suggestion is left.
-  await expect(ada.page.locator(`[${SUGGESTIONS_BUTTON_ATTR}]`), 'no pending suggestion').toHaveAttribute('aria-label', 'Suggestions', { timeout: 120_000 });
-  await expect(ben.page.locator(`[${SUGGESTIONS_BUTTON_ATTR}]`)).toHaveAttribute('aria-label', 'Suggestions', { timeout: BIND_TIMEOUT });
+  await expect(ada.page.locator(`[${SUGGESTIONS_BUTTON_ATTR}]`), 'no pending suggestion').toHaveCount(0, { timeout: 120_000 }); // The count shows only while one is open (T9.30).
+  await expect(ben.page.locator(`[${SUGGESTIONS_BUTTON_ATTR}]`)).toHaveCount(0, { timeout: BIND_TIMEOUT });
   await expect(ui.body(ben, docId)).toHaveAttribute(BODY_BINDING_ATTR, 'live', { timeout: BIND_TIMEOUT });
   await expect(body).toContainText('Ada original line.');
   await expect.poll(() => painted(ben, 'suggest-insert')).toEqual([]);

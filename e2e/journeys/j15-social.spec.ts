@@ -113,8 +113,21 @@ test('j15-social: reactions toggle per principal, live for both people @p:mean-1
   await openThread(ben, id, 'React to me');
   await openThread(ada, id, 'React to me');
 
-  await message(ben, 'React to me').getByRole('button', { name: /^Comment actions for / }).click();
-  await ben.page.getByRole('menuitem', { name: 'React with 👍' }).click();
+  // No reaction yet: no row under the message. The author's actions menu is Moss's, with no emoji in it (T9.39).
+  await expect(message(ada, 'React to me').locator('[data-comment-reactions]'), 'no empty reaction row').toHaveCount(0);
+  await message(ada, 'React to me').getByRole('button', { name: /^Comment actions for / }).click();
+  await expect(ada.page.getByRole('menuitem', { name: 'Edit' }), "the author's menu opens").toBeVisible();
+  await expect(ada.page.getByRole('menuitem', { name: /^React with/ }), 'the actions menu carries no reactions').toHaveCount(0);
+  await ada.page.keyboard.press('Escape');
+
+  // One Add reaction action per message opens a small picker of the five choices beside it.
+  const add = message(ben, 'React to me').getByRole('button', { name: 'Add reaction' });
+  await expect(add, 'a 24 px target').toHaveCSS('width', '24px');
+  await add.click();
+  const picker = ben.page.getByRole('menu', { name: 'Add reaction' });
+  await expect(picker.getByRole('menuitem'), 'the picker offers the five quick reactions').toHaveCount(5);
+  await picker.getByRole('menuitem', { name: 'React with 👍' }).click();
+  await expect(picker, 'choosing closes the picker').toBeHidden();
   for (const actor of [ada, ben]) {
     await expect(message(actor, 'React to me').getByRole('button', { name: '👍 1' }), `${actor.label}: one thumbs-up shows`).toBeVisible({ timeout: PEER_TIMEOUT });
   }
@@ -132,19 +145,55 @@ test('j15-social: reactions toggle per principal, live for both people @p:mean-1
   }
   await expect(message(ada, 'React to me').getByRole('button', { name: '👍 1' }), "Ada's stays hers").toHaveAttribute('aria-pressed', 'true');
   await expect(message(ben, 'React to me').getByRole('button', { name: '👍 1' })).toHaveAttribute('aria-pressed', 'false');
+  await expect(message(ada, 'React to me').getByRole('button', { name: '👍 1' }), 'a chip has no outline').toHaveCSS('border-top-width', '0px');
+
+  // The keyboard: arrows, Home and End move among the choices, Escape returns to Add reaction, Enter chooses.
+  await add.focus();
+  await ben.page.keyboard.press('Enter');
+  await expect(picker).toBeVisible();
+  const choice = (emoji: string) => picker.getByRole('menuitem', { name: `React with ${emoji}` });
+  await expect(choice('👍'), 'the first choice takes focus').toBeFocused();
+  await ben.page.keyboard.press('End');
+  await expect(choice('😄')).toBeFocused();
+  await ben.page.keyboard.press('Home');
+  await expect(choice('👍')).toBeFocused();
+  await ben.page.keyboard.press('ArrowRight');
+  await expect(choice('❤️')).toBeFocused();
+  await ben.page.keyboard.press('Escape');
+  await expect(picker, 'Escape closes the picker').toBeHidden();
+  await expect(add, 'and returns to Add reaction').toBeFocused();
+  await ben.page.keyboard.press('Enter');
+  await expect(choice('👍'), 'the picker opens again on its first choice').toBeFocused();
+  await ben.page.keyboard.press('ArrowRight');
+  await expect(choice('❤️')).toBeFocused();
+  await ben.page.keyboard.press('Enter');
+  await expect(picker).toBeHidden();
+  for (const actor of [ada, ben]) {
+    await expect(message(actor, 'React to me').getByRole('button', { name: '❤️ 1' }), `${actor.label}: Enter chose the heart`).toBeVisible({ timeout: PEER_TIMEOUT });
+  }
+
+  // A stored reaction outside the five still shows, and toggles.
+  const listed = await ada.context.request.get(`/api/docs/${id}/comments`);
+  const { comments } = await listed.json() as { comments: { id: string; text: string }[] };
+  const root = comments.find((c) => c.text.includes('React to me'))!;
+  const reacted = await ada.context.request.post(`/api/docs/${id}/comments/${root.id}/reactions`, { headers: { origin: stack.baseUrl }, data: { emoji: '🚀', on: true } });
+  expect(reacted.status()).toBe(200);
+  await expect(message(ben, 'React to me').getByRole('button', { name: '🚀 1' }), 'another emoji is kept').toBeVisible({ timeout: PEER_TIMEOUT });
+  await message(ben, 'React to me').getByRole('button', { name: '🚀 1' }).click();
+  await expect(message(ada, 'React to me').getByRole('button', { name: '🚀 2' }), 'and Ben can join it').toBeVisible({ timeout: PEER_TIMEOUT });
 });
 
 test("j15-social: an @mention reaches B's bell, and a reply reaches the root author's bell @p:ppl-3 @p:mean-1 @evidence", async ({ actors, stack }) => {
   const note = await sharedNote(actors, stack.baseUrl);
   const { ada, id, adaPrincipal } = note;
   const { actor: ben, principal: benPrincipal } = await peer(actors, note, 'ben', 'commenter');
-  await expect(bell(ben, id), 'Ben has nothing unread').toHaveAccessibleName('Notifications');
+  await expect(bell(ben, id), 'Ben has nothing unread').toHaveCount(0); // The bell shows only while something is unread (T9.30).
   // Ben accepting Ada's invite told her so; she reads that first.
   await expect(bell(ada, id)).toHaveAccessibleName('Notifications, 1 unread', { timeout: PEER_TIMEOUT });
   await bell(ada, id).click();
   await ada.page.getByRole('button', { name: 'Mark all read' }).click();
   await ada.page.keyboard.press('Escape');
-  await expect(bell(ada, id), 'Ada has nothing unread').toHaveAccessibleName('Notifications');
+  await expect(bell(ada, id), 'Ada has nothing unread').toHaveCount(0); // The bell shows only while something is unread (T9.30).
 
   await select(ada, id, 'quick brown');
   await comment(ada, 'Thoughts?');
@@ -156,7 +205,7 @@ test("j15-social: an @mention reaches B's bell, and a reply reaches the root aut
   await bell(ben, id).click();
   await expect(ben.page.getByRole('menuitem').filter({ hasText: `${adaPrincipal.name} mentioned you` }), 'the notice says who mentioned him').toBeVisible();
   await ben.page.keyboard.press('Escape');
-  await expect(bell(ada, id), 'Ada is not notified of her own reply').toHaveAccessibleName('Notifications');
+  await expect(bell(ada, id), 'Ada is not notified of her own reply').toHaveCount(0); // The bell shows only while something is unread (T9.30).
 
   await openThread(ben, id, 'Thoughts?');
   await reply(ben, 'Checked, looks fine');
@@ -175,10 +224,9 @@ test('j15-social: a non-author sees no Edit or Delete, and a raw delete or edit 
   await openThread(ben, id, 'Only Ada may change this');
 
   await expect(thread(ben).getByRole('button', { name: 'Delete thread' }), "Ben cannot delete Ada's thread").toHaveCount(0);
-  await message(ben, 'Only Ada may change this').getByRole('button', { name: /^Comment actions for / }).click();
-  await expect(ben.page.getByRole('menuitem', { name: /^Edit / }), 'no Edit for a non-author').toHaveCount(0);
-  await expect(ben.page.getByRole('menuitem', { name: /^Delete / }), 'no Delete for a non-author').toHaveCount(0);
-  await ben.page.keyboard.press('Escape');
+  // With no Edit or Delete for him, a non-author's message has no actions menu, only Add reaction (T9.39).
+  await expect(message(ben, 'Only Ada may change this').getByRole('button', { name: /^Comment actions for / }), 'no Edit or Delete for a non-author').toHaveCount(0);
+  await expect(message(ben, 'Only Ada may change this').getByRole('button', { name: 'Add reaction' })).toBeVisible();
 
   const commentId = await gutter(ben).first().getAttribute('data-comment-gutter-id');
   expect(commentId).toBeTruthy();

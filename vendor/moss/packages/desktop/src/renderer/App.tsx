@@ -179,7 +179,10 @@ import { canCreateNote, noteTargetFolder } from '@moss-multi/host/folders';
 // moss-multi seam: notice-stack (T3.B17): a failure notice never covers the open note's Trash notice
 import { standAboveTrashNotice } from '@moss-multi/host/notice-stack';
 // moss-multi seam: phone-shell (T2.7, deviation 11): below 640 px the notes panel overlays the canvas
-import { useNarrow } from '@moss-multi/host/viewport';
+import { COMPACT_ACTIONS_PANEL_CLASS, useNarrow, useBelowMd } from '@moss-multi/host/viewport';
+// moss-multi seam: pin-active-note (T9.48a): a note shown because nothing is chosen becomes the choice
+import { activeNoteSelectionAtom } from '@moss/shared/state/atoms';
+import { pinActiveNote, type PinMemory } from '@moss-multi/host/pin-active-note';
 
 const nowInSeconds = (): number => Math.floor(Date.now() / 1000);
 const NOTE_LIST_SYNC_DEBOUNCE_MS = 150;
@@ -1150,6 +1153,8 @@ export function App() {
     trash: null
   });
   const didInitializeStartupSelectionRef = useRef(false);
+  // moss-multi seam: pin-active-note (T9.48a): the pin effect needs to see startup selection finish
+  const [startupSelectionDone, setStartupSelectionDone] = useState(false);
   const commandPaletteRef = useRef<CommandPaletteOverlayHandle>(null);
 
   // moss-multi seam: only the requested note may consume a title-focus intent.
@@ -1173,6 +1178,9 @@ export function App() {
   const narrow = useNarrow(); // moss-multi seam: phone-shell (T2.7): opened by its toggle; open while no note is
   const [narrowNotesOpen, setNarrowNotesOpen] = useState(false);
   const narrowNotesVisible = narrow && (narrowNotesOpen || !activeNoteId);
+  const compactActions = useBelowMd(); // moss-multi seam: phone-shell (T2.7): below md the actions panel overlays the note, opened by its toggle
+  const [compactActionsOpen, setCompactActionsOpen] = useState(false);
+  const actionsHidden = compactActions ? !compactActionsOpen : actionsPanelHidden;
   const [showZenTopBar, setShowZenTopBar] = useState(false);
   const [updateInfo, setUpdateInfo] = useState<UpdateReadyInfo | null>(null);
   const [selectedContext, setSelectedContext] = useState<string | null>(null);
@@ -1745,12 +1753,14 @@ export function App() {
       navigateToNote(noteId);
       viewSelectionRef.current.notes = noteId;
       didInitializeStartupSelectionRef.current = true;
+      setStartupSelectionDone(true);
     };
 
     const initializeStartupSelection = async (): Promise<void> => {
       let availableNotes = store.get(activeNotesAtom);
       if (availableNotes.length === 0 && !initialNoteId) {
         didInitializeStartupSelectionRef.current = true;
+        setStartupSelectionDone(true);
         return;
       }
 
@@ -1768,6 +1778,7 @@ export function App() {
             }
             if (store.get(activeNoteIdAtom)) {
               didInitializeStartupSelectionRef.current = true;
+              setStartupSelectionDone(true);
               return;
             }
             if (record && record.trashedAt == null) {
@@ -1789,6 +1800,7 @@ export function App() {
       availableNotes = store.get(activeNotesAtom);
       if (availableNotes.length === 0) {
         didInitializeStartupSelectionRef.current = true;
+        setStartupSelectionDone(true);
         return;
       }
 
@@ -1815,6 +1827,14 @@ export function App() {
     windowContext,
     windowContextReady
   ]);
+
+  // moss-multi seam: pin-active-note (T9.48a): with nothing chosen, moss shows the newest note and follows whichever
+  // note a collaborator creates or edits next; the note on screen becomes the choice once startup selection is done.
+  const activeNoteSelection = useAtomValue(activeNoteSelectionAtom);
+  const pinMemoryRef = useRef<PinMemory>({ seen: null });
+  useEffect(() => {
+    pinActiveNote(store, { startupDone: startupSelectionDone, view: appMode, navigate: navigateToNote, memory: pinMemoryRef.current });
+  }, [activeNoteId, activeNoteSelection, appMode, navigateToNote, startupSelectionDone, store]);
 
   const runSerializedNoteSwitch = useCallback((task: () => Promise<void>) => {
     noteSwitchQueueRef.current = noteSwitchQueueRef.current.then(task, task);
@@ -3918,6 +3938,18 @@ export function App() {
     setNotesPanelHidden(true);
   }, [narrow, setNotesPanelHidden]);
 
+  // moss-multi seam: phone-shell (T2.7): a tap outside the overlaid actions panel closes it
+  useEffect(() => {
+    if (!compactActions || !compactActionsOpen) return;
+    const close = (event: PointerEvent) => {
+      const target = event.target as Element | null;
+      if (!target || target.closest('[data-actions-panel-wrapper], [role="menu"], [role="dialog"], [role="listbox"]')) return;
+      setCompactActionsOpen(false);
+    };
+    window.addEventListener('pointerdown', close, true);
+    return () => window.removeEventListener('pointerdown', close, true);
+  }, [compactActions, compactActionsOpen]);
+
   // moss-multi seam: phone-shell (T2.7): a tap outside the overlaid notes panel closes it
   useEffect(() => {
     if (!narrowNotesVisible || !activeNoteId) return;
@@ -3954,10 +3986,10 @@ export function App() {
     onDeleteNote: handleNoteDeleted,
     onRestoreNote: handleNoteRestored,
     onNavigateToNote: handleSelectNote,
-    isActionsPanelHidden: actionsPanelHidden,
+    isActionsPanelHidden: actionsHidden, // moss-multi seam: phone-shell (T2.7)
     isNotesPanelHidden: narrow ? !narrowNotesVisible : notesPanelHidden, // moss-multi seam: phone-shell (T2.7)
     onExpandNotesPanel: () => { if (narrow) { setNarrowNotesOpen(true); return; } zenModeActive ? toggleZenMode() : setNotesPanelHidden(false); },
-    onExpandActionsPanel: () => { zenModeActive ? toggleZenMode() : setActionsPanelHidden(false); },
+    onExpandActionsPanel: () => { if (compactActions) { setCompactActionsOpen(true); return; } zenModeActive ? toggleZenMode() : setActionsPanelHidden(false); }, // moss-multi seam: phone-shell (T2.7)
     isAgentStreaming: hasActiveStreaming,
     onCanvasClick: handlePromptClose,
     // moss-multi seam: hide-registry (A§9)
@@ -3969,9 +4001,9 @@ export function App() {
       // In browser-split the panel renders inside <main> next to the note pane,
       // so it needs its own divider. In the normal placement the canvas area's
       // border-r already draws the seam — no border here to avoid doubling.
-      className={isBrowserSplitOpen ? 'border-l border-border-subtle' : undefined}
-      hidden={actionsPanelHidden}
-      onHiddenChange={setActionsPanelHidden}
+      className={compactActions ? COMPACT_ACTIONS_PANEL_CLASS : isBrowserSplitOpen ? 'border-l border-border-subtle' : undefined} // moss-multi seam: phone-shell (T2.7)
+      hidden={actionsHidden}
+      onHiddenChange={compactActions ? (next) => setCompactActionsOpen(!next) : setActionsPanelHidden}
       width="var(--actions-panel-width, 280px)"
       scrollContainerRef={actionsPanelScrollRef}
       isAgentStreaming={actionTabs.some(tab => tab.isStreaming)}

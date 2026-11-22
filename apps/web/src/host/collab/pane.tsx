@@ -9,7 +9,7 @@ import { useLexicalComposerContext } from '@lexical/react/LexicalComposerContext
 import type { Provider } from '@lexical/yjs';
 import { CollaborationPlugin } from '@moss-multi/lexical-react/LexicalCollaborationPlugin';
 import {
-  BODY_BINDING_ATTR, DOC_ID_ATTR, DOC_STATE_ATTR, EDIT_MODE_ATTR, EDITOR_GENERATION_ATTR, EDITOR_PANE_ATTR, SUGGEST_REFUSED_ATTR,
+  BODY_BINDING_ATTR, BOTTOM_REGION_ATTR, DOC_ID_ATTR, DOC_STATE_ATTR, EDIT_MODE_ATTR, EDITOR_GENERATION_ATTR, EDITOR_PANE_ATTR, SUGGEST_REFUSED_ATTR,
   SUGGEST_SENT_ATTR, SYNC_UNACKED_ATTR, TERMINAL_REASON_ATTR, ROLE_ATTR, type BindingState, type DocState, type EditMode,
 } from '@moss-multi/protocol/dom-contract';
 import type { SuggestRefusal } from '@moss-multi/protocol/suggest';
@@ -17,12 +17,12 @@ import { excludedPropertiesFor } from '@moss-multi/sync/excluded-properties';
 import type { BodyUndo } from '@moss-multi/sync/payload-docs';
 import { syncNoteEntityAtom } from '@moss/shared/state/atoms';
 import { useStore } from 'jotai';
-import { $createParagraphNode, $getRoot, $setSelection, type EditorState, type LexicalEditor } from 'lexical';
+import { $createParagraphNode, $getRoot, $setSelection, SKIP_SCROLL_INTO_VIEW_TAG, type EditorState, type LexicalEditor } from 'lexical';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
 import type { Doc, UndoManager } from 'yjs';
 import { can, type Role } from '@moss-multi/protocol/roles';
 import { knownRole, useDocRole } from '../access.ts';
-import { TopBarCollab } from '../slots.tsx';
+import { NoteMenuItems, TopBarCollab } from '../slots.tsx';
 import { getBridge, WORKSPACE } from '../bridge/index.ts';
 import { liftDirOnLargeRemote } from '../dir-lift.ts';
 import {
@@ -33,9 +33,8 @@ import { captureCaret, type CaretMark } from './suggest/caret.ts';
 import { modeFor, offerUnsaved, setOpenSuggestions, showMode, subscribeModes } from './suggest/mode.ts';
 import { ReviewMount, SuggestMount } from './suggest/mounts.ts';
 import { readMeta, recordIds, SUGGESTIONS } from '@moss-multi/sync/suggest/records';
-import { ReviewBand, ReviewButton, SuggestModeChip, SuggestUnsavedBand } from './suggest/SuggestChrome.tsx';
-import { SuggestionsButton } from './suggest/SuggestionsPanel.tsx';
-import { HistoryButton, HistoryView, RestoreNoticeBand, useHistoryOpen } from '../history/HistoryView.tsx';
+import { ReviewBand, SuggestBand } from './suggest/SuggestChrome.tsx';
+import { HistoryView, useHistoryOpen } from '../history/HistoryView.tsx';
 import { SuggestPlugin, type SuggestPane } from './suggest/SuggestPlugin.tsx';
 import { bindFrontmatter } from './frontmatter-binding.ts';
 import { bindCommentAtoms } from '../comments/atoms.ts';
@@ -48,10 +47,41 @@ import { cursorController } from './cursors.ts';
 import { isLanding, subscribeLanding } from './landing.ts';
 import { subscribeTerminal, terminalOf, useTerminal } from './terminal.ts';
 import { trackUndoFocus } from './undo.ts';
-import { ConnectionNotice } from './ConnectionNotice.tsx';
+import { NoticeBand, NoticeStack } from './NoticeStack.tsx';
 import { showActionFeedback, withdrawActionFeedback } from './feedback.ts';
 import { settleRefusal } from '../refusal.ts';
 import { RoleBand, watchRefusedTyping } from './RoleBand.tsx';
+import { RefusalAnnouncer } from '../surfaces/RefusalAnnouncer.tsx';
+import { BOTTOM_REGION, REGION_BOTTOM_PX, REGION_GAP_PX, useToolbarHeight } from './bottom-row.ts';
+
+/**
+ * A paste rolled back (T3.B32): the note shows where the pane was when the paste began, not where the paste had
+ * scrolled it. Set once the binding has laid out enough of the note to reach it, or after 5 s, whichever is first.
+ */
+function scrollBack(editor: LexicalEditor, top: number): void {
+  const until = Date.now() + 5_000;
+  const step = () => {
+    const root = editor.getRootElement();
+    let scroller: HTMLElement | null = root;
+    while (scroller && !/(auto|scroll)/.test(getComputedStyle(scroller).overflowY)) scroller = scroller.parentElement;
+    scroller ??= document.scrollingElement as HTMLElement | null;
+    if (!scroller) return;
+    if (scroller.scrollHeight - scroller.clientHeight < top && Date.now() < until) {
+      requestAnimationFrame(step);
+      return;
+    }
+    // The rebound note restores a caret, which would scroll it into view: the place wins for the next 2 s.
+    const target = scroller;
+    const pin = () => {
+      if (target.scrollTop !== top) target.scrollTop = top;
+    };
+    pin();
+    target.addEventListener('scroll', pin);
+    setTimeout(() => target.removeEventListener('scroll', pin), 2_000);
+  };
+  editor.update(() => $setSelection(null), { tag: SKIP_SCROLL_INTO_VIEW_TAG });
+  requestAnimationFrame(step);
+}
 
 interface PaneState {
   docState: DocState;
@@ -357,7 +387,7 @@ class PaneBinding implements SuggestPane {
           this.#apply(session.state);
           this.#mountChanged();
         },
-        refused: (unsaved, reason) => {
+        refused: (unsaved, reason, limit) => {
           // Input closes in this tick; F is rebuilt once the DocDO has answered everything in flight. A note with no
           // room for more suggestions keeps input closed in the rebuilt F until the mode changes, and a refusal of
           // that F's lease, or of a first lease (F then fills read-only), rebuilds nothing more.
@@ -366,7 +396,7 @@ class PaneBinding implements SuggestPane {
           if (full) this.#noRoom = true;
           this.#inputClosed = true;
           this.#editor?.setEditable(false);
-          offerUnsaved(this.docId, unsaved, full);
+          offerUnsaved(this.docId, unsaved, full, limit);
           this.#apply(session.state);
           this.#mountChanged();
           if (!again) this.#remount();
@@ -377,7 +407,7 @@ class PaneBinding implements SuggestPane {
       });
       mount.editor = this.#editor;
       // A pane letting go with suggestions unanswered leaves the mount delivering them (A§10.1).
-      aliasProvider(mount.provider, session, mount.doc, () => mount.retire((unsaved, reason) => offerUnsaved(this.docId, unsaved, NO_SUGGESTION_ROOM.has(reason))));
+      aliasProvider(mount.provider, session, mount.doc, () => mount.retire((unsaved, reason, limit) => offerUnsaved(this.docId, unsaved, NO_SUGGESTION_ROOM.has(reason), limit)));
       this.#mount = mount;
       return { doc: mount.doc, provider: mount.provider as unknown as Provider };
     }
@@ -499,6 +529,10 @@ class PaneBinding implements SuggestPane {
     editor.getRootElement()?.closest(`[${EDITOR_PANE_ATTR}]`)?.setAttribute(SYNC_UNACKED_ATTR, state.unacked || isLanding(editor) ? '1' : '0');
     const session = this.#session;
     if (session && state.synced && !state.resync) this.#fields?.bind(session.docId, session.doc, () => this.#state.bodyState === 'live' && this.#mode === 'edit');
+    if (session && state.synced && !state.resync && session.rolledBackScroll !== null) {
+      scrollBack(editor, session.rolledBackScroll);
+      session.rolledBackScroll = null;
+    }
     this.set({
       bodyState,
       bodyVisible: state.synced && !state.resync && this.#mountReady,
@@ -621,7 +655,7 @@ function DocBinding({ docId, binding }: { docId: string; binding: PaneBinding })
       docMap.set(id, mounted.doc);
       if (!session.stopPresence) {
         const stopPresence = startPresence(id, session.provider);
-        const stopCursors = cursors.start(session.provider);
+        const stopCursors = cursors.start(session.provider, id);
         const stopDirLift = liftDirOnLargeRemote(editor, session.doc);
         session.stopPresence = () => { stopPresence(); stopCursors(); stopDirLift(); };
       }
@@ -669,13 +703,16 @@ export interface MossMultiPane {
   hasBodyText: boolean;
   /** The pane root's A§19 attributes. */
   paneProps: Record<string, string>;
-  /** Web chrome at the start of the top bar's right group. */
+  /** Web cues at the start of the top bar's right group, each only while it has something to say (T9.30). */
   topBarCollab: ReactNode;
+  /** Web entries in Moss's More actions, before its Trash group (T9.30). */
+  noteMenuItems: ReactNode;
   /** The History view, which occupies the pane in place of the editor canvas while it is open (A§14). */
   history: ReactNode;
   noticeBand: ReactNode;
   /** Moss's bottom band where the docked toolbar was: the Trash notice, else a reader's role band (T9.10), else Review's
-   * band (T9.1). The last two never show together: Review's band is for those who can suggest. */
+   * band (T9.1), else the Suggesting row (T9.30). At most one shows: each is for a different role or mode. The
+   * pane's notices stand above it, one card leading (T9.41). */
   bottomBand: ReactNode;
   readOnly: boolean;
 }
@@ -731,7 +768,7 @@ export function useMossMultiPane(note: { id: string; trashedAt?: number | null }
     return {
       bound: false,
       readOnly: true,
-      noticeBand: <ConnectionNotice docId={null} />,
+      noticeBand: <NoticeBand docId={null} trashed={docId} />,
       bottomBand: null,
       collaboration: null,
       bodyLive: false,
@@ -742,14 +779,21 @@ export function useMossMultiPane(note: { id: string; trashedAt?: number | null }
       hasBodyText: false,
       paneProps: { [EDITOR_PANE_ATTR]: '', [DOC_ID_ATTR]: docId, [DOC_STATE_ATTR]: 'terminal', [TERMINAL_REASON_ATTR]: 'deleted' },
       topBarCollab: null,
+      noteMenuItems: null,
       history: null,
     };
   }
   return {
     bound: true,
     readOnly: !live,
-    noticeBand: <><ConnectionNotice docId={docId} bare={!docId} /><SuggestUnsavedBand docId={docId} />{docId ? <RestoreNoticeBand docId={docId} /> : null}</>,
-    bottomBand: docId && !historyOpen ? <><RoleBand docId={docId} /><ReviewBand docId={docId} /></> : null,
+    noticeBand: <NoticeBand docId={docId} refusals={docId === null || trashed} trashed={docId && trashed ? docId : null} />,
+    bottomBand: docId ? (
+      <BottomRegion docId={docId}>
+        {/* Moss shows its Trash notice in this slot instead, so a trashed note's refusals and notices float from the band. */}
+        {trashed ? null : <><RefusalAnnouncer /><NoticeStack docId={docId} /></>}
+        {historyOpen ? null : <><RoleBand docId={docId} /><ReviewBand docId={docId} /><SuggestBand docId={docId} /></>}
+      </BottomRegion>
+    ) : null,
     collaboration,
     bodyLive: live,
     bodyVisible: state.bodyVisible,
@@ -768,11 +812,20 @@ export function useMossMultiPane(note: { id: string; trashedAt?: number | null }
           ...(terminal ? { [TERMINAL_REASON_ATTR]: terminal } : {}),
         }
       : {},
-    topBarCollab: docId
-      ? <><SuggestModeChip docId={docId} />{binding ? <SuggestionsButton docId={docId} source={binding} /> : null}<ReviewButton docId={docId} />{terminal ? null : <HistoryButton docId={docId} />}<TopBarCollab docId={docId} /></>
-      : null,
+    topBarCollab: docId ? <TopBarCollab docId={docId} suggestions={binding} /> : null,
+    noteMenuItems: docId ? <NoteMenuItems docId={docId} /> : null,
     history: docId && historyOpen && !terminal ? <HistoryView key={docId} docId={docId} /> : null,
   };
+}
+
+/** The pane's one bottom region (T9.30): while Moss's docked toolbar shows, it stands 8 px above it (T9.40). */
+function BottomRegion({ docId, children }: { docId: string; children: ReactNode }): ReactNode {
+  const toolbar = useToolbarHeight(docId);
+  return (
+    <div {...{ [BOTTOM_REGION_ATTR]: '' }} className={BOTTOM_REGION} style={toolbar ? { bottom: REGION_BOTTOM_PX + toolbar + REGION_GAP_PX } : undefined}>
+      {children}
+    </div>
+  );
 }
 
 const CLOSED: PaneState = { docState: 'binding', bodyState: 'unbound', bodyVisible: false, resetting: false, revision: 0, hasText: false, mode: 'edit', suggestSent: 0, suggestRefused: 0 };

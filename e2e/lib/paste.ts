@@ -187,45 +187,111 @@ export function expectWire(wire: Wire): void {
   if (wire.peer) expect(wire.peer.closes, "the collaborator's doc socket never closed").toEqual([]);
 }
 
-/** Starts measuring the longest the page's main thread is held: the gap between 25 ms ticks, less the 25 ms. */
+/** A tick gap past this counts toward the total time the tab was held (`Stall.heldMs`). */
+const HELD_GAP_MS = 200;
+
+type StallProbe = {
+  __stall: number; __stallAt: number; __stallStart: number; __held: number; __stallTimer?: ReturnType<typeof setInterval>;
+  __loaf?: PerformanceEntry[]; __loafObserver?: PerformanceObserver;
+};
+
+/**
+ * Starts measuring the longest the page's main thread is held (the gap between 25 ms ticks, less the 25 ms), the total
+ * of the gaps past HELD_GAP_MS, and, where the engine has them, the long animation frames.
+ */
 export async function watchStalls(actor: Actor): Promise<void> {
-  await actor.page.evaluate(() => {
-    const probe = window as unknown as { __stall: number; __stallAt: number; __stallStart: number; __stallTimer?: ReturnType<typeof setInterval> };
+  await actor.page.evaluate((heldGap) => {
+    const probe = window as unknown as StallProbe;
     clearInterval(probe.__stallTimer);
+    probe.__loafObserver?.disconnect();
     probe.__stall = 0;
     probe.__stallAt = 0;
+    probe.__held = 0;
+    probe.__loaf = [];
+    if (PerformanceObserver.supportedEntryTypes.includes('long-animation-frame')) {
+      probe.__loafObserver = new PerformanceObserver((list) => {
+        for (const entry of list.getEntries()) if (entry.duration > heldGap) probe.__loaf!.push(entry);
+      });
+      probe.__loafObserver.observe({ type: 'long-animation-frame' });
+    }
     const start = performance.now();
     probe.__stallStart = start;
     let last = start;
     probe.__stallTimer = setInterval(() => {
       const now = performance.now();
-      if (now - last - 25 > probe.__stall) {
-        probe.__stall = now - last - 25;
+      const gap = now - last - 25;
+      if (gap > heldGap) probe.__held += gap;
+      if (gap > probe.__stall) {
+        probe.__stall = gap;
         probe.__stallAt = last - start;
       }
       last = now;
     }, 25);
-  });
+  }, HELD_GAP_MS);
 }
 
-/**
- * The longest stall since watchStalls, in ms, when it began (ms from the start), and the paste's batches and slow doc
- * socket work (User Timing measures `moss-paste-*`, `moss-sync-*`) that overlap it; measuring stops.
- */
-export const longestStall = (actor: Actor): Promise<{ ms: number; at: number; during: string }> =>
+export interface Stall {
+  /** The longest gap, in ms, and when it began (ms from watchStalls). */
+  ms: number;
+  at: number;
+  /** The sum of the gaps past HELD_GAP_MS, in ms. */
+  heldMs: number;
+  /** The paste's measures and marks (`moss-paste-*`, `moss-sync-*`) that overlap the longest gap. */
+  during: string;
+  /** Every `moss-paste-*` measure and mark since watchStalls, times from its start. */
+  batches: string;
+  /** The long animation frames overlapping the longest gap (Chromium; WebKit has none). */
+  frames: string;
+}
+
+/** The longest stall since watchStalls and what ran in it (Stall); measuring stops. */
+export const longestStall = (actor: Actor): Promise<Stall> =>
   actor.page.evaluate(() => {
-    const probe = window as unknown as { __stall: number; __stallAt: number; __stallStart: number; __stallTimer?: ReturnType<typeof setInterval> };
+    const probe = window as unknown as StallProbe;
     clearInterval(probe.__stallTimer);
-    const from = probe.__stallStart + probe.__stallAt;
+    probe.__loafObserver?.disconnect();
+    const origin = probe.__stallStart;
+    const from = origin + probe.__stallAt;
     const to = from + probe.__stall + 25;
+    const ms = (value: number) => Math.round(value);
+    const describe = (entry: PerformanceEntry, base: number) => {
+      const { detail } = entry as PerformanceMark;
+      const more = detail ? ` ${JSON.stringify(detail)}` : '';
+      return entry.entryType === 'mark'
+        ? `${entry.name} at ${ms(entry.startTime - base)} ms${more}`
+        : `${entry.name} at ${ms(entry.startTime - base)} ms for ${ms(entry.duration)} ms${more}`;
+    };
+    const entries = [...performance.getEntriesByType('measure'), ...performance.getEntriesByType('mark')]
+      .filter((entry) => /^moss-(paste|sync)-/.test(entry.name))
+      .sort((a, b) => a.startTime - b.startTime);
     // Measures that overlap the stall, and marks in it or in the second before it.
-    const during = [...performance.getEntriesByType('measure'), ...performance.getEntriesByType('mark')]
-      .filter((entry) => /^moss-(paste|sync)-/.test(entry.name) && entry.startTime < to && entry.startTime + entry.duration > from - (entry.entryType === 'mark' ? 1_000 : 0))
-      .map((entry) => (entry.entryType === 'mark'
-        ? `${entry.name} at ${Math.round(entry.startTime - from)} ms`
-        : `${entry.name} ${Math.round(entry.duration)} ms${(entry as PerformanceMeasure).detail ? ` ${JSON.stringify((entry as PerformanceMeasure).detail)}` : ''}`))
+    const during = entries
+      .filter((entry) => entry.startTime < to && entry.startTime + entry.duration > from - (entry.entryType === 'mark' ? 1_000 : 0))
+      .map((entry) => describe(entry, from))
       .join(', ');
-    return { ms: Math.round(probe.__stall), at: Math.round(probe.__stallAt), during: during || 'no paste batch' };
+    const batches = entries
+      .filter((entry) => entry.name.startsWith('moss-paste-') && entry.startTime >= origin)
+      .map((entry) => describe(entry, origin))
+      .join('; ');
+    type Script = { invoker: string; sourceURL: string; sourceFunctionName: string; duration: number; forcedStyleAndLayoutDuration: number };
+    type Frame = PerformanceEntry & { renderStart: number; styleAndLayoutStart: number; scripts: Script[] };
+    const frames = ((probe.__loaf ?? []) as Frame[])
+      .filter((frame) => frame.startTime < to && frame.startTime + frame.duration > from)
+      .map((frame) => {
+        const scripts = frame.scripts
+          .filter((script) => script.duration >= 20)
+          .map((script) => `${script.invoker || '?'} ${script.sourceFunctionName || ''}@${(script.sourceURL || '').split('/').pop()} ${ms(script.duration)} ms (forced style and layout ${ms(script.forcedStyleAndLayoutDuration)} ms)`)
+          .join(', ');
+        const render = frame.renderStart
+          ? `render at +${ms(frame.renderStart - frame.startTime)} ms, style and layout at +${ms(frame.styleAndLayoutStart - frame.startTime)} ms`
+          : 'no render';
+        return `frame at ${ms(frame.startTime - from)} ms for ${ms(frame.duration)} ms (${render}; scripts: ${scripts || 'none over 20 ms'})`;
+      })
+      .join('; ');
+    return {
+      ms: ms(probe.__stall), at: ms(probe.__stallAt), heldMs: ms(probe.__held),
+      during: during || 'no paste batch', batches: batches || 'none', frames: frames || 'none recorded',
+    };
   });
 
 /**
@@ -264,16 +330,18 @@ export async function setup<R extends Record<string, string> = Record<never, str
 /**
  * Pastes `pasted` at the caret, then checks: the export is `whole`; Ben's body equals Ada's; typing lands after the
  * paste (`typed`); one undo removes the typing and the next the whole paste (`before`), for both; one redo brings the
- * paste back and the next the typing. With `maxStallMs`,
- * the main thread is never held longer than that while the paste lands; with `wire`, no frame passes the frame cap
- * and the doc socket never closes, through the paste, its undo and its redo.
+ * paste back and the next the typing. With `maxStallMs`, the main thread is never held longer than that at a time
+ * while the paste lands, and with `maxHeldMs` never longer than that in all (the sum of its holds past 200 ms, so a
+ * hold split in two still counts whole); with `wire`, no frame passes the frame cap and the doc socket never closes,
+ * through the paste, its undo and its redo. `history: false` stops after the typing: a paste just under the structure
+ * limit leaves no room for its own redo, since an undone paste's structs stay in the note's history (A§5.1).
  */
 export async function pasteAndCheck(
   { ada, ben, docId, wire }: { ada: Actor; ben: Actor; docId: string; wire?: Wire },
   pasted: string,
   want: { whole: string; typed: string },
   timeout: number,
-  { maxBusyMs = Infinity, maxStallMs = Infinity }: { maxBusyMs?: number; maxStallMs?: number } = {},
+  { maxBusyMs = Infinity, maxStallMs = Infinity, maxHeldMs = Infinity, history = true }: { maxBusyMs?: number; maxStallMs?: number; maxHeldMs?: number; history?: boolean } = {},
 ): Promise<number> {
   await ui.waitAcked(ada, docId, timeout);
   const before = await exported(ada, docId);
@@ -282,6 +350,8 @@ export async function pasteAndCheck(
 
   const speedBefore = await runnerSlowdown(ada);
   await watchStalls(ada);
+  // The collaborator's tab applies the same paste: timed too, printed only.
+  await watchStalls(ben);
   const busyMs = await pastePlain(ada, docId, pasted);
   await ui.waitAcked(ada, docId, timeout);
   await expect.poll(() => exported(ada, docId), { message: 'every pasted character lands in the doc', timeout }).toBe(want.whole);
@@ -289,16 +359,25 @@ export async function pasteAndCheck(
   const runner = slower(speedBefore, await runnerSlowdown(ada));
   const scaled = (bound: number) => Math.round(bound * runner.factor);
   const speed = `the runner ran the calibration in ${runner.ms.toFixed(0)} ms, ${runner.factor.toFixed(2)}x the reference`;
-  console.log(`paste stall: ${stall.ms} ms of ${scaled(maxStallMs)} allowed, busy ${Math.round(busyMs)} ms (${speed}; during: ${stall.during})`);
+  console.log(`paste stall: ${stall.ms} ms of ${scaled(maxStallMs)} allowed, held ${stall.heldMs} ms in all of ${scaled(maxHeldMs)}, busy ${Math.round(busyMs)} ms (${speed}; during: ${stall.during})`);
+  console.log(`paste batches: ${stall.batches}`);
+  console.log(`paste long frames: ${stall.frames}`);
   expect(busyMs, `the paste keeps the tab responsive (${speed})`).toBeLessThan(scaled(maxBusyMs));
-  expect(stall.ms, `the tab is never held longer than ${scaled(maxStallMs)} ms at a time while the paste lands (the longest began ${stall.at} ms after the paste, during: ${stall.during}; socket closes: ${wire?.closes.join(', ') || 'none seen'}; ${speed})`).toBeLessThanOrEqual(scaled(maxStallMs));
+  expect(stall.ms, `the tab is never held longer than ${scaled(maxStallMs)} ms at a time while the paste lands (the longest began ${stall.at} ms after the paste, held ${stall.heldMs} ms in all, during: ${stall.during}; long frames: ${stall.frames}; batches: ${stall.batches}; socket closes: ${wire?.closes.join(', ') || 'none seen'}; ${speed})`).toBeLessThanOrEqual(scaled(maxStallMs));
+  expect(stall.heldMs, `the tab is held no longer than ${scaled(maxHeldMs)} ms in all while the paste lands (${speed})`).toBeLessThanOrEqual(scaled(maxHeldMs));
   const pastedPrint = await fingerprint(ada, docId);
   await expect.poll(() => fingerprint(ben, docId), { message: 'the collaborator sees the whole paste', timeout }).toEqual(pastedPrint);
+  const peer = await longestStall(ben);
+  console.log(`paste stall (collaborator): ${peer.ms} ms, held ${peer.heldMs} ms in all (long frames: ${peer.frames})`);
 
   await ada.page.waitForTimeout(NEW_STEP_MS);
   await ada.page.keyboard.type('Z');
   await ui.waitAcked(ada, docId, timeout);
   await expect.poll(() => exported(ada, docId), { message: 'the caret ends after the paste', timeout }).toBe(want.typed);
+  if (!history) {
+    if (wire) expectWire(wire);
+    return busyMs;
+  }
 
   await ada.page.waitForTimeout(NEW_STEP_MS);
   await ada.page.keyboard.press(UNDO);
@@ -333,7 +412,17 @@ export function fence(language: string, bytes: number, line: (i: number) => stri
   return `\`\`\`${language}\n${lines.join('\n')}\n\`\`\``;
 }
 
-/** A paste's admission figures (the `moss-paste-admission` mark): what it adds, what the tab counts as held, the limit. */
+/** What the refusal band says past the text limit, the structure limit, and the stored bytes or the frame cap (A§5.1). */
+export const TEXT_NOTICE = 'This note has reached its size limit (1.02 million characters).';
+export const STRUCTURE_NOTICE = 'This note is too big to add to: it has too many separate lines, cells or past edits. Continue in a new note.';
+export const BYTES_NOTICE = 'This note is at its size limit, so your last change was not saved.';
+/** A large paste cut short by a limit is rolled back (T3.B32). */
+export const PASTE_ROLLED_BACK_NOTICE = "The paste didn't fit, so nothing was pasted.";
+
+/**
+ * A paste's admission figures (the `moss-paste-admission` mark): what it adds (bytes, characters, structs), what the
+ * tab counts as held, the bytes limit, and which limit it met, if any.
+ */
 export interface Admission {
   adds: number;
   held: number;
@@ -342,6 +431,11 @@ export interface Admission {
   limit: number;
   largestFrame: number;
   fit: boolean;
+  chars: number;
+  heldChars: number;
+  structs: number;
+  heldStructs: number;
+  met: 'text' | 'structure' | 'state' | null;
 }
 
 /**
@@ -353,7 +447,7 @@ export async function expectRefusedPaste(
   { ada, ben, docId, wire }: { ada: Actor; ben: Actor; docId: string; wire: Wire },
   stack: Stack,
   pasted: string,
-  { checkWire = true, admission: checkAdmission }: { checkWire?: boolean; admission?: (figures: Admission) => void } = {},
+  { checkWire = true, admission: checkAdmission, notice = TEXT_NOTICE }: { checkWire?: boolean; admission?: (figures: Admission) => void; notice?: string } = {},
 ): Promise<void> {
   await ui.waitAcked(ada, docId, 30_000);
   const before = await exported(ada, docId);
@@ -373,7 +467,7 @@ export async function expectRefusedPaste(
     checkAdmission(figures!);
   }
   try {
-    await expect(ada.page.locator(`[${INPUT_REFUSAL_ATTR}]`), 'the refusal is announced').toContainText('size limit', { timeout: 120_000 });
+    await expect(ada.page.locator(`[${INPUT_REFUSAL_ATTR}]`), 'the refusal is announced, naming the limit').toContainText(notice, { timeout: 120_000 });
   } catch (error) {
     throw new Error(`${(error as Error).message}\nadmission: ${JSON.stringify(await admission().catch(() => 'unreadable'))}; socket closes: ${wire.closes.join(', ') || 'none seen'}`, { cause: error });
   }

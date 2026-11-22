@@ -1,6 +1,6 @@
 // UI verbs (S-test §3.3): everything a user does goes through here, located by role, label or a DOM-contract
 // attribute, never by position. The reliable typing path is title, then Enter, then body (L§4.20).
-import { expect, type Locator } from '@playwright/test';
+import { expect, type Locator, type Page } from '@playwright/test';
 import type { Actor } from './actors.ts';
 import {
   APP_STATE_ATTR, BODY_BINDING_ATTR, DOC_STATE_ATTR, EDITOR_PANE_ATTR, LEXICAL_EDITOR_SELECTOR, NAMES, paneSelector,
@@ -44,12 +44,25 @@ export async function signUpThroughCard(actor: Actor, principal: Principal): Pro
   await form.getByRole('button', { name: 'Create account', exact: true }).click();
 }
 
+/** The sidebar footer's Settings opens a short app menu (T9.30); returns it open. */
+export async function openAppMenu(page: Page): Promise<Locator> {
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  const menu = page.getByRole('menu');
+  await expect(menu, 'the app menu opens').toBeVisible();
+  return menu;
+}
+
+/** Moss's Settings dialog, through the footer's app menu. */
+export async function openSettingsDialog(page: Page): Promise<Locator> {
+  await (await openAppMenu(page)).getByRole('menuitem', { name: 'Settings', exact: true }).click();
+  const dialog = page.getByRole('dialog');
+  await expect(dialog, 'Settings opens').toBeVisible();
+  return dialog;
+}
+
 /** Opens moss's Settings; the web build's Account section in it names who is signed in. */
 export async function openSettings(actor: Actor): Promise<Locator> {
-  await actor.page.getByRole('button', { name: 'Settings', exact: true }).click();
-  const dialog = actor.page.getByRole('dialog');
-  await expect(dialog, `${actor.label}: Settings opens`).toBeVisible();
-  return dialog;
+  return openSettingsDialog(actor.page);
 }
 
 /** moss's Settings, then the web build's Account section: Sign out. */
@@ -58,6 +71,62 @@ export async function signOutThroughSettings(actor: Actor): Promise<void> {
 }
 
 const BIND_TIMEOUT = 15_000;
+
+/** The app menu's heading names the vault on screen (T9.31); it is asked again until it does. */
+export async function expectVault(page: Page, name: string, { timeout = BIND_TIMEOUT, message = `the vault on screen is ${name}` } = {}): Promise<void> {
+  await expect(async () => {
+    const menu = await openAppMenu(page);
+    try {
+      await expect(menu.getByText(`Current vault: ${name}`, { exact: true })).toBeVisible({ timeout: 1_000 });
+    } finally {
+      await page.keyboard.press('Escape');
+      await expect(page.getByRole('menu')).toHaveCount(0);
+    }
+  }, message).toPass({ timeout });
+}
+
+/** Opens the app menu's Switch vault… list and returns it open. */
+export async function openVaultList(page: Page): Promise<Locator> {
+  await (await openAppMenu(page)).getByRole('menuitem', { name: 'Switch vault…', exact: true }).hover();
+  const list = page.getByRole('menu').filter({ has: page.getByRole('menuitemradio') });
+  await expect(list, 'Switch vault… lists the vaults').toBeVisible();
+  return list;
+}
+
+/** Closes the vault list and the app menu under it: Escape until no menu is left. */
+export async function closeVaultList(page: Page): Promise<void> {
+  await expect(async () => {
+    if (await page.getByRole('menu').count()) await page.keyboard.press('Escape');
+    await expect(page.getByRole('menu')).toHaveCount(0, { timeout: 1_000 });
+  }, 'the vault list and the app menu close').toPass({ timeout: 10_000 });
+}
+
+/** Switch vault…, then the vault whose row reads `item`: its name, then the role of a vault shared with them. */
+export async function switchVault(page: Page, item: string): Promise<void> {
+  await (await openVaultList(page)).getByRole('menuitemradio', { name: item, exact: true }).click();
+  await expect(page.getByRole('menu'), 'choosing a vault closes the menu').toHaveCount(0);
+}
+
+/** Settings, with its Vaults section disclosed; closed at rest. */
+export async function openVaultSettings(page: Page): Promise<Locator> {
+  const dialog = await openSettingsDialog(page);
+  const manage = dialog.getByRole('button', { name: 'Manage vaults', exact: true });
+  await expect(manage, 'vault management is closed at rest').toHaveAttribute('aria-expanded', 'false');
+  await manage.click();
+  await expect(manage).toHaveAttribute('aria-expanded', 'true');
+  return dialog;
+}
+
+/** Switch vault… > New vault…: Settings opens on the name field; the name and Enter land in the new vault. */
+export async function newVault(page: Page, name: string): Promise<void> {
+  await (await openVaultList(page)).getByRole('menuitem', { name: 'New vault…', exact: true }).click();
+  const field = page.getByRole('textbox', { name: 'New vault name', exact: true });
+  await expect(field, 'New vault… opens its name field').toBeFocused();
+  await field.fill(name);
+  await field.press('Enter');
+  await expect(page.getByRole('dialog'), 'Settings closes on the new vault').toHaveCount(0, { timeout: BIND_TIMEOUT });
+  await expectVault(page, name);
+}
 
 export const pane = (actor: Actor, docId: string): Locator => actor.page.locator(paneSelector(docId));
 export const title = (actor: Actor, docId: string): Locator => pane(actor, docId).locator(`[${TITLE_BINDING_ATTR}]`);
@@ -157,9 +226,46 @@ export type Access = 'Can view' | 'Can comment' | 'Can suggest' | 'Can edit' | '
 /** A share link's access (T2.4): never more than edit, and signed-out visitors read at view. */
 export type LinkAccess = 'Can view' | 'Can comment' | 'Can edit';
 
-/** Opens Share from the note's top bar and returns the dialog. */
+/** Opens the note's More actions and returns the open menu. */
+export async function openNoteMenu(actor: Actor, docId: string): Promise<Locator> {
+  await pane(actor, docId).getByRole('button', { name: 'More actions', exact: true }).click();
+  const menu = actor.page.getByRole('menu');
+  await expect(menu, `${actor.label}: More actions opens`).toBeVisible();
+  return menu;
+}
+
+/** The names of the open menu's items, with "—" for each separator, in order. */
+export const menuEntries = (menu: Locator): Promise<string[]> =>
+  menu.locator('[role="menuitem"], [role="menuitemradio"], [role="separator"]').evaluateAll((items) => items
+    .filter((item) => item.getClientRects().length > 0)
+    .map((item) => (item.getAttribute('role') === 'separator' ? '—' : (item.textContent ?? '').replace(/\s+/g, ' ').trim())));
+
+/** The note's More actions entries; the menu is closed again. */
+export async function noteMenuEntries(actor: Actor, docId: string): Promise<string[]> {
+  const menu = await openNoteMenu(actor, docId);
+  const entries = await menuEntries(menu);
+  await actor.page.keyboard.press('Escape');
+  await expect(menu).toBeHidden();
+  return entries;
+}
+
+/**
+ * The note's People here action: in the top bar while the pane has room, else in the Suggestions list's heading,
+ * which this opens through More actions (T9.30).
+ */
+export async function peopleHere(actor: Actor, docId: string): Promise<Locator> {
+  const inBar = pane(actor, docId).locator('[data-top-bar]').getByRole('button', { name: /^People here/ });
+  if ((await pane(actor, docId).boundingBox())!.width >= 640) return inBar;
+  await (await openNoteMenu(actor, docId)).getByRole('menuitem', { name: /^Suggestions/ }).click();
+  return actor.page.locator(`[${NAMES.suggestionsPanel}]`).getByRole('button', { name: /^People here/ });
+}
+
+/** Whether the note's More actions offers Share (T9.30: Share lives there, for its owner). */
+export const offersShare = async (actor: Actor, docId: string): Promise<boolean> => (await noteMenuEntries(actor, docId)).includes('Share…');
+
+/** Opens Share from the note's More actions and returns the dialog. */
 export async function openShare(actor: Actor, docId: string): Promise<Locator> {
-  await pane(actor, docId).getByRole('button', { name: 'Share', exact: true }).click();
+  await (await openNoteMenu(actor, docId)).getByRole('menuitem', { name: 'Share…', exact: true }).click();
   const dialog = actor.page.getByRole('dialog', { name: 'Share' });
   await expect(dialog, `${actor.label}: the Share dialog opens`).toBeVisible();
   return dialog;
@@ -169,6 +275,24 @@ const people = (dialog: Locator): Locator => dialog.getByRole('list', { name: 'P
 
 /** A person's row in the open Share dialog's "People with access" list. */
 export const accessRow = (dialog: Locator, person: Principal): Locator => people(dialog).filter({ hasText: person.name });
+
+/** A role chooser in the open Share dialog (T9.36): a button reading the role, which opens Moss's checked menu. Its
+ * name is "Access" (the invite's), "Link access" (a new link's) or `Access for <who>` (a person's or an invite's). */
+export const roleMenu = (dialog: Locator, name: string): Locator => dialog.getByRole('button', { name, exact: true });
+
+/** The open role menu; it floats above the dialog, outside it. */
+export const openRoleMenu = (dialog: Locator): Locator =>
+  dialog.page().getByRole('menu').filter({ has: dialog.page().getByRole('menuitemradio') });
+
+/** Picks `choice` in the role chooser `name`, or its "Remove access", and waits for the menu to close. */
+export async function chooseRole(dialog: Locator, name: string, choice: Access | 'Remove access'): Promise<void> {
+  await roleMenu(dialog, name).click();
+  const menu = openRoleMenu(dialog);
+  await expect(menu, `the ${name} menu opens`).toBeVisible();
+  if (choice === 'Remove access') await menu.getByRole('menuitem', { name: 'Remove access', exact: true }).click();
+  else await menu.getByRole('menuitemradio', { name: choice, exact: true }).click();
+  await expect(menu, `the ${name} menu closes`).toHaveCount(0);
+}
 
 /** The open Share dialog's "Pending invites" rows (T9.8). */
 export const pendingInvites = (dialog: Locator): Locator => dialog.getByRole('list', { name: 'Pending invites' }).getByRole('listitem');
@@ -184,7 +308,7 @@ export const INVITE_WAITING = 'Waiting for them to open the invite link';
 /** The status after sharing by email (T9.8): an invite link, and no email. */
 export const inviteCreated = (email: string): string => `Invite link created for ${email}. No email is sent. Copy the link and send it to them.`;
 
-/** An agent's id is a UUID (Settings → Agents); the dialog's submit reads "Share" only for one (T9.8). */
+/** An agent's id is a UUID (Settings → Agents); the dialog's submit reads "Add agent" only for one (T9.8, T9.36). */
 const AGENT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /** The copyable /invite link of a pending invite in the open Share dialog (T2.8), read from its field. */
@@ -204,7 +328,7 @@ export const linkRow = (dialog: Locator, access: LinkAccess): Locator =>
 
 /** Creates a link at `access` in the open dialog and returns its URL, read from the dialog (WebKit cannot read the clipboard). */
 export async function createLink(dialog: Locator, access: LinkAccess): Promise<string> {
-  await dialog.getByRole('radiogroup', { name: 'Link access', exact: true }).getByRole('radio', { name: access, exact: true }).click();
+  await chooseRole(dialog, 'Link access', access);
   await dialog.getByRole('button', { name: 'Create link', exact: true }).click();
   const field = linkField(dialog, access);
   await expect(field, `a ${access} link is listed`).toHaveCount(1);
@@ -223,8 +347,8 @@ export const pathOf = (url: string): string => {
  * open. */
 export async function shareInDialog(dialog: Locator, email: string, access: Access, confirmation = inviteCreated(email)): Promise<void> {
   await dialog.getByLabel('Email or agent ID', { exact: true }).fill(email);
-  await dialog.getByRole('radiogroup', { name: 'Access', exact: true }).getByRole('radio', { name: access, exact: true }).click();
-  await dialog.getByRole('button', { name: AGENT_ID.test(email) ? 'Share' : 'Create invite link', exact: true }).click();
+  await chooseRole(dialog, 'Access', access);
+  await dialog.getByRole('button', { name: AGENT_ID.test(email) ? 'Add agent' : 'Create invite link', exact: true }).click();
   await expect(dialog.getByRole('status'), `shared with ${email}`).toHaveText(confirmation);
 }
 

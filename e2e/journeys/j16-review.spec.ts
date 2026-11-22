@@ -11,7 +11,8 @@ import {
 } from '../lib/contract.ts';
 import { grantDoc } from '../lib/grants.ts';
 import {
-  BIND_TIMEOUT, button, caret, cards, closePanel, confirmation, confirmClose, content, openIn, openPanel, panel, settled as acked, sharedNote,
+  BIND_TIMEOUT, button, caret, cards, closePanel, confirmation, confirmClose, content, openIn, openPanel, panel, pressClose, reviewSwitch, settled as acked,
+  sharedNote,
 } from '../lib/suggest.ts';
 import { expect, test, ui } from '../lib/test.ts';
 
@@ -22,6 +23,25 @@ async function suggestText(actor: Actor, docId: string, at: string, offset: numb
   const pane = ui.pane(actor, docId);
   await expect(pane, 'acknowledged').toHaveAttribute(SYNC_UNACKED_ATTR, '0', { timeout: BIND_TIMEOUT });
   await expect(pane, 'never refused').toHaveAttribute(SUGGEST_REFUSED_ATTR, '0');
+}
+
+/** The title and body lines `actor`'s open suggestion surface covers, by their text. */
+async function coveredLines(actor: Actor, docId: string): Promise<string[]> {
+  return panel(actor).evaluate((surface, selector) => {
+    const card = surface.getBoundingClientRect();
+    const covered: string[] = [];
+    for (const root of document.querySelector(selector)!.querySelectorAll('[data-title-binding], [data-body-binding]')) {
+      const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+      for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+        const range = document.createRange();
+        range.selectNodeContents(node);
+        for (const line of range.getClientRects()) {
+          if (line.width > 0 && line.right > card.left && line.left < card.right && line.bottom > card.top && line.top < card.bottom) covered.push(node.textContent ?? '');
+        }
+      }
+    }
+    return covered;
+  }, `[data-editor-pane][data-doc-id="${docId}"]`);
 }
 
 /** The centre of `text`'s first occurrence in `actor`'s body. */
@@ -62,13 +82,13 @@ test("j16-review: the peer's panel lists a suggestion; an editor's accept from t
   await closePanel(ada);
   await expect(ada.page.getByRole('button', { name: /Notifications, \d+ unread/ }), 'the owner is notified').toBeVisible({ timeout: BIND_TIMEOUT });
   await ada.page.getByRole('button', { name: /Notifications/ }).click();
-  await expect(ada.page.getByText(/suggested changes in/)).toBeVisible();
+  await expect(ada.page.getByRole('menuitem', { name: /suggested changes in/ })).toBeVisible();
   await ada.page.keyboard.press('Escape');
 
   // The author's own panel lists it with Withdraw and no Accept.
   const own = (await openPanel(ben)).locator(`[${SUGGESTION_CARD_ATTR}][${SUGGESTION_STATUS_ATTR}="open"]`);
   await expect(own).toHaveCount(1);
-  await expect(own.getByRole('button', { name: 'Withdraw' })).toBeVisible();
+  await expect(own.getByRole('button', { name: 'Suggestion actions' }), 'Withdraw is in its own menu').toBeVisible();
   await expect(own.getByRole('button', { name: 'Accept' })).toHaveCount(0);
   await closePanel(ben);
 
@@ -84,7 +104,7 @@ test("j16-review: the peer's panel lists a suggestion; an editor's accept from t
   await expect(ui.body(ada, docId), "the owner's body holds the accepted text").toContainText('Keep every original plus word.', { timeout: BIND_TIMEOUT });
   await expect(ui.body(ben, docId), "the author's window keeps it").toContainText('Keep every original plus word.');
   await expect.poll(() => content(ada, docId), { message: 'the server has it', timeout: BIND_TIMEOUT }).toContain('Keep every original plus word.');
-  await expect(button(ben)).toHaveAttribute('aria-label', /0 open|^Suggestions$/, { timeout: BIND_TIMEOUT });
+  await expect(button(ben), 'nothing open: no count').toHaveCount(0, { timeout: BIND_TIMEOUT });
 
   // The next one is rejected from the panel and leaves both windows.
   await suggestText(ben, docId, 'Second paragraph', 6, ' extra');
@@ -182,15 +202,20 @@ test('j16-review: Review is offered only while a suggestion is open; Done and Es
   const pane = ui.pane(ada, docId);
   await openIn(ada, docId, 'edit');
   await openIn(carl, docId, 'review');
-  const review = (actor: Actor) => actor.page.getByRole('button', { name: 'Review suggestions' });
+  // Review is never a top-bar control (T9.30): it is entered from the Suggestions list, whose count shows only while a
+  // suggestion is open and which More actions always opens.
+  const topReview = (actor: Actor) => actor.page.locator('[data-top-bar]').getByRole('button', { name: /^Review/ });
+  const review = async (actor: Actor) => reviewSwitch(await openPanel(actor));
   const band = ada.page.locator(`[${REVIEW_BAND_ATTR}]`);
   const blur = () => ada.page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
 
-  // No suggestion yet: no Suggestions button and no Review control for anyone, and Escape changes nothing.
-  await expect(button(ada), 'no Suggestions button on a note without suggestions').toHaveCount(0);
-  await expect(review(ada), 'no Review control without an open suggestion').toHaveCount(0);
+  // No suggestion yet: no Suggestions count and no Review control for anyone, and Escape changes nothing.
+  await expect(button(ada), 'no Suggestions count on a note without suggestions').toHaveCount(0);
+  await expect(await review(ada), 'no Review control without an open suggestion').toHaveCount(0);
+  await closePanel(ada);
+  await expect(topReview(ada)).toHaveCount(0);
   await expect(button(carl)).toHaveCount(0);
-  await expect(review(carl), "a viewer's top bar has no Review button").toHaveCount(0);
+  await expect(topReview(carl), "a viewer's top bar has no Review button").toHaveCount(0);
   await ada.page.keyboard.press('Escape');
   await expect(pane).toHaveAttribute(EDIT_MODE_ATTR, 'edit');
   await expect(ui.body(ada, docId)).toHaveAttribute(BODY_BINDING_ATTR, 'live');
@@ -204,27 +229,28 @@ test('j16-review: Review is offered only while a suggestion is open; Done and Es
   carl.expectReconnects(1, docId);
   await suggestText(ben, docId, 'original word', 8, ' plus');
   await expect(button(ada)).toHaveAttribute('aria-label', /1 open/, { timeout: BIND_TIMEOUT });
-  await expect(review(ada), 'one open suggestion offers Review').toBeVisible();
-  await expect(review(ada)).toHaveAttribute('aria-pressed', 'false');
-  for (const control of [review(ada), button(ada)]) expect(await control.getAttribute('title'), 'a Moss tooltip, not a title').toBeNull();
-  await review(ada).hover();
-  await expect(ada.page.getByRole('tooltip').filter({ hasText: /^Review suggestions$/ }), "Moss's tooltip names it").toBeVisible();
+  await expect(topReview(ada), 'Review stays out of the top bar').toHaveCount(0);
+  expect(await button(ada).getAttribute('title'), 'a Moss tooltip, not a title').toBeNull();
   await button(ada).hover();
   await expect(ada.page.getByRole('tooltip').filter({ hasText: /^Suggestions$/ })).toBeVisible();
+  await expect(await review(ada), 'one open suggestion offers Review').toBeVisible();
+  await expect(await review(ada), 'it says what Review pauses').toHaveAccessibleDescription('Editing pauses while you review');
+  await closePanel(ada);
 
-  // The viewer stays in Review; only the list's header switch is theirs.
+  // The viewer stays in Review, said once in the bottom row: the list repeats no active state.
   await expect(ui.pane(carl, docId)).toHaveAttribute(EDIT_MODE_ATTR, 'review');
-  await expect(review(carl)).toHaveCount(0);
-  const header = (await openPanel(carl)).getByRole('button', { name: 'Review', exact: true });
-  await expect(header, "the viewer's list offers the switch, pressed").toHaveAttribute('aria-pressed', 'true');
+  await expect(topReview(carl)).toHaveCount(0);
+  await expect(carl.page.locator(`[${REVIEW_BAND_ATTR}]`)).toHaveText('Reviewing suggestions · View only Done');
+  await expect(await review(carl), "the viewer's list has no second Review state").toHaveCount(0);
   await closePanel(carl);
 
   const enter = async () => {
-    await review(ada).click();
+    await (await review(ada)).click();
     await expect(pane).toHaveAttribute(EDIT_MODE_ATTR, 'review', { timeout: BIND_TIMEOUT });
     await expect(ui.body(ada, docId)).toHaveAttribute(BODY_BINDING_ATTR, 'readonly', { timeout: BIND_TIMEOUT });
-    await expect(band, 'the band says why typing does nothing').toHaveText('Reviewing suggestions. Click a change to accept or reject it. Editing is paused. Done');
-    await expect(review(ada)).toHaveAttribute('aria-pressed', 'true');
+    await expect(band, 'the band says why typing does nothing').toHaveText('Reviewing suggestions · Editing paused Done');
+    await expect(band.getByRole('button', { name: 'Done', exact: true }))
+      .toHaveAccessibleDescription('Return to your previous permitted mode. This does not accept or reject changes.');
   };
   const left = async (how: string) => {
     await expect(pane, how).toHaveAttribute(EDIT_MODE_ATTR, 'edit', { timeout: BIND_TIMEOUT });
@@ -233,6 +259,8 @@ test('j16-review: Review is offered only while a suggestion is open; Done and Es
   };
 
   await enter();
+  await expect(await review(ada), 'in Review the list repeats no active state').toHaveCount(0);
+  await closePanel(ada);
   await ada.page.mouse.move(0, 0);
   await blur();
   await ada.page.keyboard.type('zz');
@@ -254,17 +282,71 @@ test('j16-review: Review is offered only while a suggestion is open; Done and Es
   await card.getByRole('button', { name: 'Accept' }).click();
   await expect(cards(ada, 'accepted')).toHaveCount(1, { timeout: BIND_TIMEOUT });
   await expect(pane, 'back to editing within a second').toHaveAttribute(EDIT_MODE_ATTR, 'edit', { timeout: 1_000 });
+  await expect(reviewSwitch(panel(ada)), 'nothing left to review').toHaveCount(0);
   await closePanel(ada);
   await left('the last decision leaves Review');
-  await expect(review(ada), 'nothing left to review').toHaveCount(0);
-  await expect(button(ada), 'the reviewed suggestion keeps the list').toBeVisible();
+  await expect(button(ada), 'the count leaves with the last open suggestion').toHaveCount(0);
+  expect(await ui.noteMenuEntries(ada, docId), 'the reviewed suggestion keeps the list in More actions').toContain('Suggestions');
 
   await suggestText(ben, docId, 'Second paragraph', 6, ' extra');
   await expect(button(ada)).toHaveAttribute('aria-label', /1 open/, { timeout: BIND_TIMEOUT });
-  await expect(review(ada)).toHaveAttribute('aria-pressed', 'false');
+  await expect(await review(ada)).toBeVisible();
+  await closePanel(ada);
   await ada.page.waitForTimeout(500);
   await expect(pane, "a colleague's next suggestion leaves the owner editing").toHaveAttribute(EDIT_MODE_ATTR, 'edit');
   await expect(ui.pane(carl, docId), "the viewer's mode never moved").toHaveAttribute(EDIT_MODE_ATTR, 'review');
+});
+
+test('j16-review: Review pauses the mode it was entered from, Done returns there, and a suggester never leaves Suggest @p:mean-2 @p:R17', async ({ actors }) => {
+  const { ada, ben, docId } = await sharedNote(actors);
+  await openIn(ben, docId, 'suggest');
+  await openIn(ada, docId, 'edit');
+  await actors.requireDistinct(2);
+  // Each switch remounts the body on a fresh socket (§5).
+  ada.expectReconnects(4, docId);
+  // Two entries into Review and two exits.
+  ben.expectReconnects(4, docId);
+  await suggestText(ben, docId, 'original word', 8, ' plus');
+  await expect(button(ada)).toHaveAttribute('aria-label', /1 open/, { timeout: BIND_TIMEOUT });
+
+  // An editor who is suggesting: Review pauses Suggesting, and Done returns to it, not to Edit.
+  const pane = ui.pane(ada, docId);
+  await (await ui.openNoteMenu(ada, docId)).getByRole('menuitem', { name: 'Suggest changes', exact: true }).click();
+  await expect(pane).toHaveAttribute(EDIT_MODE_ATTR, 'suggest', { timeout: BIND_TIMEOUT });
+  await expect(ui.body(ada, docId)).toHaveAttribute(BODY_BINDING_ATTR, 'live', { timeout: BIND_TIMEOUT });
+  const entry = reviewSwitch(await openPanel(ada));
+  await expect(entry).toHaveAccessibleDescription('Suggesting pauses while you review');
+  await entry.click();
+  await closePanel(ada);
+  await expect(pane).toHaveAttribute(EDIT_MODE_ATTR, 'review', { timeout: BIND_TIMEOUT });
+  const band = ada.page.locator(`[${REVIEW_BAND_ATTR}]`);
+  await expect(band).toHaveText('Reviewing suggestions · Suggesting paused Done');
+  await band.getByRole('button', { name: 'Done', exact: true }).click();
+  await expect(pane, 'Done returns to Suggest').toHaveAttribute(EDIT_MODE_ATTR, 'suggest', { timeout: BIND_TIMEOUT });
+  await expect(ui.body(ada, docId)).toHaveAttribute(BODY_BINDING_ATTR, 'live', { timeout: BIND_TIMEOUT });
+  await expect(band).toHaveCount(0);
+
+  // The suggester: the same words, and Done and Escape return to Suggest.
+  const benPane = ui.pane(ben, docId);
+  const benBand = ben.page.locator(`[${REVIEW_BAND_ATTR}]`);
+  for (const how of ['Done', 'Escape'] as const) {
+    const benEntry = reviewSwitch(await openPanel(ben));
+    await expect(benEntry).toHaveAccessibleDescription('Suggesting pauses while you review');
+    await benEntry.click();
+    await closePanel(ben);
+    await expect(benPane).toHaveAttribute(EDIT_MODE_ATTR, 'review', { timeout: BIND_TIMEOUT });
+    await expect(benBand).toHaveText('Reviewing suggestions · Suggesting paused Done');
+    await expect(benBand.getByRole('button', { name: 'Done', exact: true }))
+      .toHaveAccessibleDescription('Return to your previous permitted mode. This does not accept or reject changes.');
+    if (how === 'Done') await benBand.getByRole('button', { name: 'Done', exact: true }).click();
+    else {
+      await ben.page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+      await ben.page.keyboard.press('Escape');
+    }
+    await expect(benPane, `${how} returns the suggester to Suggest`).toHaveAttribute(EDIT_MODE_ATTR, 'suggest', { timeout: BIND_TIMEOUT });
+    await expect(ui.body(ben, docId)).toHaveAttribute(BODY_BINDING_ATTR, 'live', { timeout: BIND_TIMEOUT });
+  }
+  await expect(ben.page.getByRole('button', { name: 'Stop suggesting', exact: true }), 'and still cannot leave it').toHaveCount(0);
 });
 
 test('j16-review: withdraw removes the inserted text from every view while the note stays byte-identical @p:mean-2 @p:R16 @p:R17', async ({ actors }) => {
@@ -279,6 +361,8 @@ test('j16-review: withdraw removes the inserted text from every view while the n
   // The withdraw rebuilds the author's fork, and Review remounts on a closed record (§5).
   ben.expectReconnects(1, docId);
   carl.expectReconnects(1, docId);
+  // The card's preview may still be in flight when the withdraw lands: it answers 409 not-open.
+  ben.expectHttp(409, new RegExp(`/api/docs/${docId}/suggestions/[^/]+/preview$`));
   const before = await content(ada, docId);
 
   await suggestText(ben, docId, 'original word', 8, ' plus');
@@ -289,7 +373,7 @@ test('j16-review: withdraw removes the inserted text from every view while the n
   // Withdraw asks first; Escape and Cancel keep the suggestion.
   const withdraw = confirmation(ben, 'Withdraw');
   for (const dismiss of ['Escape', 'Cancel'] as const) {
-    await own.getByRole('button', { name: 'Withdraw' }).click();
+    await pressClose(ben, own, 'Withdraw');
     await expect(withdraw).toBeVisible();
     await expect(withdraw).toContainText('Your proposed change will be discarded. This action cannot be undone.');
     await expect(withdraw.getByRole('button', { name: 'Cancel' }), 'the dialog opens on Cancel').toBeFocused();
@@ -453,4 +537,155 @@ test('j16-review: a code-block edit reads as its changed line before and after, 
   await card.getByRole('button', { name: 'Accept' }).click();
   await expect(cards(ada, 'accepted')).toHaveCount(1, { timeout: BIND_TIMEOUT });
   await expect.poll(() => content(ada, docId), { timeout: BIND_TIMEOUT }).toContain('console.debug(y)');
+});
+
+test("j16-review proposals (T9.34): marks keep the note's ink, a mark opens its one suggestion beside it, and the list is flat with quiet actions @p:mean-2 @p:R17", async ({ actors }) => {
+  const { ada, ben, docId } = await sharedNote(actors);
+  await openIn(ben, docId, 'suggest');
+  await openIn(ada, docId, 'edit');
+  await actors.requireDistinct(2);
+  await ada.page.setViewportSize({ width: 1440, height: 1000 });
+  await suggestText(ben, docId, 'original word', 8, ' plus');
+  await expect(button(ada)).toHaveAttribute('aria-label', /1 open/, { timeout: BIND_TIMEOUT });
+
+  // Paint: inserted text keeps the note's ink with an underline, struck text no accent colour.
+  const rules = await ada.page.evaluate(() => {
+    const out: Record<string, { background: string; color: string; decoration: string }> = {};
+    for (const sheet of [...document.styleSheets]) {
+      let list: CSSRuleList;
+      try {
+        list = sheet.cssRules;
+      } catch {
+        continue;
+      }
+      for (const rule of [...list]) {
+        if (!(rule instanceof CSSStyleRule)) continue;
+        for (const name of ['suggest-insert', 'suggest-delete']) {
+          // The rule names the editor root (T9.48b).
+          if (rule.selectorText.trim() === `[data-lexical-editor]::highlight(${name})`) {
+            out[name] = { background: rule.style.backgroundColor, color: rule.style.color, decoration: rule.style.textDecorationColor };
+          }
+        }
+      }
+    }
+    return out;
+  });
+  expect(rules['suggest-insert'], 'the insert rule is found').toBeTruthy();
+  expect(rules['suggest-insert']!.background, 'no fill behind inserted text').toBe('');
+  expect(rules['suggest-insert']!.decoration, 'no brand colour under inserted text').not.toContain('accent');
+  expect(rules['suggest-delete']!.color, 'struck text is not recoloured').not.toContain('accent');
+
+  // Edit mode: the insert stays a mark; its preview is Moss's tooltip material above the line, not over the next.
+  const mark = ada.page.locator(`[${SUGGEST_MARK_ATTR}="insert"][${SUGGESTION_ID_ATTR}]`).first();
+  await expect(mark).toBeAttached({ timeout: BIND_TIMEOUT });
+  await mark.hover({ force: true });
+  const preview = mark.locator('[data-suggest-preview]');
+  await expect(preview).toBeVisible();
+  // A repaint can swap the wedge mid-read (WebKit then reports an empty style): read it again until it is attached.
+  const readTip = () => preview.evaluate((element) => {
+    const style = getComputedStyle(element);
+    const wedge = element.parentElement!.getBoundingClientRect();
+    return { fontSize: style.fontSize, radius: style.borderTopLeftRadius, above: element.getBoundingClientRect().bottom < wedge.top };
+  });
+  await expect.poll(readTip, { message: "Moss's tooltip material, above the marked line" }).toEqual({ fontSize: '10px', radius: '6px', above: true });
+
+  // A click on the mark opens that one suggestion at the mark, as Moss's comment thread opens at its text.
+  await mark.click({ force: true });
+  const surface = panel(ada);
+  await expect(surface.locator(`[${SUGGESTION_CARD_ATTR}][${SUGGESTION_ACTIVE_ATTR}]`)).toHaveCount(1, { timeout: BIND_TIMEOUT });
+  await expect(surface.locator(`[${SUGGESTION_CARD_ATTR}]`), 'only the clicked suggestion').toHaveCount(1);
+  const markBox = await mark.evaluate((element) => {
+    const rect = element.getBoundingClientRect();
+    return { top: rect.top, bottom: rect.bottom };
+  });
+  const placed = await surface.evaluate((element, at) => {
+    const rect = element.getBoundingClientRect();
+    return { width: rect.width, radius: getComputedStyle(element).borderTopLeftRadius, gap: Math.min(Math.abs(rect.top - at.bottom), Math.abs(at.top - rect.bottom)) };
+  }, markBox);
+  expect(placed.width).toBe(352);
+  expect(placed.radius, "the comment thread's radius").toBe('12px');
+  expect(placed.gap, 'beside the mark').toBeLessThan(24);
+  expect(await coveredLines(ada, docId), 'the thread covers no line of the title or the text').toEqual([]);
+  // Moss's thread header: what it is, and a way to close it.
+  await expect(surface.getByText('Suggestion', { exact: true }), "the thread's header names it").toBeVisible();
+  await expect(surface.getByRole('button', { name: 'Close', exact: true })).toBeVisible();
+
+  // The suggestion is a flat row; Accept and Reject are compact neutral actions.
+  const card = surface.locator(`[${SUGGESTION_CARD_ATTR}]`);
+  await expect(card.getByRole('button', { name: 'Accept' })).toBeEnabled({ timeout: BIND_TIMEOUT });
+  expect(await card.evaluate((element) => getComputedStyle(element).borderTopWidth), 'no nested card frame').toBe('0px');
+  for (const name of ['Accept', 'Reject']) {
+    const action = await card.getByRole('button', { name, exact: true }).evaluate((element) => {
+      const style = getComputedStyle(element);
+      return { height: element.getBoundingClientRect().height, background: style.backgroundColor };
+    });
+    expect(action.height, `${name} keeps Moss's 24 px action rhythm`).toBe(24);
+    expect(action.background, `${name} has no resting fill`).toBe('rgba(0, 0, 0, 0)');
+  }
+  for (const row of await card.locator(`[${SUGGESTION_ROW_ATTR}]`).all()) {
+    expect(await row.evaluate((element) => getComputedStyle(element).backgroundColor), 'rows carry no tint').toBe('rgba(0, 0, 0, 0)');
+  }
+  await surface.getByRole('button', { name: 'Close', exact: true }).click();
+  await expect(surface, 'Close closes the thread').toBeHidden();
+
+  // The list from the count is Moss's 352 px list with radius 8, and the author's Withdraw lives in the row's menu.
+  const list = await openPanel(ada);
+  expect(await list.evaluate((element) => [element.getBoundingClientRect().width, getComputedStyle(element).borderTopLeftRadius])).toEqual([352, '8px']);
+  await closePanel(ada);
+  const own = (await openPanel(ben)).locator(`[${SUGGESTION_CARD_ATTR}][${SUGGESTION_STATUS_ATTR}="open"]`);
+  await expect(own.getByRole('button', { name: 'Withdraw' }), 'Withdraw is not a resting button').toHaveCount(0);
+  await own.getByRole('button', { name: 'Suggestion actions' }).click();
+  await expect(ben.page.getByRole('menuitem', { name: 'Withdraw' })).toBeVisible();
+  await ben.page.keyboard.press('Escape');
+
+  // A 390 px pane has no margin for the thread: the suggestion fills the pane as one view, and Back to note returns
+  // to the note where it was.
+  await ada.page.setViewportSize({ width: 390, height: 844 });
+  await expect(mark).toBeAttached({ timeout: BIND_TIMEOUT });
+  const scroller = (root: Element) => {
+    for (let at = root.parentElement; at; at = at.parentElement) if (at.scrollHeight > at.clientHeight && /auto|scroll/.test(getComputedStyle(at).overflowY)) return at.scrollTop;
+    return 0;
+  };
+  const scrolled = await ui.body(ada, docId).evaluate(scroller);
+  await mark.click({ force: true });
+  await expect(surface.locator(`[${SUGGESTION_CARD_ATTR}][${SUGGESTION_ACTIVE_ATTR}]`)).toHaveCount(1, { timeout: BIND_TIMEOUT });
+  const back = surface.getByRole('button', { name: 'Back to note', exact: true });
+  await expect(back).toBeVisible();
+  // The pane may still be settling from the narrower window: the view follows it.
+  await expect.poll(() => surface.evaluate((element, selector) => {
+    const rect = element.getBoundingClientRect();
+    const pane = document.querySelector(selector)!.getBoundingClientRect();
+    return { left: Math.round(rect.left - pane.left), right: Math.round(pane.right - rect.right) };
+  }, `[data-editor-pane][data-doc-id="${docId}"]`), { message: 'the view fills the pane' }).toEqual({ left: 0, right: 0 });
+  await expect(surface.getByRole('button', { name: 'Accept' }), 'its decisions stay reachable').toBeInViewport();
+  await back.click();
+  await expect(surface).toBeHidden();
+  expect(await ui.body(ada, docId).evaluate(scroller), 'the note keeps its scroll').toBe(scrolled);
+});
+
+test('j16-review proposals (T9.34): a mark in a full-width paragraph opens the Suggestions panel beside the note, which reflows so no line is under it @p:mean-2 @p:R17', async ({ actors }) => {
+  const prose = 'The river runs past the old mill and along the bank under the willows, where the path turns toward the bridge and the town beyond it, and every spring the water rises over the lower meadow before it falls back again.';
+  const { ada, ben, docId } = await sharedNote(actors, `${prose}\n\n${prose}\n\nA closing line.`);
+  await openIn(ben, docId, 'suggest');
+  await openIn(ada, docId, 'edit');
+  await actors.requireDistinct(2);
+  await ada.page.setViewportSize({ width: 1440, height: 1000 });
+  await suggestText(ben, docId, 'old mill', 3, ' stone');
+  await expect(button(ada)).toHaveAttribute('aria-label', /1 open/, { timeout: BIND_TIMEOUT });
+  const edge = () => ui.body(ada, docId).evaluate((root) => Math.round(root.getBoundingClientRect().right));
+  const before = await edge();
+  const mark = ada.page.locator(`[${SUGGEST_MARK_ATTR}="insert"][${SUGGESTION_ID_ATTR}]`).first();
+  await expect(mark).toBeAttached({ timeout: BIND_TIMEOUT });
+  await mark.click({ force: true });
+  const surface = panel(ada);
+  await expect(surface.locator(`[${SUGGESTION_CARD_ATTR}][${SUGGESTION_ACTIVE_ATTR}]`)).toHaveCount(1, { timeout: BIND_TIMEOUT });
+  await expect(surface, 'the wrapped lines leave no margin: it opens as the panel').toHaveAttribute('data-suggestion-place', 'docked');
+  await expect(surface.getByText('Suggestion', { exact: true }), 'the panel names what it holds').toBeVisible();
+  await expect(surface.getByRole('button', { name: 'Back to note', exact: true })).toBeVisible();
+  // The note reflows beside the panel: no title or body line sits under it, and the source stays on screen.
+  await expect.poll(() => coveredLines(ada, docId), { message: 'the panel covers no line of the title or the text' }).toEqual([]);
+  await expect(mark, 'its source stays in view').toBeInViewport();
+  await surface.getByRole('button', { name: 'Back to note', exact: true }).click();
+  await expect(surface).toBeHidden();
+  await expect.poll(edge, { message: 'the note takes its place back' }).toBe(before);
 });

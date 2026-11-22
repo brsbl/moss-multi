@@ -1,16 +1,18 @@
 diff --git a/packages/desktop/src/renderer/panels/NotesPanelFooter.tsx b/packages/desktop/src/renderer/panels/NotesPanelFooter.tsx
 --- a/packages/desktop/src/renderer/panels/NotesPanelFooter.tsx
 +++ b/packages/desktop/src/renderer/panels/NotesPanelFooter.tsx
-@@ -6,6 +6,8 @@ import {
+@@ -6,6 +6,10 @@ import {
    TooltipProvider,
    TooltipTrigger
  } from '@moss/shared/components/ui/tooltip';
 +// moss-multi seam: trash-drop (T2.3; deviation 10): the Trash button takes a dropped note
 +import { trashDropTarget } from '@moss-multi/host/trash';
++// moss-multi seam: app-menu (T9.30)
++import { SettingsFooterMenu } from '@moss-multi/host/slots';
  
  export type NotesPanelMode = 'notes' | 'trash';
  
-@@ -15,6 +17,7 @@ type NotesPanelFooterProps = {
+@@ -15,6 +19,7 @@ type NotesPanelFooterProps = {
    onModeChange: (mode: NotesPanelMode) => void;
    onOpenFeedback: () => void;
    onOpenSettings: () => void;
@@ -18,7 +20,7 @@ diff --git a/packages/desktop/src/renderer/panels/NotesPanelFooter.tsx b/package
  };
  
  const footerButtonClass = 'flex h-7 w-7 items-center justify-center rounded text-ink-faint transition-colors hover:bg-surface-note-hover/40 hover:text-ink-muted';
-@@ -24,7 +27,8 @@ export function NotesPanelFooter({
+@@ -24,22 +29,25 @@ export function NotesPanelFooter({
    mode,
    onModeChange,
    onOpenFeedback,
@@ -28,7 +30,25 @@ diff --git a/packages/desktop/src/renderer/panels/NotesPanelFooter.tsx b/package
  }: NotesPanelFooterProps) {
    const isTrashMode = mode === 'trash';
  
-@@ -69,6 +73,7 @@ export function NotesPanelFooter({
+   return (
+     <TooltipProvider delayDuration={400}>
+       <div className="flex items-center justify-between">
++        {/* moss-multi seam: app-menu (T9.30): Settings opens the web's app menu, whose last row opens Settings */}
++        <SettingsFooterMenu onOpenSettings={onOpenSettings}>
+         <button
+           type="button"
+-          onClick={onOpenSettings}
+           className="flex h-7 items-center gap-1.5 rounded -ml-1.5 px-1.5 text-ink-faint transition-colors hover:bg-surface-note-hover/40 hover:text-ink-muted"
+           aria-label="Settings"
+         >
+           <Settings className="h-3.5 w-3.5" strokeWidth={1.5} aria-hidden />
+           <span className="text-xs font-light">Settings</span>
+         </button>
++        </SettingsFooterMenu>
+         <div className="flex items-center gap-1">
+           <Tooltip
+             open={feedbackTooltipOpen ? true : undefined}
+@@ -69,6 +77,7 @@ export function NotesPanelFooter({
                  onClick={() => onModeChange(isTrashMode ? 'notes' : 'trash')}
                  className={footerButtonClass}
                  aria-label={isTrashMode ? 'Back to notes' : 'Trash'}

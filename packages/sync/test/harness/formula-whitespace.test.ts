@@ -4,7 +4,7 @@
 // converter/formula-literals.golden.test.ts holds the doubling range around it) the formula is a node; above it the
 // line stays literal text but its payload is still read. Each path must grow linearly as the run doubles to 2 MB.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { MARKDOWN_CAP_BYTES } from '@moss-multi/protocol/limits';
+import { doubling, expectLinearTime } from '../../../../scripts/lib/linear-time.mjs';
 import { markdownToState } from '../../src/converter/index.ts';
 import { DocDO, type SearchFeed } from '../../src/doc-do.ts';
 import type { IndexEntry } from '../../src/search-do.ts';
@@ -16,6 +16,9 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
+/** The doubling legs' top size: SP2's scale note. */
+const SCALE_NOTE_CHARS = 2 * 1024 * 1024;
+
 /** One line of `chars` characters: a formula whose expression is mostly one blank run. */
 const note = (chars: number): string => {
   const head = 'Total {{1+';
@@ -25,23 +28,24 @@ const note = (chars: number): string => {
 
 /** Times `run` on a note of each doubling size; each must cost at most about three times the half-size one. */
 async function expectLinear<T>(prepare: (markdown: string) => Promise<T>, run: (prepared: T) => Promise<void>): Promise<void> {
-  const time = async (chars: number): Promise<number> => {
-    const prepared = await prepare(note(chars));
-    const startedAt = performance.now();
-    await run(prepared);
-    return performance.now() - startedAt;
-  };
-  await time(1024); // warm up
-  let previous = await time(2048);
-  for (let chars = 4096; chars <= MARKDOWN_CAP_BYTES; chars *= 2) {
-    const took = await time(chars);
-    expect(took, `${chars} chars took ${Math.round(took)} ms after ${Math.round(previous)} ms for half`).toBeLessThan(3 * previous + 250);
-    previous = took;
-  }
+  await expectLinearTime({
+    shape: 'a formula with a long blank run',
+    sizes: doubling(2048, SCALE_NOTE_CHARS),
+    warmup: [1024],
+    slack: 250,
+    measure: async (chars) => {
+      const prepared = await prepare(note(chars));
+      const startedAt = performance.now();
+      await run(prepared);
+      return performance.now() - startedAt;
+    },
+  });
 }
 
 const fed: IndexEntry[] = [];
 class FedDoc extends DocDO {
+  // The doubling legs pass the note's text limit; they time the converter, not admission.
+  static override limits = { ...DocDO.limits, textCharCap: Infinity };
   static override searchFeed = (): SearchFeed => ({ index: async (entry) => { fed.push(entry); return { linksChanged: false }; } });
 }
 

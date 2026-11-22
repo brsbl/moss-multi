@@ -50,7 +50,7 @@ test('j01 setup: Ada shares her note with Ben from the Share dialog, and Ben ope
   await ui.waitBodyLive(ben, docId);
   await expect(ui.pane(ben, docId), 'Ben opens the note at the role Ada chose').toHaveAttribute(ROLE_ATTR, 'editor');
   expect(await ui.fieldText(ben, docId, 'body'), "Ben sees Ada's text").toBe(ADA_TEXT);
-  await expect(ui.pane(ben, docId).getByRole('button', { name: 'Share', exact: true }), 'only the owner is offered Share').toHaveCount(0);
+  expect(await ui.offersShare(ben, docId), 'only the owner is offered Share').toBe(false);
   await actors.requireDistinct(2);
 
   await ui.typeBody(ben, docId, BEN_TEXT);
@@ -110,6 +110,9 @@ test('j01 setup: a signed-in stranger opening the note URL gets the denial page;
   await cy.goto(`/d/${docId}`);
   await cy.page.locator(`html[${APP_STATE_ATTR}="ready"]`).waitFor({ state: 'attached', timeout: 30_000 });
   await expect(cy.page.getByRole('heading', { name: DENIAL }), 'the stranger sees the denial page').toBeVisible();
+  // Only the next steps that exist (T9.37): back to his notes, or another account; no request-access promise.
+  await expect(cy.page.locator('main').getByRole('button'), 'the denial offers back and another account')
+    .toHaveText(['Go to your notes', 'Use another account']);
   await expect(cy.page.locator('[data-moss-app-shell]'), 'no moss shell opens behind it').toHaveCount(0);
   await expect(cy.page.locator(`[${EDITOR_PANE_ATTR}]`), 'no note opens in its place').toHaveCount(0);
   expect(new URL(cy.page.url()).pathname, 'the address stays on the note').toBe(`/d/${docId}`);
@@ -153,7 +156,7 @@ test('j01 access: a viewer reads the shared note but cannot share, write through
   await expect(ui.body(ben, docId), 'the read-only note remains visible').toBeVisible();
   await expect(ui.body(ben, docId)).toHaveAttribute('contenteditable', 'false');
   expect(await ui.fieldText(ben, docId, 'body')).toBe(ADA_TEXT);
-  await expect(ui.pane(ben, docId).getByRole('button', { name: 'Share', exact: true })).toHaveCount(0);
+  expect(await ui.offersShare(ben, docId)).toBe(false);
 
   const headers = { origin: stack.baseUrl };
   const reshared = await ben.context.request.post(`/api/docs/${docId}/members`, {
@@ -199,10 +202,10 @@ test('j01 discovery: Ben finds a directly shared note in Home without a URL or m
   await expect(row).toBeVisible();
   await expect(ada.page.locator(`[data-sidebar-row][data-doc-id="${docId}"] [draggable="true"]`)).toHaveCount(1);
   await expect(row.locator('[draggable="true"]')).toHaveCount(0);
-  await expect(ben.page.getByRole('button', { name: 'Vault: Home', exact: true })).toBeVisible();
+  await ui.expectVault(ben.page, 'Home');
   await row.click();
   await ui.waitBodyLive(ben, docId);
-  await expect(ben.page.getByRole('button', { name: 'Vault: Home', exact: true })).toBeVisible();
+  await ui.expectVault(ben.page, 'Home');
   await row.click({ button: 'right' });
   await expect(ben.page.getByRole('menuitem', { name: 'Copy Link', exact: true })).toBeVisible();
   await expect(ben.page.getByRole('menuitem', { name: /Move|New folder|Create folder/ })).toHaveCount(0);
@@ -222,12 +225,11 @@ test('j01 discovery: Ben switches to a shared vault and back, with a role badge 
   expect(grant.status()).toBe(201);
   await acceptInvite(ada, { folderId: vault.id }, benPrincipal);
   const ben = await actors.open(benPrincipal);
-  const switcher = ben.page.getByRole('button', { name: 'Vault: Home', exact: true });
-  await switcher.click();
-  const shared = ben.page.getByRole('menuitem', { name: 'Home editor', exact: true });
+  const list = await ui.openVaultList(ben.page);
+  const shared = list.getByRole('menuitemradio', { name: 'Home Can edit', exact: true });
   await expect(shared).toBeVisible();
-  // Ben’s own Home is active, so "Share vault…" and "New vault" are his; its rename and trash sit beside the switcher.
-  await expect(ben.page.getByRole('menuitem', { name: /Rename|Delete|Trash/ })).toHaveCount(0);
+  // Switching only switches: renaming and trashing a vault live in Settings.
+  await expect(list.getByRole('menuitem', { name: /Rename|Delete|Trash/ })).toHaveCount(0);
   await shared.click();
   const row = ben.page.locator(`[data-sidebar-row][data-doc-id="${docId}"]`);
   await expect(row).toBeVisible();
@@ -235,8 +237,7 @@ test('j01 discovery: Ben switches to a shared vault and back, with a role badge 
   await expect(row).toBeVisible();
   await row.click();
   await ui.waitBodyLive(ben, docId);
-  await switcher.click();
-  await ben.page.getByRole('menuitem', { name: 'Home', exact: true }).click();
+  await ui.switchVault(ben.page, 'Home');
   await expect(row).toHaveCount(0);
   await expect(ui.pane(ben, docId)).toBeVisible();
   await actors.checkpoint('switched-back-with-doc-open');

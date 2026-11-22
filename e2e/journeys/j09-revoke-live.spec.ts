@@ -54,12 +54,11 @@ async function noteWithText(ada: Actor): Promise<string> {
   return docId;
 }
 
-/** A person's (or an invite's) access in the owner's Share dialog: glyphdown's role select and Remove button. */
-const accessSelect = (dialog: Locator, who: string): Locator => dialog.getByRole('combobox', { name: `Access for ${who}`, exact: true });
+/** A person's (or an invite's) access in the owner's Share dialog: a role menu whose last item is Remove access (T9.36). */
+const accessSelect = (dialog: Locator, who: string): Locator => ui.roleMenu(dialog, `Access for ${who}`);
 
 async function chooseAccess(dialog: Locator, who: string, choice: ui.Access | 'Remove access'): Promise<void> {
-  if (choice === 'Remove access') await dialog.getByRole('button', { name: `Remove ${who}`, exact: true }).click();
-  else await accessSelect(dialog, who).selectOption({ label: choice });
+  await ui.chooseRole(dialog, `Access for ${who}`, choice);
 }
 
 /** Opens `path` as a signed-in principal with doc-socket closes recorded. */
@@ -91,12 +90,18 @@ test('j09 demotion: Ada lowers Ben from edit to view; his socket closes 4403 wit
   ben.expectReconnects(1, docId);
 
   const dialog = await ui.openShare(ada, docId);
-  await expect(accessSelect(dialog, benPrincipal.name), 'Ben is listed with his access').toHaveValue('editor');
+  await expect(accessSelect(dialog, benPrincipal.name), 'Ben is listed with his access').toHaveText('Can edit');
   const patched = ada.page.waitForResponse((response) => response.url().endsWith(`/api/docs/${docId}/members`) && response.request().method() === 'PATCH');
-  const sentAt = Date.now();
+  // The clock starts when the demotion leaves the page, not while the role menu opens.
+  let sentAt = Number.POSITIVE_INFINITY;
+  const onRequest = (request: { url(): string; method(): string }) => {
+    if (request.method() === 'PATCH' && request.url().endsWith(`/api/docs/${docId}/members`)) sentAt = Math.min(sentAt, Date.now());
+  };
+  ada.page.on('request', onRequest);
   await chooseAccess(dialog, benPrincipal.name, 'Can view');
   expect((await patched).status(), 'the demotion is saved').toBe(200);
-  await expect(accessSelect(dialog, benPrincipal.name), "Ada's list shows the new access").toHaveValue('viewer');
+  ada.page.off('request', onRequest);
+  await expect(accessSelect(dialog, benPrincipal.name), "Ada's list shows the new access").toHaveText('Can view');
   await expect(dialog.getByRole('status'), 'and says so').toContainText('Can view');
 
   await expect.poll(async () => (await closes(ben.page)).filter((c) => c.url.includes(`/parties/doc-d-o/${docId}`)).map((c) => c.code),
@@ -116,7 +121,7 @@ test('j09 demotion: Ada lowers Ben from edit to view; his socket closes 4403 wit
 
   // T9.10: the band says so and stays; once the notice clears, a later key is refused out loud again.
   const band = ui.pane(ben, docId).locator(`[${ROLE_BAND_ATTR}]`);
-  await expect(band, 'the band says he can view only').toHaveText("View only. You can't edit this note.");
+  await expect(band, 'the band says he can view only').toHaveText('View only');
   const refusal = ui.pane(ben, docId).locator('[data-input-refusal]');
   await expect(refusal, 'the demotion notice clears').toHaveText('', { timeout: LIVE_TIMEOUT });
   await expect(band, 'and the band stays').toBeVisible();
@@ -128,7 +133,7 @@ test('j09 demotion: Ada lowers Ben from edit to view; his socket closes 4403 wit
 });
 
 const CAN_EDIT_NOW = 'You can now edit this note.';
-const VIEW_BAND = "View only. You can't edit this note.";
+const VIEW_BAND = 'View only';
 
 /**
  * The workspace channel, held down on demand: while down, each new channel socket closes before it opens, as on a dead
@@ -197,8 +202,8 @@ test('j09 raise: Ada raises Ben from view to edit and his open note takes typing
   await actors.checkpoint('raise-before');
 
   const dialog = await ui.openShare(ada, docId);
-  await accessSelect(dialog, benPrincipal.name).selectOption({ label: 'Can edit' });
-  await expect(accessSelect(dialog, benPrincipal.name), "Ada's list shows the raise").toHaveValue('editor');
+  await chooseAccess(dialog, benPrincipal.name, 'Can edit');
+  await expect(accessSelect(dialog, benPrincipal.name), "Ada's list shows the raise").toHaveText('Can edit');
   await expectRaisedToEdit(ben, docId, 2_000);
   await actors.checkpoint('raise-after-2s');
   expect((await closes(ben.page)).filter((c) => c.code === 4403), 'a raise closes nothing from the server').toEqual([]);
@@ -209,11 +214,11 @@ test('j09 raise: Ada raises Ben from view to edit and his open note takes typing
 
   // Lowered, then raised again: the note he holds after the lowering takes the second raise too.
   await ui.waitAcked(ben, docId);
-  await accessSelect(dialog, benPrincipal.name).selectOption({ label: 'Can view' });
+  await chooseAccess(dialog, benPrincipal.name, 'Can view');
   await ui.waitOpen(ben, docId, 'readonly');
   await expect(ui.pane(ben, docId)).toHaveAttribute(ROLE_ATTR, 'viewer');
   await expect(ben.page.locator(`[${ACTION_FEEDBACK_ATTR}]`), 'the first pill has gone').toHaveCount(0, { timeout: LIVE_TIMEOUT });
-  await accessSelect(dialog, benPrincipal.name).selectOption({ label: 'Can edit' });
+  await chooseAccess(dialog, benPrincipal.name, 'Can edit');
   await expectRaisedToEdit(ben, docId, 2_000);
   const second = ' and again';
   await ui.typeBody(ben, docId, second);
@@ -549,8 +554,8 @@ test('j09 sign-out: signing out in one window ends the same session in the other
 
 test('j09 cold: after an idle wake, a revoked doc link and a revoked folder link land no frame @hibernate @slow @p:ppl-2 @p:tech-6', async ({ actors, stack }, info) => {
   test.setTimeout(300_000);
-  // Ada works over the API only: an open shell shows the most recently edited note, so the holders' typing would
-  // switch her window between their notes and keep their DOs awake.
+  // Ada works over the API only: an open shell shows a note (the newest when it loads, and keeps it), and its doc
+  // socket would keep that note's DO awake.
   const ada = await actors.session(await actors.principal('ada'));
   const headers = { origin: stack.baseUrl };
   // Declared setup over the API: a note with an editor link, and a folder holding a subfolder note with an editor

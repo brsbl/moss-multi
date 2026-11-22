@@ -18,7 +18,7 @@ diff --git a/packages/desktop/src/renderer/App.tsx b/packages/desktop/src/render
  import { hydrateComments } from './editor/utils/comment-import';
  import { noteIntelligenceEnabledAtom, pendingAgentCommentContextAtom, promptDraftAtom } from '@moss/shared/state/atoms';
  import { connectedFolderEntriesAtom, contextPillsAtom, setMentionPillsAtom } from './state/granted-dirs-atoms';
-@@ -167,6 +169,16 @@ import {
+@@ -167,6 +169,19 @@ import {
    isRendererDevelopment,
    isRendererProduction
  } from './utils/renderer-env';
@@ -31,11 +31,14 @@ diff --git a/packages/desktop/src/renderer/App.tsx b/packages/desktop/src/render
 +// moss-multi seam: notice-stack (T3.B17): a failure notice never covers the open note's Trash notice
 +import { standAboveTrashNotice } from '@moss-multi/host/notice-stack';
 +// moss-multi seam: phone-shell (T2.7, deviation 11): below 640 px the notes panel overlays the canvas
-+import { useNarrow } from '@moss-multi/host/viewport';
++import { COMPACT_ACTIONS_PANEL_CLASS, useNarrow, useBelowMd } from '@moss-multi/host/viewport';
++// moss-multi seam: pin-active-note (T9.48a): a note shown because nothing is chosen becomes the choice
++import { activeNoteSelectionAtom } from '@moss/shared/state/atoms';
++import { pinActiveNote, type PinMemory } from '@moss-multi/host/pin-active-note';
  
  const nowInSeconds = (): number => Math.floor(Date.now() / 1000);
  const NOTE_LIST_SYNC_DEBOUNCE_MS = 150;
-@@ -312,27 +324,28 @@ const mapRecordToMockNote = (record: NoteMetadataRecord): MockNote => {
+@@ -312,27 +327,28 @@ const mapRecordToMockNote = (record: NoteMetadataRecord): MockNote => {
    };
  };
  
@@ -69,8 +72,12 @@ diff --git a/packages/desktop/src/renderer/App.tsx b/packages/desktop/src/render
    const module = await import('./panels/TrashedNotesPanelContent');
    return { default: module.TrashedNotesPanelContent };
  }) as typeof import('./panels/TrashedNotesPanelContent').TrashedNotesPanelContent;
-@@ -1138,10 +1151,11 @@ export function App() {
+@@ -1136,12 +1152,15 @@ export function App() {
+     trash: null
+   });
    const didInitializeStartupSelectionRef = useRef(false);
++  // moss-multi seam: pin-active-note (T9.48a): the pin effect needs to see startup selection finish
++  const [startupSelectionDone, setStartupSelectionDone] = useState(false);
    const commandPaletteRef = useRef<CommandPaletteOverlayHandle>(null);
  
 -  const [shouldFocusTitle, setShouldFocusTitle] = useState(false);
@@ -83,17 +90,66 @@ diff --git a/packages/desktop/src/renderer/App.tsx b/packages/desktop/src/render
    }, []);
    const handleBodyFocusComplete = useCallback(() => {
      setShouldFocusBody(false);
-@@ -1155,6 +1169,9 @@ export function App() {
+@@ -1155,6 +1174,12 @@ export function App() {
    const toggleZenMode = useSetAtom(toggleZenModeAtom);
    const notesPanelWrapperRef = useRef<HTMLDivElement | null>(null);
    const [showZenNotesPanel, setShowZenNotesPanel] = useState(false);
 +  const narrow = useNarrow(); // moss-multi seam: phone-shell (T2.7): opened by its toggle; open while no note is
 +  const [narrowNotesOpen, setNarrowNotesOpen] = useState(false);
 +  const narrowNotesVisible = narrow && (narrowNotesOpen || !activeNoteId);
++  const compactActions = useBelowMd(); // moss-multi seam: phone-shell (T2.7): below md the actions panel overlays the note, opened by its toggle
++  const [compactActionsOpen, setCompactActionsOpen] = useState(false);
++  const actionsHidden = compactActions ? !compactActionsOpen : actionsPanelHidden;
    const [showZenTopBar, setShowZenTopBar] = useState(false);
    const [updateInfo, setUpdateInfo] = useState<UpdateReadyInfo | null>(null);
    const [selectedContext, setSelectedContext] = useState<string | null>(null);
-@@ -1941,6 +1958,9 @@ export function App() {
+@@ -1727,12 +1752,14 @@ export function App() {
+       navigateToNote(noteId);
+       viewSelectionRef.current.notes = noteId;
+       didInitializeStartupSelectionRef.current = true;
++      setStartupSelectionDone(true);
+     };
+ 
+     const initializeStartupSelection = async (): Promise<void> => {
+       let availableNotes = store.get(activeNotesAtom);
+       if (availableNotes.length === 0 && !initialNoteId) {
+         didInitializeStartupSelectionRef.current = true;
++        setStartupSelectionDone(true);
+         return;
+       }
+ 
+@@ -1750,6 +1777,7 @@ export function App() {
+             }
+             if (store.get(activeNoteIdAtom)) {
+               didInitializeStartupSelectionRef.current = true;
++              setStartupSelectionDone(true);
+               return;
+             }
+             if (record && record.trashedAt == null) {
+@@ -1771,6 +1799,7 @@ export function App() {
+       availableNotes = store.get(activeNotesAtom);
+       if (availableNotes.length === 0) {
+         didInitializeStartupSelectionRef.current = true;
++        setStartupSelectionDone(true);
+         return;
+       }
+ 
+@@ -1798,6 +1827,14 @@ export function App() {
+     windowContextReady
+   ]);
+ 
++  // moss-multi seam: pin-active-note (T9.48a): with nothing chosen, moss shows the newest note and follows whichever
++  // note a collaborator creates or edits next; the note on screen becomes the choice once startup selection is done.
++  const activeNoteSelection = useAtomValue(activeNoteSelectionAtom);
++  const pinMemoryRef = useRef<PinMemory>({ seen: null });
++  useEffect(() => {
++    pinActiveNote(store, { startupDone: startupSelectionDone, view: appMode, navigate: navigateToNote, memory: pinMemoryRef.current });
++  }, [activeNoteId, activeNoteSelection, appMode, navigateToNote, startupSelectionDone, store]);
++
+   const runSerializedNoteSwitch = useCallback((task: () => Promise<void>) => {
+     noteSwitchQueueRef.current = noteSwitchQueueRef.current.then(task, task);
+     return noteSwitchQueueRef.current;
+@@ -1941,6 +1978,9 @@ export function App() {
              return;
            }
          }
@@ -103,7 +159,7 @@ diff --git a/packages/desktop/src/renderer/App.tsx b/packages/desktop/src/render
  
          setAppMode(targetView);
          viewSelectionRef.current[targetView] = noteId;
-@@ -1948,7 +1968,7 @@ export function App() {
+@@ -1948,7 +1988,7 @@ export function App() {
          // No swap needed - activeActionTabsAtom auto-derives from activeNoteId
        });
      },
@@ -112,7 +168,7 @@ diff --git a/packages/desktop/src/renderer/App.tsx b/packages/desktop/src/render
    );
  
    const handleCloseSplitPane = useCallback(
-@@ -2588,7 +2608,10 @@ export function App() {
+@@ -2588,7 +2628,10 @@ export function App() {
      const subscribe = window.electronAPI.notes.onInternalFileOpen;
      if (typeof subscribe !== 'function') return;
      const cleanup = subscribe((noteId) => {
@@ -124,7 +180,7 @@ diff --git a/packages/desktop/src/renderer/App.tsx b/packages/desktop/src/render
          try {
            const record = await window.electronAPI.notes.getById(noteId);
            if (record) {
-@@ -2608,10 +2631,11 @@ export function App() {
+@@ -2608,10 +2651,11 @@ export function App() {
              if (!canSwitch) return;
            }
            navigateToNote(noteId);
@@ -137,7 +193,7 @@ diff --git a/packages/desktop/src/renderer/App.tsx b/packages/desktop/src/render
      });
      return cleanup;
    }, [applyNoteRecordToStore, flushBeforeNoteSwitch, hasElectronBridge, navigateToNote, runSerializedNoteSwitch, store]);
-@@ -2846,11 +2870,11 @@ export function App() {
+@@ -2846,11 +2890,11 @@ export function App() {
  
      // Always create regular notes in a non-system folder.
      // If the active folder is a system folder, fall back to root.
@@ -154,7 +210,7 @@ diff --git a/packages/desktop/src/renderer/App.tsx b/packages/desktop/src/render
  
      const finishCreation = (note: MockNote, preloadedRecord?: NoteWithContent): MockNote => {
        insertNote(note);
-@@ -2859,7 +2883,7 @@ export function App() {
+@@ -2859,7 +2903,7 @@ export function App() {
        }
        navigateToNote(note.id);
        if (focusTarget === 'title') {
@@ -163,7 +219,7 @@ diff --git a/packages/desktop/src/renderer/App.tsx b/packages/desktop/src/render
        } else {
          setShouldFocusBody(true);
        }
-@@ -2917,12 +2941,19 @@ export function App() {
+@@ -2917,12 +2961,19 @@ export function App() {
    ]);
  
    const handleCreateNote = useCallback(async () => {
@@ -185,7 +241,7 @@ diff --git a/packages/desktop/src/renderer/App.tsx b/packages/desktop/src/render
  
    const handleDuplicateNote = useCallback(async (noteId: string) => {
      const canSwitch = await flushBeforeNoteSwitch();
-@@ -2932,35 +2963,7 @@ export function App() {
+@@ -2932,35 +2983,7 @@ export function App() {
      if (!entity) return;
  
      try {
@@ -222,7 +278,7 @@ diff --git a/packages/desktop/src/renderer/App.tsx b/packages/desktop/src/render
        const note = mapRecordToMockNote(persistedRecord);
        insertNote(note);
        applyNoteRecordToStore(persistedRecord);
-@@ -3127,14 +3130,8 @@ export function App() {
+@@ -3127,14 +3150,8 @@ export function App() {
    const handleRenameNote = useCallback(
      (noteId: string) => {
        handleSelectNote(noteId);
@@ -239,7 +295,7 @@ diff --git a/packages/desktop/src/renderer/App.tsx b/packages/desktop/src/render
      },
      [handleSelectNote]
    );
-@@ -3159,7 +3156,8 @@ export function App() {
+@@ -3159,7 +3176,8 @@ export function App() {
              noteId,
              error
            });
@@ -249,7 +305,7 @@ diff --git a/packages/desktop/src/renderer/App.tsx b/packages/desktop/src/render
            await reconcileNotesFromDisk('restore-error', noteId);
            return;
          }
-@@ -3788,7 +3786,8 @@ export function App() {
+@@ -3788,7 +3806,8 @@ export function App() {
  
        const key = e.key.toLowerCase();
  
@@ -259,7 +315,7 @@ diff --git a/packages/desktop/src/renderer/App.tsx b/packages/desktop/src/render
          e.preventDefault();
          if (showCommandPalette) {
            // Already open - just focus the input
-@@ -3914,8 +3913,21 @@ export function App() {
+@@ -3914,8 +3933,33 @@ export function App() {
    }, [store, activeNoteId]);
  
    const handleCollapseNotesPanel = useCallback(() => {
@@ -267,6 +323,18 @@ diff --git a/packages/desktop/src/renderer/App.tsx b/packages/desktop/src/render
      setNotesPanelHidden(true);
 -  }, [setNotesPanelHidden]);
 +  }, [narrow, setNotesPanelHidden]);
++
++  // moss-multi seam: phone-shell (T2.7): a tap outside the overlaid actions panel closes it
++  useEffect(() => {
++    if (!compactActions || !compactActionsOpen) return;
++    const close = (event: PointerEvent) => {
++      const target = event.target as Element | null;
++      if (!target || target.closest('[data-actions-panel-wrapper], [role="menu"], [role="dialog"], [role="listbox"]')) return;
++      setCompactActionsOpen(false);
++    };
++    window.addEventListener('pointerdown', close, true);
++    return () => window.removeEventListener('pointerdown', close, true);
++  }, [compactActions, compactActionsOpen]);
 +
 +  // moss-multi seam: phone-shell (T2.7): a tap outside the overlaid notes panel closes it
 +  useEffect(() => {
@@ -282,15 +350,18 @@ diff --git a/packages/desktop/src/renderer/App.tsx b/packages/desktop/src/render
  
    const handleOpenActionImages = useCallback((sources: string[], startIndex: number) => {
      if (!sources.length) return;
-@@ -3942,12 +3954,13 @@ export function App() {
+@@ -3941,13 +3985,14 @@ export function App() {
+     onDeleteNote: handleNoteDeleted,
      onRestoreNote: handleNoteRestored,
      onNavigateToNote: handleSelectNote,
-     isActionsPanelHidden: actionsPanelHidden,
+-    isActionsPanelHidden: actionsPanelHidden,
 -    isNotesPanelHidden: notesPanelHidden,
 -    onExpandNotesPanel: () => { zenModeActive ? toggleZenMode() : setNotesPanelHidden(false); },
+-    onExpandActionsPanel: () => { zenModeActive ? toggleZenMode() : setActionsPanelHidden(false); },
++    isActionsPanelHidden: actionsHidden, // moss-multi seam: phone-shell (T2.7)
 +    isNotesPanelHidden: narrow ? !narrowNotesVisible : notesPanelHidden, // moss-multi seam: phone-shell (T2.7)
 +    onExpandNotesPanel: () => { if (narrow) { setNarrowNotesOpen(true); return; } zenModeActive ? toggleZenMode() : setNotesPanelHidden(false); },
-     onExpandActionsPanel: () => { zenModeActive ? toggleZenMode() : setActionsPanelHidden(false); },
++    onExpandActionsPanel: () => { if (compactActions) { setCompactActionsOpen(true); return; } zenModeActive ? toggleZenMode() : setActionsPanelHidden(false); }, // moss-multi seam: phone-shell (T2.7)
      isAgentStreaming: hasActiveStreaming,
      onCanvasClick: handlePromptClose,
 -    onActionClick: handleOpenPrompt,
@@ -299,7 +370,20 @@ diff --git a/packages/desktop/src/renderer/App.tsx b/packages/desktop/src/render
    };
  
    const actionsPanelContent = (
-@@ -4047,7 +4060,7 @@ export function App() {
+@@ -3955,9 +4000,9 @@ export function App() {
+       // In browser-split the panel renders inside <main> next to the note pane,
+       // so it needs its own divider. In the normal placement the canvas area's
+       // border-r already draws the seam — no border here to avoid doubling.
+-      className={isBrowserSplitOpen ? 'border-l border-border-subtle' : undefined}
+-      hidden={actionsPanelHidden}
+-      onHiddenChange={setActionsPanelHidden}
++      className={compactActions ? COMPACT_ACTIONS_PANEL_CLASS : isBrowserSplitOpen ? 'border-l border-border-subtle' : undefined} // moss-multi seam: phone-shell (T2.7)
++      hidden={actionsHidden}
++      onHiddenChange={compactActions ? (next) => setCompactActionsOpen(!next) : setActionsPanelHidden}
+       width="var(--actions-panel-width, 280px)"
+       scrollContainerRef={actionsPanelScrollRef}
+       isAgentStreaming={actionTabs.some(tab => tab.isStreaming)}
+@@ -4047,7 +4092,7 @@ export function App() {
        searchBarAutoFocus={searchBarAutoFocus}
        onCloseSearch={handleCloseSearch}
        onOpenSearch={() => { setSearchQuery(''); setSearchBarAutoFocus(true); }}
@@ -308,7 +392,7 @@ diff --git a/packages/desktop/src/renderer/App.tsx b/packages/desktop/src/render
        onLeftTitleFocusComplete={handleTitleFocusComplete}
        leftAutoFocusBody={shouldFocusBody}
        onLeftBodyFocusComplete={handleBodyFocusComplete}
-@@ -4063,6 +4076,7 @@ export function App() {
+@@ -4063,6 +4108,7 @@ export function App() {
        feedbackTooltipOpen={feedbackTooltipFixtureOpen}
        mode={appMode}
        onModeChange={handlePanelViewChange}
@@ -316,7 +400,7 @@ diff --git a/packages/desktop/src/renderer/App.tsx b/packages/desktop/src/render
        onOpenFeedback={() => setFeedbackDialogOpen(true)}
        onOpenSettings={async () => {
          handleCloseSearch();
-@@ -4072,8 +4086,8 @@ export function App() {
+@@ -4072,8 +4118,8 @@ export function App() {
      />
    );
  
@@ -327,7 +411,7 @@ diff --git a/packages/desktop/src/renderer/App.tsx b/packages/desktop/src/render
    const notesPanelWidthPx = notesListWidth + NOTES_PANEL_RESIZER_WIDTH_PX;
  
    const notePanelContent =
-@@ -4108,11 +4122,13 @@ export function App() {
+@@ -4108,11 +4154,13 @@ export function App() {
          notesPanelOverlay ? 'absolute inset-y-0 left-0 z-40 border-r border-border-subtle/50 shadow-[0_8px_24px_var(--ink-shadow-soft)]' : '',
          notesPanelOverlay && notesPanelVisible ? 'translate-x-0 opacity-100' : '',
          notesPanelOverlay && !notesPanelVisible ? '-translate-x-full opacity-0 pointer-events-none' : '',
@@ -341,7 +425,7 @@ diff --git a/packages/desktop/src/renderer/App.tsx b/packages/desktop/src/render
      >
        <div
          className="flex h-full min-w-0 shrink-0 overflow-hidden"
-@@ -4199,6 +4215,8 @@ export function App() {
+@@ -4199,6 +4247,8 @@ export function App() {
        <SnapshotUiFixtureLayer fixture={automationUiFixture} />
        {operationFailure ? (
          <div

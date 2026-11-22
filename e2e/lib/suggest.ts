@@ -80,13 +80,23 @@ export async function sharedNote(actors: Actors, markdown = NOTE) {
   return { ada, ben, docId, adaPrincipal };
 }
 
+/** The top bar's count of open suggestions, shown only while one is open (T9.30). */
 export const button = (actor: Actor): Locator => actor.page.locator(`[${SUGGESTIONS_BUTTON_ATTR}]`);
+/** The list's entry into Review, offered only while a suggestion is open (T9.1) and the pane is not already in it (T9.33). */
+export const reviewSwitch = (list: Locator): Locator => list.getByRole('button', { name: 'Review suggestions', exact: true });
 export const panel = (actor: Actor): Locator => actor.page.locator(`[${SUGGESTIONS_PANEL_ATTR}]`);
 export const cards = (actor: Actor, status?: string): Locator =>
   panel(actor).locator(status ? `[${SUGGESTION_CARD_ATTR}][${SUGGESTION_STATUS_ATTR}="${status}"]` : `[${SUGGESTION_CARD_ATTR}]`);
 
 export async function openPanel(actor: Actor): Promise<Locator> {
-  if (!(await panel(actor).isVisible())) await button(actor).click();
+  if (!(await panel(actor).isVisible())) {
+    if (await button(actor).isVisible()) await button(actor).click();
+    else {
+      // With nothing open the count leaves the top bar; the list stays in More actions (T9.30).
+      await actor.page.getByRole('button', { name: 'More actions', exact: true }).first().click();
+      await actor.page.getByRole('menu').getByRole('menuitem', { name: /^Suggestions/ }).click();
+    }
+  }
   await expect(panel(actor)).toBeVisible();
   return panel(actor);
 }
@@ -100,9 +110,19 @@ export async function closePanel(actor: Actor): Promise<void> {
 export const confirmation = (actor: Actor, action: 'Reject' | 'Withdraw'): Locator =>
   actor.page.getByRole('alertdialog', { name: `${action} suggestion?` });
 
+/** Chooses `action` on `card`: Reject is a row action, the author's Withdraw is in the row's own menu (T9.34). */
+export async function pressClose(actor: Actor, card: Locator, action: 'Reject' | 'Withdraw'): Promise<void> {
+  if (action === 'Reject') {
+    await card.getByRole('button', { name: action, exact: true }).click();
+    return;
+  }
+  await card.getByRole('button', { name: 'Suggestion actions', exact: true }).click();
+  await actor.page.getByRole('menuitem', { name: action, exact: true }).click();
+}
+
 /** Presses `action` on `card` and confirms it in the dialog it opens. */
 export async function confirmClose(actor: Actor, card: Locator, action: 'Reject' | 'Withdraw'): Promise<void> {
-  await card.getByRole('button', { name: action, exact: true }).click();
+  await pressClose(actor, card, action);
   const dialog = confirmation(actor, action);
   await expect(dialog, `${action} asks first`).toBeVisible();
   await expect(dialog.getByRole('button', { name: 'Cancel' }), 'the dialog opens on Cancel').toBeFocused();

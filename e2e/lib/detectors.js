@@ -23,9 +23,10 @@ export function floatingOverCanvas({ names }) {
   const describe = (el) =>
     `<${el.tagName.toLowerCase()}${el.id ? `#${el.id}` : ''}${[...el.attributes].filter((a) => a.name !== 'style').map((a) => ` ${a.name}${a.value ? `="${a.value.slice(0, 40)}"` : ''}`).join('')}> "${(el.textContent ?? '').trim().slice(0, 40)}"`;
   // moss's own floating chrome: its selection and bottom toolbars, and its bottom band (the Trash view's retention
-  // notice, and the role and Review bands in its place), its feedback pill, and its table chrome: column handles over
-  // the table the caret is in (after a redo, the caret is back in the redone table, as in moss).
-  const allowed = [names.overlay, names.toolbar, names.retentionNotice, names.roleBand, names.reviewBand, names.actionFeedback, names.tableUi, ...names.remote].map((name) => `[${name}]`).join(', ');
+  // notice, and the role, Review and Suggesting bands in its place), its feedback pill, and its table chrome: column
+  // handles over the table the caret is in (after a redo, the caret is back in the redone table, as in moss). The
+  // connection notice and pending cue (T9.40) and the input refusal (T9.35) float in that same bottom region.
+  const allowed = [names.overlay, names.toolbar, names.retentionNotice, names.roleBand, names.reviewBand, names.modeRow, names.actionFeedback, names.connectionBanner, names.connectionCue, names.inputRefusal, names.restoreNotice, names.suggestUnsaved, names.tableUi, ...names.remote].map((name) => `[${name}]`).join(', ');
   const found = new Set();
   for (const canvas of document.querySelectorAll(`[${names.canvas}]`)) {
     const r = canvas.getBoundingClientRect();
@@ -134,15 +135,17 @@ export function remountSince({ names, docId, mark, generation }) {
 }
 
 /**
- * Invariant 7 input: the title and body text of every pane showing the doc.
+ * Invariant 7 input: the title and body text of every pane showing the doc, and whether both fields have settled
+ * (no binding still `unbound`, as a pane mounting after a note switch is).
  * @param {{ names: Names, docId: string }} arg
- * @returns {{ title: string, body: string }[]}
+ * @returns {{ title: string, body: string, settled: boolean }[]}
  */
 export function fieldTexts({ names, docId }) {
   return [...document.querySelectorAll(`[${names.pane}][${names.docId}="${docId}"]`)].map((pane) => {
     const title = pane.querySelector(`[${names.titleBinding}]`);
     // The bound root carries the binding attribute; moss also marks its editor wrapper `data-lexical-editor`.
     const body = pane.querySelector(`[${names.bodyBinding}]`) ?? pane.querySelector(names.lexical);
-    return { title: title ? (title.textContent ?? '') : '', body: body ? (body.textContent ?? '') : '' };
+    const settled = title?.getAttribute(names.titleBinding) !== 'unbound' && body?.getAttribute(names.bodyBinding) !== 'unbound';
+    return { title: title ? (title.textContent ?? '') : '', body: body ? (body.textContent ?? '') : '', settled };
   });
 }

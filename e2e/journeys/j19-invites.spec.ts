@@ -85,7 +85,7 @@ test('j19 bell: an accepted invite reaches Ada\'s bell without a reload, and its
 
   // Ada moves on to a note of her own; a marker only this document holds would vanish on a page load.
   const own = await ui.createNote(ada);
-  await expect(bell(ada, own), 'Ada has nothing unread').toHaveAccessibleName('Notifications');
+  await expect(bell(ada, own), 'Ada has nothing unread').toHaveCount(0); // The bell shows only while something is unread (T9.30).
   await ada.page.evaluate(() => { (window as unknown as { j19Document: boolean }).j19Document = true; });
 
   // Ben follows the link Ada sent him and lands on the note.
@@ -144,7 +144,7 @@ test('j19 bell: an accepted invite reaches Ada\'s bell without a reload, and its
   }
 
   await expect(ui.body(ada, target)).toContainText('Shared through the bell');
-  await expect(bell(ada, target), 'opening the notice marks it read').toHaveAccessibleName('Notifications');
+  await expect(bell(ada, target), 'opening the notice marks it read').toHaveCount(0); // The bell shows only while something is unread (T9.30).
   await ui.typeBody(ben, target, ' and Ben replies');
   await expect(ui.body(ada, target), 'Ada sees Ben type').toContainText('and Ben replies', { timeout: LIVE_TIMEOUT });
 
@@ -162,7 +162,7 @@ test('j19 bell: an accepted invite reaches Ada\'s bell without a reload, and its
   await ada.page.locator(`html[${APP_STATE_ATTR}="ready"]`).waitFor({ state: 'attached', timeout: 30_000 });
   await ui.waitLive(ada, own);
   await ada.declareRemount(own);
-  await expect(bell(ada, own)).toHaveAccessibleName('Notifications');
+  await expect(bell(ada, own)).toHaveCount(0); // The bell shows only while something is unread (T9.30).
   expect(await ui.fieldText(ada, own, 'body'), 'and the sentence survives the reload').toContain(firstHalf);
 });
 

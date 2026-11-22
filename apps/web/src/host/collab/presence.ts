@@ -4,11 +4,13 @@ import { removeAwarenessStates } from 'y-protocols/awareness';
 import { NAME_MAX_CHARS } from '@moss-multi/protocol/limits';
 import { auth } from '../auth.ts';
 import { claimColor, colorOf, seedColor, type Claim } from './presence-colors.ts';
+import { sessionLabels, visitMemory } from './presence-names.ts';
 
 export interface PresenceUser {
   principalId: string; name: string; color: string; colorSettled: boolean; isAgent: boolean; slot: number;
 }
-export interface Peer extends PresenceUser { clientId: number }
+/** `label` is the name this tab shows for the session: its full name, told apart from a same-named one (T9.32). */
+export interface Peer extends PresenceUser { clientId: number; label: string }
 export interface LocalIdentity { name: string; color: string; awarenessData: { user?: PresenceUser } }
 export function localIdentity(): LocalIdentity {
   const state = auth.get();
@@ -24,8 +26,33 @@ function publish(docId: string, peers: Peer[]) {
   rosters.set(docId, peers);
   for (const listener of listeners) listener();
 }
+const subscribe = (listener: () => void) => { listeners.add(listener); return () => { listeners.delete(listener); }; };
 export function usePeers(docId: string): Peer[] {
-  return useSyncExternalStore(listener => { listeners.add(listener); return () => { listeners.delete(listener); }; }, () => rosters.get(docId) ?? empty);
+  return useSyncExternalStore(subscribe, () => rosters.get(docId) ?? empty);
+}
+/** The note's other sessions as last published; the remote carets read their labels here. */
+export const peersOf = (docId: string): Peer[] => rosters.get(docId) ?? empty;
+const names = visitMemory();
+
+// T9.32: the session someone is inspecting in the roster (its caret is highlighted and named), and the typing
+// sessions whose names found no gutter beside the text (the People here region names them instead).
+const inspected = new Map<string, number>();
+const noIds: number[] = [];
+const unplaced = new Map<string, number[]>();
+export const inspectedOf = (docId: string): number | null => inspected.get(docId) ?? null;
+export function inspect(docId: string, clientId: number | null): void {
+  if (inspectedOf(docId) === clientId) return;
+  if (clientId === null) inspected.delete(docId); else inspected.set(docId, clientId);
+  for (const listener of listeners) listener();
+}
+export function setUnplacedTyping(docId: string, clientIds: number[]): void {
+  const now = unplaced.get(docId) ?? noIds;
+  if (now.length === clientIds.length && now.every((id, i) => id === clientIds[i])) return;
+  if (clientIds.length) unplaced.set(docId, clientIds); else unplaced.delete(docId);
+  for (const listener of listeners) listener();
+}
+export function useUnplacedTyping(docId: string): number[] {
+  return useSyncExternalStore(subscribe, () => unplaced.get(docId) ?? noIds);
 }
 export function startPresence(docId: string, provider: YProvider): () => void {
   const awareness = provider.awareness;
@@ -47,12 +74,18 @@ export function startPresence(docId: string, provider: YProvider): () => void {
     if (!provider.synced) { clearTimeout(settling); settling = undefined; }
     const peers: Peer[] = [];
     const claims: Claim[] = [];
+    const sessions: { clientId: number; principalId: string; name: string }[] = [];
     for (const [clientId, state] of awareness.getStates()) {
       const user = state.user as PresenceUser | undefined;
       if (!user || !user.principalId) continue;
       claims.push({ id: String(clientId), slot: user.slot, settled: user.colorSettled });
-      if (clientId !== awareness.clientID) peers.push({ ...user, clientId });
+      sessions.push({ clientId, principalId: user.principalId, name: user.name });
+      if (clientId !== awareness.clientID) peers.push({ ...user, clientId, label: user.name });
     }
+    // This tab's own session first, so its other windows are numbered after it.
+    sessions.sort((a, b) => Number(b.clientId === awareness.clientID) - Number(a.clientId === awareness.clientID));
+    const labels = sessionLabels(sessions, names);
+    for (const peer of peers) peer.label = labels.get(peer.clientId) ?? peer.name;
     const state = awareness.getLocalState();
     const user = state?.user as PresenceUser | undefined;
     if (state && user && !document.hidden) {
@@ -71,7 +104,8 @@ export function startPresence(docId: string, provider: YProvider): () => void {
       }, 500);
       try { sessionStorage.setItem(key, String(slot)); } catch { /* storage unavailable */ }
     }
-    peers.sort((a, b) => a.principalId < b.principalId ? -1 : a.principalId > b.principalId ? 1 : a.clientId - b.clientId);
+    // By the name shown, so the list reads alphabetically and a newcomer never reorders the rest (T9.32).
+    peers.sort((a, b) => a.label.localeCompare(b.label, undefined, { numeric: true }) || a.clientId - b.clientId);
     publish(docId, peers);
     changing = false;
   };
@@ -89,5 +123,7 @@ export function startPresence(docId: string, provider: YProvider): () => void {
     awareness.off('update', update); document.removeEventListener('visibilitychange', update);
     provider.off('sync', update);
     publish(docId, []);
+    setUnplacedTyping(docId, []);
+    inspect(docId, null);
   };
 }

@@ -1,7 +1,7 @@
 // j08-share (T2.4): sharing a vault, a folder or a note, with a person at a role or with a revocable link. Ada shares
 // a folder from its context menu and her vault from the switcher, and Ben finds each through the invite link she
 // hands him (an invite binds to the email, never to an account, until its holder redeems it; T2.8). A viewer link
-// opened signed out reads at viewer and offers "Sign in to do more", which comes back to the same note. An editor
+// opened signed out reads at viewer and offers "Sign in", which comes back to the same note. An editor
 // link is viewer signed out, editor signed in, and the max of link and grant with a grant. Revoked, forged and
 // inaccessible links all get the same 404 and the same denial page, an email shared with nobody's account answers
 // exactly as one shared with an account, and nobody but the owner sees an email.
@@ -106,7 +106,7 @@ test('j08 folder: Ada shares a folder from its context menu and it reaches Ben\'
   await ada.page.keyboard.press('Escape');
   const stranger = await actors.anonymous(ui.pathOf(url), { label: 'stranger' });
   await stranger.page.locator(`html[${APP_STATE_ATTR}="ready"]`).waitFor({ state: 'attached', timeout: 30_000 });
-  await expect(stranger.page.getByRole('button', { name: `Vault: ${name}`, exact: true }), 'the folder is the workspace').toBeVisible();
+  await expect(stranger.page.getByRole('button', { name: /^Vault: / }), 'a visitor is shown no vault control').toHaveCount(0);
   const strangerRow = stranger.page.locator(`[data-sidebar-row][data-doc-id="${docId}"]`);
   await expect(strangerRow, 'its note is listed').toBeVisible();
   await expect(stranger.page.locator('[data-sidebar-row]'), 'and nothing else').toHaveCount(1);
@@ -116,38 +116,45 @@ test('j08 folder: Ada shares a folder from its context menu and it reaches Ben\'
   await actors.checkpoint('folder-link-landing');
 });
 
-test('j08 vault: Ada shares her vault from the switcher and Ben switches to it @p:ppl-2@2 @p:note-4 @evidence', async ({ actors }) => {
+test('j08 vault: Ada shares her vault from Settings and Ben switches to it @p:ppl-2@2 @p:note-4 @evidence', async ({ actors }) => {
   const ada = await openShell(actors, 'ada');
   const docId = await noteWithText(ada);
   const benPrincipal = await actors.principal('ben');
   const ben = await actors.open(benPrincipal);
 
-  await ada.page.getByRole('button', { name: 'Vault: Home', exact: true }).click();
-  await ada.page.getByRole('menuitem', { name: 'Share vault…', exact: true }).click();
+  await (await ui.openVaultSettings(ada.page)).getByRole('button', { name: 'Share vault…', exact: true }).click();
   const dialog = ada.page.getByRole('dialog', { name: 'Share vault' });
   await expect(dialog, 'the vault share dialog opens').toBeVisible();
+  await expect(ada.page.getByRole('dialog', { name: 'Settings' }), 'Settings closes first: no dialog stacked under Share').toHaveCount(0);
+  await expect(dialog.locator('p:not(.sr-only)').first(), 'the dialog names the vault first').toHaveText('Vault “Home”');
   await ui.shareInDialog(dialog, benPrincipal.email, 'Can edit');
   await expect(ui.inviteRow(dialog, benPrincipal.email)).toContainText('Can edit');
   const invite = await ui.inviteLink(dialog, benPrincipal.email);
   await ada.page.keyboard.press('Escape');
   await expect(dialog).toBeHidden();
+  await expect(ada.page.getByRole('dialog', { name: 'Settings' }), 'closing it comes back to Settings').toBeVisible();
+  await ada.page.keyboard.press('Escape');
   const { vault } = (await (await ada.context.request.get('/api/workspace')).json()) as { vault: { id: string } };
   await ben.goto(ui.pathOf(invite));
   await expect(ben.page, 'the invite leads to the vault').toHaveURL(new RegExp(`/f/${vault.id}$`), { timeout: 30_000 });
   await ben.page.locator(`html[${APP_STATE_ATTR}="ready"]`).waitFor({ state: 'attached', timeout: 30_000 });
 
-  await ben.page.getByRole('button', { name: 'Vault: Home', exact: true }).click();
-  const shared = ben.page.getByRole('menuitem', { name: 'Home editor', exact: true });
-  await expect(shared, "Ada's vault reaches Ben's switcher with his role").toBeVisible({ timeout: LIVE_TIMEOUT });
-  await shared.click();
+  await expect(async () => {
+    const list = await ui.openVaultList(ben.page);
+    try {
+      await expect(list.getByRole('menuitemradio', { name: 'Home Can edit', exact: true }), "Ada's vault reaches Ben's list with his role").toBeVisible({ timeout: 2_000 });
+    } finally {
+      await ui.closeVaultList(ben.page);
+    }
+  }).toPass({ timeout: LIVE_TIMEOUT });
+  await ui.switchVault(ben.page, 'Home Can edit');
   const row = ben.page.locator(`[data-sidebar-row][data-doc-id="${docId}"]`);
   await expect(row).toBeVisible();
-  await ben.page.getByRole('button', { name: 'Vault: Home', exact: true }).click();
-  const menu = ben.page.getByRole('menu');
-  await expect(menu.getByRole('menuitem', { name: 'Home editor', exact: true }), 'the switcher is open').toBeVisible();
-  await expect(menu.getByRole('menuitem', { name: 'Share vault…', exact: true }), 'a member gets no vault actions').toHaveCount(0);
+  const settings = await ui.openVaultSettings(ben.page);
+  await expect(settings.getByRole('list', { name: 'Vaults' }).getByText('Can edit', { exact: true }), 'Settings lists the vault with his role').toBeVisible();
+  await expect(settings.getByRole('button', { name: /^(Share vault…|Rename…|Move to Trash…)$/ }), 'a member gets no vault actions').toHaveCount(0);
   await ben.page.keyboard.press('Escape');
-  await expect(menu).toBeHidden();
+  await expect(settings).toBeHidden();
   await row.click();
   await ui.waitOpen(ben, docId, 'live');
   await expect(ui.pane(ben, docId)).toHaveAttribute(ROLE_ATTR, 'editor');
@@ -162,8 +169,7 @@ test('j08 vault: a granted co-owner of Ada\'s vault can share it, but gets no cr
   await cy.goto('/');
   await cy.page.locator(`html[${APP_STATE_ATTR}="ready"]`).waitFor({ state: 'attached', timeout: 30_000 });
 
-  await ada.page.getByRole('button', { name: 'Vault: Home', exact: true }).click();
-  await ada.page.getByRole('menuitem', { name: 'Share vault…', exact: true }).click();
+  await (await ui.openVaultSettings(ada.page)).getByRole('button', { name: 'Share vault…', exact: true }).click();
   const dialog = ada.page.getByRole('dialog', { name: 'Share vault' });
   await ui.shareInDialog(dialog, cyPrincipal.email, 'Owner');
   await expect(ui.inviteRow(dialog, cyPrincipal.email), 'Cy is a co-owner of the vault').toContainText('Owner');
@@ -175,18 +181,11 @@ test('j08 vault: a granted co-owner of Ada\'s vault can share it, but gets no cr
   await cy.page.reload();
   await cy.page.locator(`html[${APP_STATE_ATTR}="ready"]`).waitFor({ state: 'attached', timeout: 30_000 });
 
-  await cy.page.getByRole('button', { name: 'Vault: Home', exact: true }).click();
-  const shared = cy.page.getByRole('menuitem', { name: 'Home owner', exact: true });
-  await expect(shared, "Ada's vault reaches Cy's switcher as owner").toBeVisible({ timeout: LIVE_TIMEOUT });
-  await shared.click();
-  await expect(cy.page.getByRole('button', { name: 'Vault: Home', exact: true })).toBeEnabled({ timeout: LIVE_TIMEOUT });
-  await cy.page.getByRole('button', { name: 'Vault: Home', exact: true }).click();
-  const menu = cy.page.getByRole('menu');
-  await expect(menu.getByRole('menuitem', { name: 'Home owner', exact: true }), 'the switcher is open').toBeVisible();
-  await expect(menu.getByRole('menuitem', { name: 'Share vault…', exact: true }), 'a co-owner may share the vault').toBeVisible();
-  await expect(menu.getByRole('menuitem', { name: 'New vault', exact: true }), 'New vault belongs to the owned section').toHaveCount(0);
+  await ui.switchVault(cy.page, 'Home Owner');
+  const settings = await ui.openVaultSettings(cy.page);
+  await expect(settings.getByRole('button', { name: 'Share vault…', exact: true }), 'a co-owner may share the vault').toBeVisible();
+  await expect(settings.getByRole('button', { name: /^(Rename…|Move to Trash…)$/ }), "only the vault's owner renames or trashes it").toHaveCount(0);
   await cy.page.keyboard.press('Escape');
-  await expect(cy.page.getByRole('button', { name: 'Vault actions', exact: true }), "only the vault's owner renames or trashes it").toHaveCount(0);
 });
 
 test('j08 link: a viewer link opened signed out reads at viewer and offers sign-in, which returns to the same note @p:ppl-2@2 @evidence', async ({ actors, browserName }) => {
@@ -208,12 +207,12 @@ test('j08 link: a viewer link opened signed out reads at viewer and offers sign-
   await ui.waitOpen(stranger, docId, 'readonly');
   await expect(ui.pane(stranger, docId), 'the link opens at viewer').toHaveAttribute(ROLE_ATTR, 'viewer');
   expect(await ui.fieldText(stranger, docId, 'body'), 'the stranger reads the note').toBe(TEXT);
-  await expect(ui.pane(stranger, docId).getByRole('button', { name: 'Share', exact: true }), 'no Share for a link visitor').toHaveCount(0);
+  expect(await ui.offersShare(stranger, docId), 'no Share for a link visitor').toBe(false);
   await expect(stranger.page.getByRole(ui.NEW_NOTE.role, { name: ui.NEW_NOTE.name }), 'no "+ Note" for a viewer link (T2.6)').toHaveCount(0);
-  const signIn = stranger.page.getByRole('button', { name: 'Sign in to do more', exact: true });
+  const signIn = stranger.page.getByRole('button', { name: 'Sign in', exact: true });
   await expect(signIn, 'the stranger is offered sign-in').toBeVisible();
   await expect(signIn, 'exactly once (T9.10)').toHaveCount(1);
-  await expect(ui.pane(stranger, docId).locator(`[${ROLE_BAND_ATTR}]`), 'the band says the link is view only').toContainText('View only.');
+  await expect(ui.pane(stranger, docId).locator(`[${ROLE_BAND_ATTR}]`), 'the band says the link is view only').toHaveText('View only Sign in');
   await actors.checkpoint('read-signed-out');
 
   const benPrincipal = await actors.principal('ben');
@@ -253,7 +252,7 @@ test('j08 link: an editor link is viewer signed out, editor signed in without a 
   const cy = await actors.open(cyPrincipal, { path: ui.pathOf(url) });
   await ui.waitOpen(cy, docId, 'live');
   await expect(ui.pane(cy, docId), 'with a grant above the link, the grant').toHaveAttribute(ROLE_ATTR, 'owner');
-  await expect(ui.pane(cy, docId).getByRole('button', { name: 'Share', exact: true }), 'a co-owner may share').toBeVisible();
+  expect(await ui.offersShare(cy, docId), 'a co-owner may share').toBe(true);
   await actors.requireDistinct(3);
 });
 
@@ -281,7 +280,7 @@ test('j08 link: an editor folder link lifts a viewer grant to editor, and lands 
   await expect(ui.pane(ben, docId), 'a viewer grant below an editor link: the link').toHaveAttribute(ROLE_ATTR, 'editor');
 
   const dee = await actors.open(await actors.principal('dee'), { path: `/f/${folderId}?share=${token}` });
-  await expect(dee.page.getByRole('button', { name: `Vault: ${name}`, exact: true }), 'the folder is the workspace').toBeVisible({ timeout: LIVE_TIMEOUT });
+  await ui.expectVault(dee.page, name, { timeout: LIVE_TIMEOUT, message: 'the folder is the workspace' });
   const row = dee.page.locator(`[data-sidebar-row][data-doc-id="${docId}"]`);
   await expect(row, 'its note is listed').toBeVisible();
   await row.click();
@@ -385,7 +384,7 @@ test('j08 privacy: an email with no account answers like one with an account, an
   expect(text, 'no email reaches a member').not.toContain('@');
   expect((await ben.context.request.get(`/api/docs/${docId}/links`)).status(), 'a member cannot list links').toBe(403);
   expect((await ben.context.request.post(`/api/docs/${docId}/links`, { headers: { origin: stack.baseUrl }, data: { role: 'viewer' } })).status()).toBe(403);
-  await expect(ui.pane(ben, docId).getByRole('button', { name: 'Share', exact: true })).toHaveCount(0);
+  expect(await ui.offersShare(ben, docId)).toBe(false);
   const reopened = await ui.openShare(ada, docId);
   await expect(ui.accessRow(reopened, benPrincipal), 'redeemed, Ben is listed by name').toContainText(benPrincipal.email);
   await expect(ui.inviteRow(reopened, ghost.email)).toContainText(ui.INVITE_WAITING);
@@ -422,7 +421,7 @@ test('j08 invite: an invite says no email is sent and offers its link where the 
   expect(posts, 'no request for a bare name').toEqual([]);
 
   await ui.shareInDialog(dialog, ben.email, 'Can view');
-  const copyLink = form.getByRole('button', { name: 'Copy link', exact: true });
+  const copyLink = form.getByRole('button', { name: 'Copy invite link', exact: true });
   await expect(copyLink, 'the status offers the invite link itself').toBeVisible();
   await expect(ui.pendingInvites(dialog).filter({ hasText: ben.email }), 'the invite sits under "Pending invites"').toContainText(ui.INVITE_WAITING);
   await expect(dialog.getByRole('list', { name: 'People with access' }).getByRole('listitem').filter({ hasText: ben.email }), 'and not among the people').toHaveCount(0);
@@ -434,10 +433,10 @@ test('j08 invite: an invite says no email is sent and offers its link where the 
     const clipboard = () => ada.page.evaluate(() => navigator.clipboard.readText());
     await copyLink.click();
     const copied = form.getByRole('button', { name: 'Copied', exact: true });
-    await expect(copied, 'Copy link confirms on itself').toBeVisible();
+    await expect(copied, 'Copy invite link confirms on itself').toBeVisible();
     await expect(copied.locator('svg'), 'with a check').toHaveCount(1);
-    expect(await clipboard(), 'Copy link puts the invite link on the clipboard').toBe(invite);
-    await expect(form.getByRole('button', { name: 'Copy link', exact: true }), 'and reads Copy link again after 2 s').toBeVisible({ timeout: 4_000 });
+    expect(await clipboard(), 'Copy invite link puts the invite link on the clipboard').toBe(invite);
+    await expect(form.getByRole('button', { name: 'Copy invite link', exact: true }), 'and reads Copy invite link again after 2 s').toBeVisible({ timeout: 4_000 });
     await expect(dialog.getByRole('status'), 'the status stays as it was').toHaveText(ui.inviteCreated(ben.email));
 
     await ada.page.evaluate(() => navigator.clipboard.writeText(''));
@@ -457,10 +456,96 @@ test('j08 invite: an invite says no email is sent and offers its link where the 
   const again = await ui.openShare(ada, docId);
   await expect(again.getByText('To share with one of your agents, paste its ID from Settings → Agents.', { exact: true }), 'one hint about the agent').toHaveCount(1);
   await again.getByLabel('Email or agent ID', { exact: true }).fill(agentId);
-  await expect(again.getByRole('button', { name: 'Create invite link', exact: true }), 'an agent id is shared, not invited').toHaveCount(0);
+  await expect(again.getByRole('button', { name: 'Create invite link', exact: true }), 'an agent id is added, not invited').toHaveCount(0);
+  await expect(again.getByRole('button', { name: 'Add agent', exact: true }), 'the submit says it adds the agent').toBeVisible();
   await ui.shareInDialog(again, agentId, 'Can comment', 'Shared with Scout.');
   await expect(again.getByRole('list', { name: 'People with access' }).getByRole('listitem').filter({ hasText: 'Scout' })).toHaveCount(1);
   expect(posts.length, 'one request per share').toBe(2);
+});
+
+test('j08 compact: every role chooser is Moss\'s checked menu, its actions are quiet, and a link keeps its role, Copy and Revoke on one row @p:ppl-2@2 @evidence', async ({ actors }) => {
+  const ada = await openShell(actors, 'ada');
+  const docId = await noteWithText(ada);
+  const ben = actors.credentials('ben');
+  await ada.page.setViewportSize({ width: 1440, height: 1000 });
+  const dialog = await ui.openShare(ada, docId);
+  await expect(dialog.locator('p:not(.sr-only)').first(), 'the dialog names the note first').toHaveText(/^Note( “.+”)?$/);
+  await expect(dialog.getByRole('radiogroup'), 'no segmented role strip').toHaveCount(0);
+  await expect(dialog.locator('select'), 'no native select').toHaveCount(0);
+
+  // The invite's role: a quiet trigger reading the role, opening the five roles with the chosen one checked.
+  const access = ui.roleMenu(dialog, 'Access');
+  await expect(access).toHaveText('Can edit');
+  await access.click();
+  const menu = ui.openRoleMenu(dialog);
+  await expect(menu.getByRole('menuitemradio'), 'every role, in order').toHaveText(['Can view', 'Can comment', 'Can suggest', 'Can edit', 'Owner']);
+  await expect(menu.getByRole('menuitemradio', { checked: true }), 'the chosen role is checked').toHaveText('Can edit');
+  const row = await menu.getByRole('menuitemradio').first().evaluate((el) => {
+    const style = getComputedStyle(el);
+    return { height: el.getBoundingClientRect().height, fontSize: style.fontSize };
+  });
+  expect(row, "Moss's 28 px menu row at 12 px").toEqual({ height: 28, fontSize: '12px' });
+  // Typeahead, then Enter, picks a role; the menu closes and hands focus back to its trigger.
+  await ada.page.keyboard.type('o');
+  await expect(menu.getByRole('menuitemradio', { name: 'Owner', exact: true }), 'typing o reaches Owner').toHaveAttribute('data-highlighted', '');
+  await ada.page.keyboard.press('Enter');
+  await expect(menu).toHaveCount(0);
+  await expect(access, 'Owner chosen').toHaveText('Owner');
+  await expect(access, 'focus is back on the trigger').toBeFocused();
+  // Escape closes the menu alone, never the dialog under it.
+  await access.click();
+  await expect(menu).toBeVisible();
+  await ada.page.keyboard.press('Escape');
+  await expect(menu).toHaveCount(0);
+  await expect(dialog, 'one Escape closes one layer').toBeVisible();
+  await ui.chooseRole(dialog, 'Access', 'Can view');
+
+  // Actions are Moss's 24 px neutral text actions: no filled accent button.
+  const create = dialog.getByRole('button', { name: 'Create invite link', exact: true });
+  // At rest (the pointer away, its hover fill faded), an action is unfilled 12 px text in a 24 px box.
+  const quiet = async (button: typeof create) => {
+    await ada.page.mouse.move(1, 1);
+    await button.blur();
+    await ada.page.waitForTimeout(300);
+    return button.evaluate((el) => {
+      const style = getComputedStyle(el);
+      return { height: el.getBoundingClientRect().height, fontSize: style.fontSize, filled: style.backgroundColor !== 'rgba(0, 0, 0, 0)' && style.backgroundColor !== 'transparent' };
+    });
+  };
+  expect(await quiet(create), 'Create invite link is a quiet action').toEqual({ height: 24, fontSize: '12px', filled: false });
+  await ui.shareInDialog(dialog, ben.email, 'Can view');
+  await expect(dialog.getByRole('button', { name: 'Copy invite link', exact: true }), 'the completion offers the invite link').toBeVisible();
+  await expect(ui.roleMenu(dialog, `Access for ${ben.email}`), "the invite's role is a menu too").toHaveText('Can view');
+
+  // A link: its role, Copy and Revoke on the address's row.
+  await ui.createLink(dialog, 'Can comment');
+  const link = ui.linkRow(dialog, 'Can comment');
+  const centre = async (locator: typeof create) => {
+    const box = await locator.boundingBox();
+    if (!box) throw new Error('not laid out');
+    return Math.round(box.y + box.height / 2);
+  };
+  const field = await centre(ui.linkField(dialog, 'Can comment'));
+  for (const name of ['Copy', 'Revoke']) {
+    const button = link.getByRole('button', { name, exact: true });
+    expect(Math.abs((await centre(button)) - field), `${name} sits on the link's row`).toBeLessThanOrEqual(2);
+    expect(await quiet(button), `${name} is a quiet action`).toEqual({ height: 24, fontSize: '12px', filled: false });
+  }
+  expect(Math.abs((await centre(link.getByText('Can comment', { exact: true }))) - field), "the link's role sits on its row").toBeLessThanOrEqual(2);
+  expect(await quiet(dialog.getByRole('button', { name: 'Create link', exact: true })), 'Create link is a quiet action').toEqual({ height: 24, fontSize: '12px', filled: false });
+
+  // On a phone the row wraps inside the dialog: nothing overflows, Revoke stays reachable.
+  await ada.page.setViewportSize({ width: 390, height: 844 });
+  await expect.poll(() => dialog.evaluate((el) => {
+    const body = el.querySelector('.overflow-y-auto') ?? el;
+    return body.scrollWidth - body.clientWidth;
+  }), 'no sideways overflow at 390 px').toBeLessThanOrEqual(0);
+  const revoke = link.getByRole('button', { name: 'Revoke', exact: true });
+  await revoke.scrollIntoViewIfNeeded();
+  const [box, frame] = [await revoke.boundingBox(), await dialog.boundingBox()];
+  expect(box && frame && box.x >= frame.x && box.x + box.width <= frame.x + frame.width, 'Revoke inside the dialog').toBe(true);
+  await revoke.click();
+  await expect(ui.linkField(dialog, 'Can comment'), 'Revoke still revokes').toHaveCount(0);
 });
 
 test('j08 inherited: a note\'s Share dialog names it and lists who reaches it from its folder and vault, and a note-only co-owner learns no place @p:ppl-2@2 @evidence', async ({ actors, stack }) => {
@@ -488,14 +573,14 @@ test('j08 inherited: a note\'s Share dialog names it and lists who reaches it fr
   await ada.goto(`/d/${docId}`);
   await ui.waitOpen(ada, docId, 'live');
   const dialog = await ui.openShare(ada, docId);
-  const firstLine = 'Share “Packing list” with people by email, with one of your agents by its ID, or with anyone who has a link.';
+  const firstLine = 'Note “Packing list”';
   // The shell's own description is screen-reader only; the first visible line is the body's.
   await expect(dialog.locator('p:not(.sr-only)').first(), 'the dialog names the note in its first line').toHaveText(firstLine);
   const fromFolder = dialog.getByRole('list', { name: `From folder “${folderName}”`, exact: true });
   await expect(fromFolder.getByRole('listitem').filter({ hasText: benPrincipal.name }), 'Ben, from the folder, at comment').toContainText('Can comment');
   const fromVault = dialog.getByRole('list', { name: 'From vault “Home”', exact: true });
   await expect(fromVault.getByRole('listitem').filter({ hasText: cyPrincipal.name }), 'Cy, from the vault, as owner').toContainText('Owner');
-  await expect(fromFolder.getByRole('combobox'), 'inherited rows are read-only').toHaveCount(0);
+  await expect(fromFolder.getByRole('button', { name: /^Access for / }), 'inherited rows are read-only').toHaveCount(0);
   await expect(dialog.getByText(`Anyone with the link to folder “${folderName}” can view this note.`, { exact: true }), "the folder's link reaches the note")
     .toBeVisible();
   await expect(dialog.getByRole('textbox', { name: 'Can view link', exact: true }), 'no folder link address is shown').toHaveCount(0);
@@ -560,7 +645,7 @@ async function rankedNote(ada: Actor, baseUrl: string): Promise<string> {
 const menuItems = (actor: Actor): Promise<string[]> =>
   actor.page.getByRole('menu').getByRole('menuitem').evaluateAll((items) => items.map((item) => item.textContent?.trim() ?? ''));
 
-/** Every action the caller is offered on the note: its sidebar row's menu, the top bar's More actions and Share. */
+/** Every action the caller is offered on the note: its sidebar row's menu and the top bar's More actions, Share among them. */
 async function offered(actor: Actor, docId: string): Promise<string[]> {
   await actor.page.locator(`[data-sidebar-row][data-doc-id="${docId}"]`).click({ button: 'right' });
   await expect(actor.page.getByRole('menuitem', { name: 'Copy Link', exact: true }), `${actor.label}: the row menu opens`).toBeVisible();
@@ -572,7 +657,8 @@ async function offered(actor: Actor, docId: string): Promise<string[]> {
   const more = (await menuItems(actor)).map((item) => `more:${item}`);
   await actor.page.keyboard.press('Escape');
   await expect(actor.page.getByRole('menu')).toHaveCount(0);
-  const share = (await ui.pane(actor, docId).getByRole('button', { name: 'Share', exact: true }).count()) > 0 ? ['share'] : [];
+  // Share is a More actions entry (T9.30).
+  const share = more.includes('more:Share…') ? ['share'] : [];
   return [...row, ...more, ...share].sort();
 }
 
@@ -832,8 +918,8 @@ test('j08 access band: a viewer and a commenter see their access, refused typing
   const ada = await openShell(actors, 'ada');
   const docId = await noteWithText(ada);
   const readers = [
-    ['ben', 'viewer', "View only. You can't edit this note.", "You can view this note, but you can't edit it."],
-    ['cy', 'commenter', "Comment only. You can't edit this note.", "You can comment on this note, but you can't edit it."],
+    ['ben', 'viewer', 'View only', "You can view this note, but you can't edit it."],
+    ['cy', 'commenter', 'Comment only', "You can comment on this note, but you can't edit it."],
   ] as const;
   for (const [label, role, band, refused] of readers) {
     const principal = await actors.principal(label);
@@ -888,7 +974,7 @@ test('j08 raise: Cy at view is raised to comment, then to suggest, and the open 
   cy.expectReconnects(1, docId);
   const band = ui.pane(cy, docId).locator(`[${ROLE_BAND_ATTR}]`);
   const pill = cy.page.locator(`[${ACTION_FEEDBACK_ATTR}]`);
-  await expect(band).toHaveText("View only. You can't edit this note.");
+  await expect(band).toHaveText('View only');
   const raise = async (role: string) => {
     const response = await ada.context.request.patch(`/api/docs/${docId}/members`,
       { headers: { origin: stack.baseUrl }, data: { principalId: cyPrincipal.id!, role } });
@@ -897,7 +983,7 @@ test('j08 raise: Cy at view is raised to comment, then to suggest, and the open 
 
   await raise('commenter');
   await expect(pill, 'the pill says what changed').toHaveText('You can now comment on this note.', { timeout: 2_000 });
-  await expect(band, 'the band follows the role').toHaveText("Comment only. You can't edit this note.");
+  await expect(band, 'the band follows the role').toHaveText('Comment only');
   await expect(ui.pane(cy, docId)).toHaveAttribute(ROLE_ATTR, 'commenter');
   await expect(ui.body(cy, docId)).toHaveAttribute(BODY_BINDING_ATTR, 'readonly');
   await actors.checkpoint('raised-to-comment');
