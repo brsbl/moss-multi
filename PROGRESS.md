@@ -311,6 +311,12 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-19 — T8.Q second pass verified: staging and the pilot now carry M7's later fixes (allowlisted scoped sync, stale-save priors, held first-sync pieces) and m3–m6's reply box, read-only controls, folder permissions and upload reader deadline, with the full lane green on the restacked m8 (already counted on 2026-10-15).
 - 2026-10-20 — T8.U verified: m8 now sits on the final M7, so staging carries T3.B4's paste path without reservations, T3.B28/T3.B30, T5.B2–B4 and T5.S14, T7.P3's packed CLI and replicas, and T7.S9, with the full lane green on the restacked m8.
 
+### T9.48a — what the pin leaves for the owner (deviation 36)
+
+- A window with nothing chosen still opens the first note that arrives, once: an empty vault, a switch in from an empty Home, or the last note trashed, then a collaborator's create.
+- The pinned note becomes the note restored on reload (it is written as last-viewed, as a clicked note is).
+- Not changed by the pin: j12-search's wiki-link test (run 44931221611, attempt 1) failed opening the target from its sidebar row while another note's socket closed and reopened; both notes there were chosen through "+ Note", so it is not this switching. It reads like the row reorder under a click that j00-persist describes; not investigated further.
+
 ## Follow-ups (P2)
 
 Parked from the M0 checker and critic passes, each with the task that owns it.

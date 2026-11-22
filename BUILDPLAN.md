@@ -882,6 +882,7 @@ Each PRODUCT line and restart ruling has owning legs. A row with no tagged leg b
   - Required red-first test (T9.35 checker P2, refusal placement states not covered): a refused key with a note in Trash, and with no note open, shows the refusal card above Moss's Trash notice in the pane's bottom region; at a short height, in a split pane, and alongside a recovery or connection notice, the refusal card stays in that one bottom region without covering the reader's row.
 - **T9.48f The body-cap probe sends no bytes on loopback**
   - **Scope:** The security sweep's just-over-1-MiB probe declares its length and sends no body locally, so wrangler dev's proxy never loses its forward; its detail names that proxy's 503 and the time taken, and the build job uploads the stack log on failure.
+- **T9.48a An untouched window stays on its note** — a window with nothing chosen pins the note it shows, so a collaborator's create or edit no longer swaps it; invariant 7 judges a pane once its bindings settle. **Done:** the pin unit tests and two j06 legs red before and green after, j06 green in both engines at repeat_each=10 with no reconnect allowance for Ada, full lane green.
 
 ## The loop
 
