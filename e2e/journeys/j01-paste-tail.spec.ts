@@ -166,8 +166,10 @@ async function cutPaste(actors: Actors, stack: Stack, select: boolean, before?: 
     }).toBeGreaterThan(0);
   }
 
-  // Ben fills the room: his writes fit beside what landed, the rest of the paste no longer does.
-  const bravos = await fillTo(ben, STRUCT_CAP - Math.floor(rest / 2), 'Bravo');
+  // Ben fills the room: his writes fit beside what landed, the rest of the paste no longer does. The admission's count
+  // runs above the structs that land, so the room left is a tenth of the measured rest: at staging round trips more of
+  // the paste landed before the blackhole, and half of the measured rest held all that was left (the paste landed whole).
+  const bravos = await fillTo(ben, STRUCT_CAP - Math.floor(rest / 10), 'Bravo');
   await watchSettled(ada, docId);
   before?.(ada, docId);
   ada.sever!.restore();
