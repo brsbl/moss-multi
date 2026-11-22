@@ -4,6 +4,7 @@
 // role and doc, loud refusals with a cooldown, a suggester's body frame costing O(frame) however large the doc, and
 // accept's state cap over every stored payload.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { expectLinearTime } from '../../../../scripts/lib/linear-time.mjs';
 import * as Y from 'yjs';
 import { recordDigest, deleteUpdate, type RecordOp } from '@moss-multi/core/suggest/apply';
 import type { LeaseGrant, SuggestReply, SuggestRequest } from '@moss-multi/protocol/suggest';
@@ -675,32 +676,39 @@ describe('T5.2 a suggester body frame costs O(frame) @p:mean-2', () => {
   it('a maximum-size forged frame from a suggester costs the same on a small doc and the 1.69 MB doc', async () => {
     // Fake timers freeze performance.now.
     vi.useRealTimers();
-    const measure = async (paragraphs: number, scattered: number) => {
+    const setUp = async (paragraphs: number, scattered: number) => {
       const opened = await start(openDoc());
       const source = bigDoc(paragraphs, scattered);
       Y.applyUpdate(opened.dobj.document, Y.encodeStateAsUpdate(source.doc));
       source.doc.destroy();
       // One frame of many delete ranges, each over the whole deleted region: every item it names is already deleted.
       const forged = manyDeleteRanges(source.client, source.from, source.len, 20_000);
-      const body = bodyState(opened.dobj.document);
-      const times: number[] = [];
-      for (let run = 0; run < 5; run += 1) {
-        // A principal per run: a refused frame counts toward its principal's cooldown.
-        const sam = await on(opened, { ...SAM, id: `sam-${paragraphs}-${run}@example.invalid` });
-        const started = performance.now();
-        await sam.deliver(syncFrame(2, forged));
-        times.push(performance.now() - started);
-        await sam.pump();
-        expect(bodyState(opened.dobj.document)).toBe(body);
-      }
-      return { bytes: Y.encodeStateAsUpdate(opened.dobj.document).byteLength, ms: [...times].sort((x, y) => x - y)[2], frame: forged.byteLength };
+      return { opened, forged, body: bodyState(opened.dobj.document), bytes: Y.encodeStateAsUpdate(opened.dobj.document).byteLength };
     };
-    await measure(5, 100);
-    const small = await measure(5, 100);
-    const large = await measure(3_000, 50_000);
-    console.log(`T5.2 suggester body frame (${large.frame} B): ${small.ms.toFixed(2)} ms on ${small.bytes} B vs ${large.ms.toFixed(2)} ms on ${large.bytes} B`);
-    expect(large.bytes).toBeGreaterThan(1_600_000);
-    expect(large.ms).toBeLessThan(small.ms * 3 + 10);
+    const docs = { warm: await setUp(5, 100), small: await setUp(5, 100), large: await setUp(3_000, 50_000) };
+    let run = 0;
+    const deliver = async (size: keyof typeof docs) => {
+      const { opened, forged, body } = docs[size];
+      // A principal per run: a refused frame counts toward its principal's cooldown.
+      run += 1;
+      const sam = await on(opened, { ...SAM, id: `sam-${size}-${run}@example.invalid` });
+      const started = performance.now();
+      await sam.deliver(syncFrame(2, forged));
+      const took = performance.now() - started;
+      await sam.pump();
+      expect(bodyState(opened.dobj.document)).toBe(body);
+      return took;
+    };
+    expect(docs.large.bytes).toBeGreaterThan(1_600_000);
+    const [step] = await expectLinearTime<keyof typeof docs>({
+      shape: `a ${docs.large.forged.byteLength} B suggester body frame on ${docs.small.bytes} B and ${docs.large.bytes} B docs`,
+      sizes: ['small', 'large'],
+      warmup: ['warm', 'warm', 'warm', 'warm', 'warm'],
+      samples: 5,
+      slack: 10,
+      measure: deliver,
+    });
+    console.log(`T5.2 suggester body frame (${docs.large.forged.byteLength} B): ${step.previous.toFixed(2)} ms on ${docs.small.bytes} B vs ${step.took.toFixed(2)} ms on ${docs.large.bytes} B`);
   });
 });
 
