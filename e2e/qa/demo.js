@@ -767,15 +767,16 @@ export const STEPS = {
     await visit(page, '/');
     await press(page, 'button', 'Settings');
     await press(page, 'menuitem', 'Settings');
-    await page.waitForSelector(aria('textbox', 'Agent name'), { visible: true });
+    await page.waitForSelector(aria('button', 'New key'), { visible: true });
     for (let old = await page.$(aria('button', `Revoke ${name}`)); old; old = await page.$(aria('button', `Revoke ${name}`))) {
       const before = await count(page, 'ul[aria-label="Agents"] li');
       await old.click();
       await press(page, 'button', 'Revoke key');
       await until('the old key is revoked', async () => (await count(page, 'ul[aria-label="Agents"] li')) < before);
     }
-    await (await page.waitForSelector(aria('textbox', 'Agent name'), { visible: true })).type(name);
     await press(page, 'button', 'New key');
+    await (await page.waitForSelector(aria('textbox', 'Agent name'), { visible: true })).type(name);
+    await press(page, 'button', 'Create key');
     const field = await page.waitForSelector(aria('textbox', `API key for ${name}`), { visible: true });
     const key = await field.evaluate((el) => el.value);
     await press(page, 'button', 'Done');
