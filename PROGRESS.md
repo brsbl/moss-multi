@@ -1,6 +1,6 @@
 # moss-multi progress
 
-**Overall: 90% done** (273 of 304 planned tasks verified)
+**Overall: 91% done** (274 of 302 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
@@ -13,7 +13,7 @@
 | M6 History | Versions, view, diff, identity-preserving restore | 20 / 20 | in progress |
 | M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 26 / 26 | in progress |
 | M8 Ship | Everything on a permanent staging URL with demo content | 17 / 17 | |
-| M9 Polish | Understand every control without help: fixes found by using the whole product | 33 / 43 | |
+| M9 Polish | Understand every control without help: fixes found by using the whole product | 34 / 43 | |
 
 A task counts only after an independent checker passes it on green CI. Each milestone also ends with the cumulative journey suite green in Chromium and WebKit and a naive-user critic pass.
 
@@ -295,6 +295,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-11-22 — T9.34 verified: suggestions use Moss's comment surfaces: the list is flat rows with proposed text in the note's ink and quiet Accept and Reject, and a click on a suggestion's mark opens it as Moss's comment thread beside its line, or docked as a panel the note reflows beside, or filling a narrow pane.
 - 2026-11-22 — T9.48d verified: opening or focusing a note now sends one backlinks read instead of racing several, a note opened while the workspace socket connects gets its backlinks from that socket's reconcile (or within 2 s if the handshake hangs), and a failed read is retried on the next focus.
 - 2026-11-22 — T9.37 verified: `/login` is a quiet 400 px form column with Moss's heading, fields and action and an inline terracotta error that never moves the form; a signed-out link visitor finds Sign in in the bottom row and in More actions, and the denial page offers only Sign in, or Go to your notes and Use another account.
+- 2026-11-22 — T9.48b verified: pasting a 10,000-item check list no longer freezes Chrome; the tab is held under a second at a time instead of 3 to 5 s, because the comment and suggestion highlight rules now name the editor root, and WebKit still paints them through a per-element copy.
 
 ## T1.1s identity audit
 
@@ -353,6 +354,15 @@ A task counts only after an independent checker passes it on green CI. Each mile
 ## Follow-ups (P2)
 
 Parked from the M0 checker and critic passes, each with the task that owns it.
+
+### From T9.48b's checker (1013dcf, 2026-11-22)
+
+- T9.48b (A large check-list paste does not freeze Chrome) checker P2: the Chromium total-held bound in j01-paste-check is 5,500 ms, and one control run held 5,331 ms in all, so the old work split into holds under 2,000 ms could still pass; the fix does cut the total (2.2-3.5 s against 5.3-6.3 s).
+- T9.48b (A large check-list paste does not freeze Chrome) checker P2: the paint checks cover only part of what changed: j15 checks one comment's background in light mode and j16 reads the CSS rule's text; nothing rendered checks dark ink, the hover and active underlines, or suggestion paint in WebKit (a manual pixel comparison showed no change).
+- T9.48b (A large check-list paste does not freeze Chrome) checker P2: pasteAndCheck asserts the author's bounds before it reads and prints the collaborator's stall, so a failing run loses the collaborator's numbers.
+- T9.48b (A large check-list paste does not freeze Chrome) checker P2: highlight-scope.ts copies only the root-scoped rules present when it first runs; a rule added later in a lazily loaded sheet gets no per-element copy in WebKit, and a rule inside @media or @supports would lose its condition (neither happens with today's rules).
+- T9.48b (A large check-list paste does not freeze Chrome) checker P2: already there before the change: dark-mode comment ink about 10 levels brighter than Moss, square comment corners where Moss rounds them slightly, and in WebKit a taller comment band and no black ink while hovering; a suggestion's inserted-text underline was not checked visually.
+- T9.48b (A large check-list paste does not freeze Chrome) checker P2: the branch was 25 commits behind origin/m9 (a944935b) when checked; merged in at integration.
 
 ### From T9.37's checker (0d114c0, 2026-11-22)
 
