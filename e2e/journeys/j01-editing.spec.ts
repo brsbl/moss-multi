@@ -117,7 +117,13 @@ test('j01 registers: open HTML drafts receive peer typing and local undo @p:col-
 test('j01 registers: a synthetic code composition merges peer text on compositionend @p:col-1', async ({ actors, stack }) => {
   const { ada, ben, id } = await setup(actors, stack.baseUrl, '```js\nseed\n```');
   const field = (actor: Actor) => ui.body(actor, id).getByPlaceholder('Enter code...');
-  for (const actor of [ada, ben]) await ui.body(actor, id).locator('.moss-codeblock-pre').click();
+  for (const actor of [ada, ben]) {
+    await ui.body(actor, id).locator('.moss-codeblock-pre').click();
+    // The field is read-only until its text arrives, which off loopback can be after the click (A§19).
+    await expect(field(actor)).toHaveValue('seed');
+    await expect(field(actor)).toHaveJSProperty('readOnly', false);
+    await expect(field(actor)).toBeFocused();
+  }
   await field(ada).evaluate(input => input.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true })));
   await field(ada).fill('seed漢');
   await ben.page.keyboard.type('BBBB');

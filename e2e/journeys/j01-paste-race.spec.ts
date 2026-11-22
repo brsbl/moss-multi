@@ -13,7 +13,7 @@ test('j01-paste-race: a peer’s edit during a large paste’s check moves the p
   test.setTimeout(600_000);
   // 11,000 paragraphs: the paste, its undo and its redo fit the structure guard (A§5.1).
   const lines = Array.from({ length: 11_000 }, (_, i) => `Race line ${i}.`);
-  const { ada, ben, docId } = await setup(actors, stack, 'Top.\n\nHello world here.\n\nTail.', { severablePeer: true });
+  const { ada, ben, docId } = await setup(actors, stack, 'Top.\n\nHello world here.\n\nTail.', { severablePeer: true, severableOwner: true });
   const pasted = lines.join('\n\n');
   const want = {
     whole: await normalized(ada, stack, `Top.\n\nXYHello world here.${pasted}\n\nTail.`),
@@ -40,8 +40,13 @@ test('j01-paste-race: a peer’s edit during a large paste’s check moves the p
       stop();
     });
   });
-  await pastePlain(ada, docId, lines.join('\n'));
+  // Ben's edit reaches the DocDO and waits at Ada's door, then reaches her editor right after the paste starts, so it
+  // lands during the check however far away the stack is (off loopback the round trip outlasted a WebKit check).
+  ada.sever!.holdIncoming();
   ben.sever!.deliverHeld();
+  await expect.poll(() => ada.sever!.census().heldUpdates, { message: 'Ben’s edit waits for Ada', timeout: 60_000 }).toBeGreaterThan(0);
+  await pastePlain(ada, docId, lines.join('\n'));
+  ada.sever!.releasePayloads();
   await ada.page.waitForFunction(() => (window as unknown as { __peerSeenAt: number | null }).__peerSeenAt !== null, undefined, { timeout: 120_000 });
   const seen = await ada.page.evaluate(() => (window as unknown as { __peerSeenAt: number }).__peerSeenAt);
   expect(seen, 'Ben’s edit reached Ada before any of the paste was placed').toBe(0);

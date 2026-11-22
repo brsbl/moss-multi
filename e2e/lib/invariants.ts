@@ -82,12 +82,12 @@ export function networkDrops(sockets: SocketEntry[]): NetworkDrop[] {
 }
 
 /**
- * Off loopback, whether a 1006 drop's replacement is still connecting: a later socket of its doc and document is open
- * and has not reached sync yet. The invariants wait a bounded time for it before they judge the drop (actors.ts).
+ * Off loopback, whether a 1006 drop has not recovered yet: no later socket of its doc and document reached sync. Its
+ * replacement may still be connecting, or not yet opened while the client waits out its reconnect delay. The
+ * invariants wait a bounded time for it before they judge the drop (actors.ts).
  */
 export const awaitingRecovery = (sockets: SocketEntry[]): boolean =>
-  [...socketGroups(sockets).values()].some((group) => group.some((dropped) => dropped.code === NETWORK_DROP && !recovered(dropped, group) &&
-    group.some((s) => s !== dropped && s.openedAt >= dropped.openedAt && s.closedAt === null && s.synced !== true)));
+  [...socketGroups(sockets).values()].some((group) => group.some((dropped) => dropped.code === NETWORK_DROP && !recovered(dropped, group)));
 
 /** Invariant 3's socket groups: per page document (else navigation count) and doc. */
 const socketGroups = (sockets: SocketEntry[]): Map<string, SocketEntry[]> => {

@@ -208,11 +208,12 @@ test.describe('a network drop off loopback (invariants 1 and 3, T8.2)', () => {
     // Only a later socket recovers it: the one before the drop synced, the one after never did.
     expect(socketProblems([socket(0, 100, 1000, { synced: true }), socket(200, 300, 1006), socket(400, null)], new Map([['d', 1]]), OFF)).not.toEqual([]);
   });
-  test("a drop whose replacement is still connecting is awaited; a recovered, replaced-and-closed or lone one is not", () => {
+  test('an unrecovered drop is awaited, whether its replacement is connecting, closed or not yet opened; a recovered one is not', () => {
     expect(awaitingRecovery([socket(0, 100, 1006), socket(200, null)])).toBe(true);
     expect(awaitingRecovery([socket(0, 100, 1006), synced(200)])).toBe(false);
-    expect(awaitingRecovery([socket(0, 100, 1006), socket(200, 300, 1000)])).toBe(false);
-    expect(awaitingRecovery([socket(0, 100, 1006)])).toBe(false);
+    expect(awaitingRecovery([socket(0, 100, 1006), socket(200, 300, 1000)])).toBe(true);
+    // The client waits out its reconnect delay before it opens the replacement.
+    expect(awaitingRecovery([socket(0, 100, 1006)])).toBe(true);
     expect(awaitingRecovery([socket(0, null)])).toBe(false);
   });
   test('off loopback, a 1013 the journey did not declare fails, even recovered and within its declared reconnects', () => {

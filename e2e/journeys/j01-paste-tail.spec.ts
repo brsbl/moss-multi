@@ -148,7 +148,12 @@ async function cutPaste(actors: Actors, stack: Stack, select: boolean, before?: 
   await pastePlain(ada, docId, A);
   await expect.poll(() => stateBytes(ben) - bytes, { message: 'part of the paste lands', timeout: 180_000 }).toBeGreaterThan(500_000);
   ada.sever!.blackhole();
-  await ada.page.waitForTimeout(3_000);
+  // Frames that crossed before the blackhole may still be queued at the DocDO (off loopback each takes seconds): what
+  // is still to come is measured once Ben's copy has stopped growing.
+  for (let seen = -1, until = Date.now() + 120_000; structs(ben) !== seen && Date.now() < until; ) {
+    seen = structs(ben);
+    await ada.page.waitForTimeout(3_000);
+  }
   const rest = (await lastAdds(ada)) - (structs(ben) - beforeStructs);
   expect(rest, 'part of the paste is still to come').toBeGreaterThan(10_000);
   expect(count(ben.text(), 'Alpha'), 'Ben sees the part that landed').toBeGreaterThan(0);

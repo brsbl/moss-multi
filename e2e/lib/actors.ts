@@ -307,8 +307,9 @@ export class Actors {
   }
 
   /**
-   * Off loopback, a doc socket the network dropped near the end of a leg may still be reconnecting: its replacement
-   * gets up to RECOVERY_MS to reach sync before invariant 3 judges the drop. Nothing is waited for on loopback.
+   * Off loopback, a doc socket the network dropped near the end of a leg may still be reconnecting, or waiting out its
+   * reconnect delay: its replacement gets up to RECOVERY_MS to reach sync before invariant 3 judges the drop. Nothing
+   * is waited for on loopback.
    */
   private async awaitRecoveries(): Promise<void> {
     if (!this.options.stack || isLoopback(this.options.stack.baseUrl)) return;
