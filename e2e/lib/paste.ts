@@ -330,18 +330,18 @@ export async function setup<R extends Record<string, string> = Record<never, str
 /**
  * Pastes `pasted` at the caret, then checks: the export is `whole`; Ben's body equals Ada's; typing lands after the
  * paste (`typed`); one undo removes the typing and the next the whole paste (`before`), for both; one redo brings the
- * paste back and the next the typing. With `maxStallMs`,
- * the main thread is never held longer than that while the paste lands; with `wire`, no frame passes the frame cap
- * and the doc socket never closes, through the paste, its undo and its redo. `history: false` stops after the typing:
- * a paste just under the structure limit leaves no room for its own redo, since an undone paste's structs stay in the
- * note's history (A§5.1).
+ * paste back and the next the typing. With `maxStallMs`, the main thread is never held longer than that at a time
+ * while the paste lands, and with `maxHeldMs` never longer than that in all (the sum of its holds past 200 ms, so a
+ * hold split in two still counts whole); with `wire`, no frame passes the frame cap and the doc socket never closes,
+ * through the paste, its undo and its redo. `history: false` stops after the typing: a paste just under the structure
+ * limit leaves no room for its own redo, since an undone paste's structs stay in the note's history (A§5.1).
  */
 export async function pasteAndCheck(
   { ada, ben, docId, wire }: { ada: Actor; ben: Actor; docId: string; wire?: Wire },
   pasted: string,
   want: { whole: string; typed: string },
   timeout: number,
-  { maxBusyMs = Infinity, maxStallMs = Infinity, history = true }: { maxBusyMs?: number; maxStallMs?: number; history?: boolean } = {},
+  { maxBusyMs = Infinity, maxStallMs = Infinity, maxHeldMs = Infinity, history = true }: { maxBusyMs?: number; maxStallMs?: number; maxHeldMs?: number; history?: boolean } = {},
 ): Promise<number> {
   await ui.waitAcked(ada, docId, timeout);
   const before = await exported(ada, docId);
@@ -359,11 +359,12 @@ export async function pasteAndCheck(
   const runner = slower(speedBefore, await runnerSlowdown(ada));
   const scaled = (bound: number) => Math.round(bound * runner.factor);
   const speed = `the runner ran the calibration in ${runner.ms.toFixed(0)} ms, ${runner.factor.toFixed(2)}x the reference`;
-  console.log(`paste stall: ${stall.ms} ms of ${scaled(maxStallMs)} allowed, held ${stall.heldMs} ms in all, busy ${Math.round(busyMs)} ms (${speed}; during: ${stall.during})`);
+  console.log(`paste stall: ${stall.ms} ms of ${scaled(maxStallMs)} allowed, held ${stall.heldMs} ms in all of ${scaled(maxHeldMs)}, busy ${Math.round(busyMs)} ms (${speed}; during: ${stall.during})`);
   console.log(`paste batches: ${stall.batches}`);
   console.log(`paste long frames: ${stall.frames}`);
   expect(busyMs, `the paste keeps the tab responsive (${speed})`).toBeLessThan(scaled(maxBusyMs));
   expect(stall.ms, `the tab is never held longer than ${scaled(maxStallMs)} ms at a time while the paste lands (the longest began ${stall.at} ms after the paste, held ${stall.heldMs} ms in all, during: ${stall.during}; long frames: ${stall.frames}; batches: ${stall.batches}; socket closes: ${wire?.closes.join(', ') || 'none seen'}; ${speed})`).toBeLessThanOrEqual(scaled(maxStallMs));
+  expect(stall.heldMs, `the tab is held no longer than ${scaled(maxHeldMs)} ms in all while the paste lands (${speed})`).toBeLessThanOrEqual(scaled(maxHeldMs));
   const pastedPrint = await fingerprint(ada, docId);
   await expect.poll(() => fingerprint(ben, docId), { message: 'the collaborator sees the whole paste', timeout }).toEqual(pastedPrint);
   const peer = await longestStall(ben);

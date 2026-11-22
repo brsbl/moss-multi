@@ -3,8 +3,16 @@
 // a checkbox toggle and moved the done items first (run 37718593043: two pairs of 2 MB of mixed markdown swapped).
 //
 // The notes and the reference imports are created through POST /api/docs as declared setup.
-import { MAX_STALL_MS, pasteAndCheck, setup } from '../lib/paste.ts';
+import { pasteAndCheck, setup } from '../lib/paste.ts';
 import { expect, test, ui } from '../lib/test.ts';
+
+/**
+ * Its own bounds, on CI as locally: the longest hold is the 2 s target (paste.ts MAX_STALL_MS), and the total held stays
+ * under 4 s, well below the 5.3-6.3 s it was before the highlight rules were scoped (run 45018468321), so splitting
+ * one hold in two cannot pass.
+ */
+const STALL_MS = 2_000;
+const HELD_MS = 4_000;
 
 /** A check list of `count` items, open and done alternating, as written: moss sorts done items first only on a toggle. */
 function checklist(count: number): string {
@@ -23,5 +31,5 @@ test('j01-paste-check: a 10,000-item check list pasted between two paragraphs la
   await ui.body(ada, docId).locator('p').filter({ hasText: /^Before\.$/ }).click();
   await ada.page.keyboard.press('End');
   await ada.page.keyboard.press('Enter');
-  await pasteAndCheck({ ada, ben, docId, wire }, markdown, want, 300_000, { maxStallMs: MAX_STALL_MS });
+  await pasteAndCheck({ ada, ben, docId, wire }, markdown, want, 300_000, { maxStallMs: STALL_MS, maxHeldMs: HELD_MS });
 });
