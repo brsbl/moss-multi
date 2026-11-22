@@ -207,7 +207,7 @@ declare module '@moss/shared/components/ui/card' {
 
 declare module '@moss/shared/components/ui/dropdown-menu' {
   import type { ButtonHTMLAttributes, ComponentType, ForwardRefExoticComponent, HTMLAttributes, ReactNode, RefAttributes, RefObject } from 'react';
-  export const DropdownMenu: ComponentType<{ children: ReactNode; open?: boolean; onOpenChange?: (open: boolean) => void; modal?: boolean }>;
+  export const DropdownMenu: ComponentType<{ children: ReactNode; open?: boolean; onOpenChange?: (open: boolean) => void; modal?: boolean; orientation?: 'horizontal' | 'vertical' }>;
   export const DropdownMenuTrigger: ForwardRefExoticComponent<ButtonHTMLAttributes<HTMLButtonElement> & { asChild?: boolean } & RefAttributes<HTMLElement>>;
   type Placement = {
     align?: 'start' | 'center' | 'end';
