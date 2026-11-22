@@ -11,7 +11,7 @@
     {"path":"packages/desktop/src/common/automation.ts","pin":"762abb777","upstreamSha256":"038c56e261a442d766bfdb5444a9c474722a28114d4a54f16f889f9ca8fa7a24","mode":"verbatim"},
     {"path":"packages/desktop/src/common/chartConfigParser.ts","pin":"762abb777","upstreamSha256":"66c2392083b43dc87d63c38802cd0d77e46457f11804c5771cca51f8a1d027cf","mode":"verbatim"},
     {"path":"packages/desktop/src/common/chartValidation.ts","pin":"762abb777","upstreamSha256":"8756baad7e225729b0faa1529b6d8c8f4e69ca009ebb0dba61df748e091b39f0","mode":"verbatim"},
-    {"path":"packages/desktop/src/common/comment-markers.ts","pin":"762abb777","upstreamSha256":"53d75312cd2acd7cebb2302c479c901752db802372f518ec1e29a05ab240a197","mode":"verbatim"},
+    {"path":"packages/desktop/src/common/comment-markers.ts","pin":"762abb777","upstreamSha256":"53d75312cd2acd7cebb2302c479c901752db802372f518ec1e29a05ab240a197","mode":"patched","patch":"patches/moss/packages/desktop/src/common/comment-markers.ts.patch"},
     {"path":"packages/desktop/src/common/content-hash.ts","pin":"762abb777","upstreamSha256":"a16a14cbc2f05cf08434f949661daf865c348ce3ecbcfea82fcc7e31e6fe3915","mode":"verbatim"},
     {"path":"packages/desktop/src/common/derived-preview.ts","pin":"762abb777","upstreamSha256":"36ef888e21257088886f9edbff47a5ef54c3745ed77d4d747977c637d02119fb","mode":"verbatim"},
     {"path":"packages/desktop/src/common/embed-iframe-policy.ts","pin":"762abb777","upstreamSha256":"aec461ea1f4c139c85c69afa4d921b890bc3ecb5850bc32f196953a8f1b8a994","mode":"verbatim"},
