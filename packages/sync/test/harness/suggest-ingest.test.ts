@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { expectLinearTime } from '../../../../scripts/lib/linear-time.mjs';
 import * as Y from 'yjs';
 import { recordDigest, deleteUpdate, type RecordOp } from '@moss-multi/core/suggest/apply';
+import { TEXT_CHAR_CAP } from '@moss-multi/protocol/limits';
 import type { LeaseGrant, SuggestReply, SuggestRequest } from '@moss-multi/protocol/suggest';
 import { bytesToBase64, CLOSE, CUSTOM_PREFIX, encodePayloadFrame, PAYLOAD_UPDATE, type ServerEvent } from '@moss-multi/protocol/sync';
 import { DocDO } from '../../src/doc-do.ts';
@@ -622,6 +623,8 @@ describe('T5.R suggestions on payload docs through the DocDO @p:mean-2', () => {
   });
 });
 
+const LINE = 'lorem ipsum dolor sit amet '.repeat(20);
+
 /**
  * A doc of `paragraphs` paragraphs plus a deleted region of `scattered` characters that another client interleaved,
  * so the region's deleted items stay separate structs (a doc's deleted history). Returns the region's client range.
@@ -629,7 +632,7 @@ describe('T5.R suggestions on payload docs through the DocDO @p:mean-2', () => {
 function bigDoc(paragraphs: number, scattered: number): { doc: Y.Doc; client: number; from: number; len: number } {
   const doc = new Y.Doc();
   const body = doc.get('root', Y.XmlText);
-  const line = 'lorem ipsum dolor sit amet '.repeat(20);
+  const line = LINE;
   const client = doc.clientID;
   doc.transact(() => {
     for (let i = 0; i < paragraphs + 1; i++) {
@@ -673,7 +676,7 @@ function manyDeleteRanges(client: number, from: number, len: number, ranges: num
 }
 
 describe('T5.2 a suggester body frame costs O(frame) @p:mean-2', () => {
-  it('a maximum-size forged frame from a suggester costs the same on a small doc and the 1.69 MB doc', async () => {
+  it('a maximum-size forged frame from a suggester costs the same on a small doc and a doc at the text limit', async () => {
     // Fake timers freeze performance.now.
     vi.useRealTimers();
     const setUp = async (paragraphs: number, scattered: number) => {
@@ -685,7 +688,7 @@ describe('T5.2 a suggester body frame costs O(frame) @p:mean-2', () => {
       const forged = manyDeleteRanges(source.client, source.from, source.len, 20_000);
       return { opened, forged, body: bodyState(opened.dobj.document), bytes: Y.encodeStateAsUpdate(opened.dobj.document).byteLength };
     };
-    const docs = { warm: await setUp(5, 100), small: await setUp(5, 100), large: await setUp(3_000, 50_000) };
+    const docs = { warm: await setUp(5, 100), small: await setUp(5, 100), large: await setUp(Math.floor(TEXT_CHAR_CAP / LINE.length), 50_000) };
     let run = 0;
     const deliver = async (size: keyof typeof docs) => {
       const { opened, forged, body } = docs[size];
@@ -699,7 +702,7 @@ describe('T5.2 a suggester body frame costs O(frame) @p:mean-2', () => {
       expect(bodyState(opened.dobj.document)).toBe(body);
       return took;
     };
-    expect(docs.large.bytes).toBeGreaterThan(1_600_000);
+    expect(docs.large.bytes).toBeGreaterThan(TEXT_CHAR_CAP);
     const [step] = await expectLinearTime<keyof typeof docs>({
       shape: `a ${docs.large.forged.byteLength} B suggester body frame on ${docs.small.bytes} B and ${docs.large.bytes} B docs`,
       sizes: ['small', 'large'],

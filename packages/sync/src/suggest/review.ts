@@ -22,7 +22,15 @@ export interface Reviewer {
 
 export type Preview = { ok: true; hunks: Hunk[]; hash: string; digest: string } | { ok: false; reason: GateReason | 'missing' };
 
-export type ReviewResult = { ok: true } | { ok: false; status: 403 | 404 | 409; reason: GateReason | 'role' | 'missing' };
+/** `limit`: the note limit a `doc-cap` accept would pass, text or structure (A§5.1 Limits); absent for the state bytes. */
+export type ReviewResult = { ok: true } | { ok: false; status: 403 | 404 | 409; reason: GateReason | 'role' | 'missing'; limit?: 'text' | 'structure' };
+
+export interface AcceptOptions {
+  stateCap?: number;
+  now?: number;
+  /** Which note limit landing `body` and each payload update would pass, or null; asked before anything is written. */
+  limit?: (body: Uint8Array, payloads: readonly [string, Uint8Array][]) => 'text' | 'structure' | 'state' | null;
+}
 
 export interface AcceptInput {
   previewHash: string;
@@ -262,11 +270,11 @@ function badge(live: Y.Doc, id: string, reason: GateReason): void {
 }
 
 /**
- * One synchronous turn: G0, then G1–G5 and G7 on the mirror, G6 against the previewed hash and G8 against the state
- * cap. On any failure nothing reaches the live doc; on success the mirror's diff lands under `suggest-accept` and the
+ * One synchronous turn: G0, then G1–G5 and G7 on the mirror, G6 against the previewed hash, G8 against the state
+ * cap and the note's text and structure limits. On any failure nothing reaches the live doc; on success the mirror's diff lands under `suggest-accept` and the
  * record closes.
  */
-export function acceptRecord(live: Y.Doc, id: string, input: AcceptInput, reviewer: Reviewer, options: { stateCap?: number; now?: number } = {}): ReviewResult {
+export function acceptRecord(live: Y.Doc, id: string, input: AcceptInput, reviewer: Reviewer, options: AcceptOptions = {}): ReviewResult {
   if (!roleAtLeast(reviewer.role, 'editor')) return { ok: false, status: 403, reason: 'role' };
   const record = readRecord(live, id);
   if (!record) return { ok: false, status: 404, reason: 'missing' };
@@ -304,6 +312,9 @@ export function acceptRecord(live: Y.Doc, id: string, input: AcceptInput, review
     const body = landing(mirror, hydrated, removed.get(BODY_DOC) ?? [], (item) => unchanged.has(`block:${blockKeyOf(mirror, item)}`), restored);
     const update = body && relocated(live, body.update, mirror, restored);
     if (!body || !update) return { ok: false, status: 409, reason: 'changed' };
+    // The note's text and structure limits, on exactly what lands (A§5.1 Limits).
+    const limit = options.limit?.(update, landed);
+    if (limit) return { ok: false, status: 409, reason: 'doc-cap', ...(limit === 'state' ? {} : { limit }) };
     kept ||= body.kept;
     for (const [payload, payloadUpdate] of landed) source.write(payload, payloadUpdate);
     Y.applyUpdate(live, update, SUGGEST_ACCEPT);

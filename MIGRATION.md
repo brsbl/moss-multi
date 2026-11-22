@@ -200,7 +200,8 @@ Function bodies stay byte-identical to upstream. The same converter runs in the 
 - Moss's reserved database package (excluded from the vendor tree) is the natural home for a desktop client of this API.
 
 **Risks.**
-- Every limit (2 MB of markdown per doc, 50 connections, 300 writes per 5 s, 8 KB awareness) and every access rule is enforced in the DocDO and the Worker; a desktop path that writes D1 or R2 directly bypasses them.
+- Every limit (1.02 million characters of text per note, `packages/protocol/src/limits.ts#TEXT_CHAR_CAP`; a structure guard of 165,000 Yjs structs, `packages/protocol/src/limits.ts#STRUCT_CAP`; a stored-state bound of about 17 MB derived from both, `packages/protocol/src/limits.ts#STATE_CAP_BYTES`; 50 connections, 300 writes per 5 s, 8 KB awareness) and every access rule is enforced in the DocDO and the Worker; a desktop path that writes D1 or R2 directly bypasses them.
+- Docs are stored in the lean layout (A§5.1), so a desktop client must bind with the patched `@lexical/yjs` and name the client protocol on its doc sockets and REST requests (`packages/protocol/src/client-protocol.ts#MIN_CLIENT_PROTOCOL`, 2); a bundle naming an older one is closed 4426 or answered 426 before it writes.
 - Durable Object storage is bound to the Worker name, so names are permanent once data exists (A§21).
 - Revocation is pull-validated per frame; a desktop client that caches a role locally must still treat 4403 and 4402 as authoritative (`packages/protocol/src/sync.ts#closeAction`).
 

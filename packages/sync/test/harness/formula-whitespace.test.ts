@@ -5,7 +5,6 @@
 // line stays literal text but its payload is still read. Each path must grow linearly as the run doubles to 2 MB.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { doubling, expectLinearTime } from '../../../../scripts/lib/linear-time.mjs';
-import { MARKDOWN_CAP_BYTES } from '@moss-multi/protocol/limits';
 import { markdownToState } from '../../src/converter/index.ts';
 import { DocDO, type SearchFeed } from '../../src/doc-do.ts';
 import type { IndexEntry } from '../../src/search-do.ts';
@@ -16,6 +15,9 @@ afterEach(() => {
   vi.clearAllTimers();
   vi.useRealTimers();
 });
+
+/** The doubling legs' top size: SP2's scale note. */
+const SCALE_NOTE_CHARS = 2 * 1024 * 1024;
 
 /** One line of `chars` characters: a formula whose expression is mostly one blank run. */
 const note = (chars: number): string => {
@@ -28,7 +30,7 @@ const note = (chars: number): string => {
 async function expectLinear<T>(prepare: (markdown: string) => Promise<T>, run: (prepared: T) => Promise<void>): Promise<void> {
   await expectLinearTime({
     shape: 'a formula with a long blank run',
-    sizes: doubling(2048, MARKDOWN_CAP_BYTES),
+    sizes: doubling(2048, SCALE_NOTE_CHARS),
     warmup: [1024],
     slack: 250,
     measure: async (chars) => {
@@ -42,6 +44,8 @@ async function expectLinear<T>(prepare: (markdown: string) => Promise<T>, run: (
 
 const fed: IndexEntry[] = [];
 class FedDoc extends DocDO {
+  // The doubling legs pass the note's text limit; they time the converter, not admission.
+  static override limits = { ...DocDO.limits, textCharCap: Infinity };
   static override searchFeed = (): SearchFeed => ({ index: async (entry) => { fed.push(entry); return { linksChanged: false }; } });
 }
 

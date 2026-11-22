@@ -106,7 +106,8 @@ const FORGED: [string, (server: Y.Doc, payloads: Map<string, Uint8Array>) => Uin
   ['a tombstone placed after an original map value', (server) => {
     let map = firstBlock(server)._start!;
     while (map.deleted) map = map.right!;
-    const origin = (map.content as Y.ContentType).type._map.get('__format')!.id;
+    // The lean layout stores a run's defaults as no key; its __type is always stored (A§10.11).
+    const origin = (map.content as Y.ContentType).type._map.get('__type')!.id;
     return raw([forged(Y.createID(424243, 0), { origin }, new Y.ContentDeleted(1))]);
   }],
   ['a formatting mark in the body', (server) => forge(server, (doc) => firstBlock(doc).format(1, 5, { bold: true }))],
