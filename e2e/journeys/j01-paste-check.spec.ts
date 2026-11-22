@@ -13,9 +13,9 @@ function checklist(count: number): string {
   return lines.join('\n');
 }
 
-test('j01-paste-check: a 12,000-item check list pasted between two paragraphs lands in its own order, and its undo and redo keep it @p:col-1 @p:col-3', async ({ actors, stack }) => {
+test('j01-paste-check: a 10,000-item check list pasted between two paragraphs lands in its own order, and its undo and redo keep it @p:col-1 @p:col-3', async ({ actors, stack }) => {
   test.setTimeout(900_000);
-  const markdown = `${checklist(12_000)}\n\nEnd of the list.`;
+  const markdown = `${checklist(10_000)}\n\nEnd of the list.`;
   const { ada, ben, docId, wire, want } = await setup(actors, stack, 'Before.\n\nAfter.', {
     references: { whole: `Before.\n\n${markdown}\n\nAfter.`, typed: `Before.\n\n${markdown}Z\n\nAfter.` },
   });

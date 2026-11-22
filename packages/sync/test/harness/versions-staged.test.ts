@@ -19,8 +19,12 @@ afterEach(() => {
 const ADA = { id: 'ada', role: 'editor' as const };
 const ROW_CAP = 2 * 1024 * 1024;
 
-/** A note well past the spill size, near the 2 MB of markdown a note may hold. */
-const LARGE = `${'spill words '.repeat(Math.ceil((VERSION_SPILL_BYTES * 1.2) / 12))}\n`;
+/**
+ * A note well past the spill size and its row, in text of mostly three-byte characters, so its bytes pass both well
+ * within the note's text limit (TEXT_CHAR_CAP, A§5.1 Limits).
+ */
+const WORDS = '溢出的词 ';
+const LARGE = `${WORDS.repeat(Math.ceil((VERSION_SPILL_BYTES * 1.2) / new TextEncoder().encode(WORDS).byteLength))}\n`;
 
 /** An in-memory R2 bucket whose put runs `onPut` (a peer's keystroke, a failure, a crash) before it stores, or after. */
 function bucket(onPut: (key: string) => Promise<void> | void, storeFirst = false): { stored: Map<string, string>; puts: string[] } {

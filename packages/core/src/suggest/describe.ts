@@ -309,24 +309,18 @@ function align(before: readonly Piece[], after: readonly Piece[]): Step[] {
       continue;
     }
     const n = Math.min(x.len - bi, y.len - aj);
-    let same = n;
-    if (isChar(x) && x.s.slice(bi, bi + n) !== y.s!.slice(aj, aj + n)) {
-      same = 0;
-      while (x.s.charCodeAt(bi + same) === y.s!.charCodeAt(aj + same)) same += 1;
-    }
-    if (same) {
-      steps.push({ op: 'keep', b: slice(x, bi, bi + same), a: slice(y, aj, aj + same) });
-      if (bi + same === x.len) [i, bi] = [i + 1, 0];
-      else bi += same;
-      if (aj + same === y.len) [j, aj] = [j + 1, 0];
-      else aj += same;
+    if (!isChar(x) || x.s.slice(bi, bi + n) === y.s!.slice(aj, aj + n)) {
+      steps.push({ op: 'keep', b: slice(x, bi, bi + n), a: slice(y, aj, aj + n) });
+      if (bi + n === x.len) [i, bi] = [i + 1, 0];
+      else bi += n;
+      if (aj + n === y.len) [j, aj] = [j + 1, 0];
+      else aj += n;
       continue;
     }
-    // One id holding two different characters (never so in Yjs, but hashed as such) is removed and added.
-    let differ = 1;
-    while (differ < n && x.s!.charCodeAt(bi + differ) !== y.s!.charCodeAt(aj + differ)) differ += 1;
-    del(bi + differ);
-    ins(aj + differ);
+    // Runs whose ids hold different characters (never so in Yjs, but hashed as such) are removed and added whole, so
+    // no part of either reads as kept text the card leaves out.
+    del(x.len);
+    ins(y.len);
   }
   return steps;
 }

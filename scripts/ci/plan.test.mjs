@@ -340,6 +340,7 @@ describe('ciOk', () => {
       viewer: { result: results.viewer ?? 'skipped' },
       editor: { result: results.editor ?? results.viewer ?? 'skipped' },
       'editor-host': { result: results['editor-host'] ?? results.checks ?? 'skipped' },
+      memory: { result: results.memory ?? results.checks ?? 'skipped' },
       canary: { result: results.canary ?? 'skipped' },
       demo: { result: results.demo ?? 'skipped' },
     };
@@ -351,6 +352,11 @@ describe('ciOk', () => {
   it('fails when the editor-host artifact job failed or was skipped beside the checks', () => {
     expect(ciOk(needs(checksOnly, { checks: 'success', 'editor-host': 'failure' })).problems).toEqual(['editor-host: failure (planned to run)']);
     expect(ciOk(needs(checksOnly, { checks: 'success', 'editor-host': 'skipped' })).problems).toEqual(['editor-host: skipped (planned to run)']);
+  });
+
+  it('fails when the DocDO memory job failed or was skipped beside the checks', () => {
+    expect(ciOk(needs(checksOnly, { checks: 'success', memory: 'failure' })).problems).toEqual(['memory: failure (planned to run)']);
+    expect(ciOk(needs(checksOnly, { checks: 'success', memory: 'skipped' })).problems).toEqual(['memory: skipped (planned to run)']);
   });
 
   it('fails when the editor bundle job failed beside the viewer lane', () => {
@@ -433,7 +439,7 @@ describe('the canary rehearsal (T8.D)', () => {
       plan: { result: 'success', outputs: { plan: JSON.stringify(plan) } },
       checks: { result: 'success' }, build: { result: 'success' }, e2e: { result: 'success' }, macos: { result: 'skipped' },
       oracle: { result: 'success' }, parity: { result: 'success' }, viewer: { result: 'success' }, editor: { result: 'success' },
-      'editor-host': { result: 'success' }, canary: { result: canary }, demo: { result: 'success' },
+      'editor-host': { result: 'success' }, memory: { result: 'success' }, canary: { result: canary }, demo: { result: 'success' },
     });
     expect(ciOk(needs('success')).ok).toBe(true);
     expect(ciOk(needs('skipped')).problems).toEqual(['canary: skipped (planned to run)']);
@@ -458,7 +464,7 @@ describe('the demo smoke (T8.B2)', () => {
       plan: { result: 'success', outputs: { plan: JSON.stringify(plan) } },
       checks: { result: 'success' }, build: { result: 'success' }, e2e: { result: 'success' }, macos: { result: 'skipped' },
       oracle: { result: 'success' }, parity: { result: 'success' }, viewer: { result: 'success' }, editor: { result: 'success' },
-      'editor-host': { result: 'success' }, canary: { result: 'success' }, demo: { result: demo },
+      'editor-host': { result: 'success' }, memory: { result: 'success' }, canary: { result: 'success' }, demo: { result: demo },
     });
     expect(ciOk(needs('success')).ok).toBe(true);
     expect(ciOk(needs('failure')).problems).toEqual(['demo: failure (planned to run)']);

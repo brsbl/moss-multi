@@ -153,9 +153,14 @@ export async function openDocClient(baseUrl: string, docId: string, cookie: stri
   };
 }
 
-/** Opens a doc socket and reports whether the handshake completed and the close code (1006 when it was refused). */
-export function probeSocket(baseUrl: string, docId: string, cookie: string | null): Promise<{ opened: boolean; code: number }> {
-  const url = `${baseUrl.replace(/^http/, 'ws')}${DOC_SOCKET_PATH}${encodeURIComponent(docId)}?${PROTOCOL_QUERY}`;
+/**
+ * Opens a doc socket and reports whether the handshake completed and the close code (1006 when it was refused).
+ * `query` stands in for another bundle's protocol; `send` is a frame sent as soon as the socket opens.
+ */
+export function probeSocket(
+  baseUrl: string, docId: string, cookie: string | null, { query = PROTOCOL_QUERY, send }: { query?: string; send?: Uint8Array } = {},
+): Promise<{ opened: boolean; code: number }> {
+  const url = `${baseUrl.replace(/^http/, 'ws')}${DOC_SOCKET_PATH}${encodeURIComponent(docId)}?${query}`;
   return new Promise((resolve, reject) => {
     const socket = new WebSocket(url, { headers: upgradeHeaders(baseUrl, cookie) });
     let opened = false;
@@ -165,6 +170,7 @@ export function probeSocket(baseUrl: string, docId: string, cookie: string | nul
     }, 15_000);
     socket.on('open', () => {
       opened = true;
+      if (send) socket.send(send);
     });
     socket.on('error', noop);
     socket.on('close', (code) => {
