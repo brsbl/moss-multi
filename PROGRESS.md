@@ -1,6 +1,6 @@
 # moss-multi progress
 
-**Overall: 91% done** (274 of 302 planned tasks verified)
+**Overall: 91% done** (275 of 302 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
@@ -13,7 +13,7 @@
 | M6 History | Versions, view, diff, identity-preserving restore | 20 / 20 | in progress |
 | M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 26 / 26 | in progress |
 | M8 Ship | Everything on a permanent staging URL with demo content | 17 / 17 | |
-| M9 Polish | Understand every control without help: fixes found by using the whole product | 34 / 43 | |
+| M9 Polish | Understand every control without help: fixes found by using the whole product | 35 / 43 | |
 
 A task counts only after an independent checker passes it on green CI. Each milestone also ends with the cumulative journey suite green in Chromium and WebKit and a naive-user critic pass.
 
@@ -296,6 +296,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-11-22 — T9.48d verified: opening or focusing a note now sends one backlinks read instead of racing several, a note opened while the workspace socket connects gets its backlinks from that socket's reconcile (or within 2 s if the handshake hangs), and a failed read is retried on the next focus.
 - 2026-11-22 — T9.37 verified: `/login` is a quiet 400 px form column with Moss's heading, fields and action and an inline terracotta error that never moves the form; a signed-out link visitor finds Sign in in the bottom row and in More actions, and the denial page offers only Sign in, or Go to your notes and Use another account.
 - 2026-11-22 — T9.48b verified: pasting a 10,000-item check list no longer freezes Chrome; the tab is held under a second at a time instead of 3 to 5 s, because the comment and suggestion highlight rules now name the editor root, and WebKit still paints them through a per-element copy.
+- 2026-11-22 — T9.39 verified: Resolve closes the open thread as Moss's does, the comment actions menu has no emoji strip, each message has one quiet Add reaction that opens a small row of five quick reactions, and reaction chips are neutral with a faint fill when they are yours.
 
 ## T1.1s identity audit
 
@@ -354,6 +355,13 @@ A task counts only after an independent checker passes it on green CI. Each mile
 ## Follow-ups (P2)
 
 Parked from the M0 checker and critic passes, each with the task that owns it.
+
+### From T9.39's checker (18011d7, 2026-11-22)
+
+- T9.39 (Mentions and reactions stay inside Moss's comment flows) checker P2: the count in your own (pressed) reaction chip is darker in light mode and brighter in dark mode than Moss's faint comment count (rgb(179,179,183) on rgb(27,27,27) in dark against rgb(144,144,150) with no fill); it matches Moss's active comment-actions button, and chips that are not yours use faint ink (T9.46 decides).
+- T9.39 (Mentions and reactions stay inside Moss's comment flows) checker P2: the chip is 24 px tall, the popover's thread-action scale, where Moss's comment count is 28 px.
+- T9.39 (Mentions and reactions stay inside Moss's comment flows) checker P2: after Resolve, focus lands on the page body; where Moss puts focus here is not shown by tests or shots.
+- T9.39 (Mentions and reactions stay inside Moss's comment flows) checker P2: Space to choose a reaction, touch and narrow-width reach, closing a reopened thread under the resolved filter, and a peer resolving at the same time are not covered by tests or proof (no defect found in any).
 
 ### From T9.48b's checker (1013dcf, 2026-11-22)
 
