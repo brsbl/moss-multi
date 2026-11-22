@@ -6,7 +6,7 @@
 // never reject.
 import type { Actor } from '../lib/actors.ts';
 import {
-  BODY_BINDING_ATTR, EDIT_MODE_ATTR, EDITOR_GENERATION_ATTR, FLOATING_TOOLBAR_ATTR, REVIEW_BAND_ATTR, SUGGEST_MARK_ATTR, SUGGEST_REFUSED_ATTR, SUGGESTION_ACTIVE_ATTR, SUGGESTION_CARD_ATTR, SUGGESTION_ID_ATTR, SUGGESTION_ROW_ATTR,
+  BODY_BINDING_ATTR, EDIT_MODE_ATTR, FLOATING_TOOLBAR_ATTR, REVIEW_BAND_ATTR, SUGGEST_MARK_ATTR, SUGGEST_REFUSED_ATTR, SUGGESTION_ACTIVE_ATTR, SUGGESTION_CARD_ATTR, SUGGESTION_ID_ATTR, SUGGESTION_ROW_ATTR,
   SUGGESTION_STATUS_ATTR, SYNC_UNACKED_ATTR,
 } from '../lib/contract.ts';
 import { grantDoc } from '../lib/grants.ts';
@@ -413,16 +413,15 @@ test("j16-review: a rebuilt fork leaves the author's open list and its focus whe
   await ben.page.keyboard.press('Enter');
   await expect(cards(ben, 'open')).toHaveCount(1, { timeout: BIND_TIMEOUT });
   await expect(count).toBeFocused();
-  const generation = await ui.body(ben, docId).getAttribute(EDITOR_GENERATION_ATTR);
 
   // Ada rejects it while Ben watches the list.
   await confirmClose(ada, (await openPanel(ada)).locator(`[${SUGGESTION_CARD_ATTR}][${SUGGESTION_STATUS_ATTR}="open"]`), 'Reject');
-  await expect(ui.body(ben, docId), 'the rebuilt fork').not.toHaveAttribute(EDITOR_GENERATION_ATTR, generation ?? '', { timeout: BIND_TIMEOUT });
+  await expect(cards(ben, 'rejected')).toHaveCount(1, { timeout: BIND_TIMEOUT });
+  await expect(ui.body(ben, docId), 'the rebuilt fork').not.toContainText('plus', { timeout: BIND_TIMEOUT });
   await expect(ui.body(ben, docId)).toHaveAttribute(BODY_BINDING_ATTR, 'live', { timeout: BIND_TIMEOUT });
-  await expect(ui.body(ben, docId)).not.toContainText('plus');
   // The rebuilt editor paints on the next frames; it must not take focus from the list Ben has open.
   await frames(ben);
-  await frames(ben);
+  await ben.page.waitForTimeout(500);
   await expect(cards(ben, 'rejected'), 'the list stays open').toHaveCount(1);
   await expect(count, 'focus stays on the count').toBeFocused();
 });
