@@ -376,7 +376,9 @@ test('j05-trash: a note trashed under open windows says so once: the owner’s o
   await expect(ui.pane(ada, docId)).toHaveAttribute(SYNC_UNACKED_ATTR, '0', { timeout: BIND_TIMEOUT });
   await grantDoc(ada, docId, benPrincipal, 'suggester');
   const ben = await actors.open(benPrincipal, { path: `/d/${docId}` });
-  await ui.waitLive(ben, docId);
+  // A suggester's title stays read-only, so his pane is live once its body is.
+  await expect(ui.pane(ben, docId)).toHaveAttribute(DOC_STATE_ATTR, 'live', { timeout: BIND_TIMEOUT });
+  await expect(ui.body(ben, docId)).toHaveAttribute(BODY_BINDING_ATTR, 'live', { timeout: BIND_TIMEOUT });
   const other = await actors.sameAs(ada, { path: `/d/${docId}` });
   await ui.waitLive(other, docId);
   await actors.requireDistinct(2);
