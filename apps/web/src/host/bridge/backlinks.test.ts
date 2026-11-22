@@ -132,8 +132,11 @@ it('reads an opened note’s backlinks once when it is focused before the read a
   server.state.held.get('d1')!(new Response('not json', { status: 200 }));
   await new Promise((resolve) => setTimeout(resolve, 20));
   await bridge.system.setFocusedNoteId('d1').catch(() => undefined);
-  await vi.waitFor(async () => expect((await bridge.notes.getById('d1'))?.incomingLinks?.map((link) => link.noteId)).toEqual(['d2']));
-  expect(server.reads('d1'), 'the failed read is read again on focus').toBe(2);
+  // Counted before any getById, which could start a read of its own.
+  await vi.waitFor(() => expect(server.reads('d1'), 'the failed read is read again on focus').toBe(2));
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  expect((await bridge.notes.getById('d1'))?.incomingLinks?.map((link) => link.noteId)).toEqual(['d2']);
+  expect(server.reads('d1')).toBe(2);
 });
 
 it('lets a workspace event replace an opened note’s backlinks read in flight', async () => {
@@ -147,4 +150,40 @@ it('lets a workspace event replace an opened note’s backlinks read in flight',
   await event(['d2']);
   await vi.waitFor(() => expect(server.reads('d1')).toBe(2));
   expect(first?.signal?.aborted, 'the links may have changed: the event replaces the read').toBe(true);
+});
+
+it('leaves a backlinks read sent after the channel opened to cover its reconcile, and rereads one sent before', async () => {
+  const server = fakeServer();
+  server.state.hold.add('d1');
+  let receive!: Receive;
+  // The reconcile's listing answers when the test says.
+  let release = () => undefined as void;
+  const listed = new Promise<void>((resolve) => { release = resolve; });
+  const fetch: typeof globalThis.fetch = async (input, init) => {
+    const reply = server.fetch(input, init);
+    const listings = server.calls.filter((call) => call.path === '/api/workspace').length;
+    if (new URL(String(input), 'http://localhost').pathname === '/api/workspace' && listings === 2) await listed;
+    return reply;
+  };
+  const bridge = createBridge({ pathname: () => '/', fetch, subscribeWorkspace: (cb) => { receive = cb; return () => undefined; } });
+  const changed = vi.fn();
+  onTestFinished(bridge.notes.onDiskChange(changed));
+  const listings = () => server.calls.filter((call) => call.path === '/api/workspace').length;
+  await bridge.notes.getAll();
+  // A first load: the channel opens (its reconcile), then the note opens before the reconcile's listing answers.
+  receive({ type: 'vaults' });
+  await vi.waitFor(() => expect(listings()).toBe(2));
+  await bridge.notes.getById('d1');
+  await vi.waitFor(() => expect(server.state.held.has('d1')).toBe(true));
+  release();
+  await vi.waitFor(() => expect(changed).toHaveBeenCalledWith([], []));
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  expect(server.reads('d1'), 'the open’s read covers the reconcile').toBe(1);
+  const first = server.calls.find((call) => call.path === '/api/docs/d1/backlinks');
+  expect(first?.signal?.aborted, 'and it is not aborted').toBe(false);
+
+  // A reconcile after the read was sent may carry a change the read missed: it replaces the read.
+  receive({ type: 'vaults' });
+  await vi.waitFor(() => expect(server.reads('d1')).toBe(2));
+  expect(first?.signal?.aborted).toBe(true);
 });
