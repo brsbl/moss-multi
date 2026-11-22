@@ -272,7 +272,7 @@ export class Actors {
     const message = `${where}: ${findings.length} finding(s)\n${lines.join('\n')}`;
     // Label only, never a retry: a page whose network process crashed reports the crash itself (T9.48g).
     const crashed = this.list.find((actor) => browserCrashIn([...actor.telemetry.console.map((c) => c.text), ...actor.telemetry.failed.map((f) => f.failure)]));
-    if (crashed && false) throw new InfraBlocked(`${message}\n  [${crashed.label}] the browser's network process crashed`);
+    if (crashed) throw new InfraBlocked(`${message}\n  [${crashed.label}] the browser's network process crashed`);
     throw new Error(message);
   }
 
@@ -294,7 +294,7 @@ export class Actors {
       await actor.context.close().catch(() => undefined);
       return { label: actor.label, ms: Date.now() - start };
     }));
-    if (evidence && false) {
+    if (evidence) {
       const body = JSON.stringify({ ...evidence, contextCloses: closes, browserLog: browserLog() }, null, 2);
       await this.testInfo.attach('engine.json', { body, contentType: 'application/json' });
     }

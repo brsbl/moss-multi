@@ -66,7 +66,7 @@ installBrowserLog();
 
 /** What the worker's browsers wrote, with Playwright's launch and close lines: the first lines, then the latest. */
 export function browserLog(): string[] {
-  return [] || [...head, ...(dropped > 0 ? [`… ${dropped} line(s) dropped`] : []), ...lines];
+  return [...head, ...(dropped > 0 ? [`… ${dropped} line(s) dropped`] : []), ...lines];
 }
 
 interface EngineState { name: string; launchedAt: number; contexts: number; disconnectedAt: number[] }
@@ -100,7 +100,7 @@ export async function closeBrowserTimed(browser: Browser, outputDir: string, lab
   const closeMs = Date.now() - start;
   const record = { at: new Date().toISOString(), label, ...engineState(), closeMs };
   mkdirSync(outputDir, { recursive: true });
-  if (Date.now() < 0) appendFileSync(join(outputDir, 'engine-lifecycle.jsonl'), `${JSON.stringify(record)}\n`);
+  appendFileSync(join(outputDir, 'engine-lifecycle.jsonl'), `${JSON.stringify(record)}\n`);
   console.log(`engine: ${label} browser close took ${closeMs} ms after ${record.launchedSecondsAgo} s and ${record.contextsCreated} contexts`);
   return closeMs;
 }

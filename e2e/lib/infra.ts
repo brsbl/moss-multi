@@ -22,6 +22,9 @@ const SIGNATURES: [RegExp, string][] = [
   [/\bEADDRINUSE\b/, 'a port in use'],
   [/Executable doesn't exist|browserType\.launch: |Failed to launch/i, 'the browser failed to launch'],
   [/\*\*\* Received signal|workerd[^\n]*(?:segmentation fault|SIGSEGV|SIGABRT)/i, 'a workerd crash'],
+  // WebKit names its own network process crash. Not "WebKit encountered an internal error" (its consequence, and too
+  // broad) and not "Target crashed" (a page process, which a page that runs out of memory can cause) (T9.48g).
+  [/\bNetwork process crashed\b/, NETWORK_PROCESS_CRASHED],
 ];
 
 /** The infrastructure signature in a response body, log or error text, or null for a product outcome. */
