@@ -277,6 +277,26 @@ test.describe('a network drop off loopback (invariants 1 and 3, T8.2)', () => {
     expect(errorProblems({ console: line(asked[0].url), pageErrors: [], http: [], sockets: asked }, [], 'j01', OFF)).toEqual([]);
     expect(errorProblems({ console: line('wss://h/parties/doc-d-o/d?_pk=9'), pageErrors: [], http: [], sockets: asked }, [], 'j01', OFF)).not.toEqual([]);
   });
+  test("the page's close of a connecting socket is asked even when the browser's close event reaches the census first", async () => {
+    const { networkDrops } = await import('../lib/invariants.ts');
+    const telemetry = new Telemetry();
+    const url = 'wss://h/parties/doc-d-o/d?_pk=1';
+    const entry = telemetry.socketOpened(url);
+    if (!entry) throw new Error('not a doc socket');
+    // The page's close binding and the browser's close event come over different channels, in either order.
+    entry.closedAt = entry.openedAt + 50;
+    telemetry.pageClosed(url, entry.openedAt + 10, 'asked -');
+    telemetry.closeHeard(url, '1006');
+    expect(entry).toMatchObject({ close: 'asked -, then 1006', code: 1006, closedAt: entry.openedAt + 10 });
+    expect(networkDrops(telemetry.sockets)).toEqual([]);
+    // A socket the page never asked to close is still a drop.
+    const dropped = new Telemetry();
+    const lost = dropped.socketOpened('wss://h/parties/doc-d-o/d?_pk=2');
+    if (!lost) throw new Error('not a doc socket');
+    lost.closedAt = lost.openedAt + 50;
+    dropped.closeHeard(lost.url, '1006');
+    expect(networkDrops(dropped.sockets)).toHaveLength(1);
+  });
   test("off loopback only the recovered drop's own log line, while it lived, is left to invariant 3", () => {
     const dropped = socket(0, 100, 1006);
     const census = (text: string, at = 100, sockets = [dropped, synced(200)]) => ({
