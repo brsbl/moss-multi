@@ -307,15 +307,11 @@ function placeEnd(prev: EditorState, next: EditorState, point: Point, startOfRan
     for (; line && !prev._nodeMap.has(line.getKey()); line = $lineAfter(line)) fresh.push(line);
     if ((line?.getKey() ?? null) !== old.below || fresh.length === 0) return null;
     const unchangedAbove = () => !$isElementNode(above) || $lineText(above) === old.aboveText;
-    if (!old.kept && fresh.length === old.i + 1 + old.d) {
-      // R1: my line was replaced, one for one.
+    if (!old.kept && old.i === 0 && old.d === 0 && fresh.length === 1) {
+      // R1: my line was replaced on its own.
       if (!unchangedAbove()) return null;
       const texts = fresh.map($lineText);
       const mine = texts[old.i]!;
-      for (let j = 0; j < texts.length; j++) {
-        // Order proven: every other line reads as it did, and none reads as mine, before or after.
-        if (j !== old.i && (texts[j] !== old.run[j] || texts[j] === mine || old.run[j] === old.run[old.i])) return null;
-      }
       const offset = replacedOffset(old.left, old.right, mine);
       return offset === null ? null : { point: $pointAt(fresh[old.i]!, offset), split: false, line: old.line };
     }
