@@ -1,6 +1,6 @@
 # moss-multi progress
 
-**Overall: 93% done** (281 of 302 planned tasks verified)
+**Overall: 93% done** (282 of 302 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
@@ -13,7 +13,7 @@
 | M6 History | Versions, view, diff, identity-preserving restore | 20 / 20 | in progress |
 | M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 26 / 26 | in progress |
 | M8 Ship | Everything on a permanent staging URL with demo content | 17 / 17 | |
-| M9 Polish | Understand every control without help: fixes found by using the whole product | 41 / 43 | |
+| M9 Polish | Understand every control without help: fixes found by using the whole product | 42 / 43 | |
 
 A task counts only after an independent checker passes it on green CI. Each milestone also ends with the cumulative journey suite green in Chromium and WebKit and a naive-user critic pass.
 
@@ -304,6 +304,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-11-22 — T9.43 verified: a note trashed under an open window shows one bottom notice and nothing else, Moss's Trash notice with Restore for whoever may restore it or “This note was moved to Trash.” for a collaborator, its carets clear at once, and a Trash row from the caller's own vault names that vault.
 - 2026-11-22 — T9.48g verified: a WebKit test that fails because the browser's network process crashed is now labelled BLOCKED as an engine fault instead of a product failure, and every failed WebKit test attaches the engine's process evidence before its pages close.
 - 2026-11-22 — T9.19 verified: the browser's Back and Forward move between the notes a person opened, without a page load and with folders still expanded, and a step back or forward to a note since trashed keeps the last live note in the address.
+- 2026-11-22 — T9.22 verified: the browser tab is named after the focused note (“<title> — moss”, “Untitled — moss”, or “moss” with no note open), follows a rename by anyone, and journey tests now check it.
 
 ## T1.1s identity audit
 
@@ -399,6 +400,12 @@ Moss's marker patterns (`\{%c:\s*([A-Za-z0-9_,\-\s]+?)\s*%\}` and the `%%m:` for
 ## Follow-ups (P2)
 
 Parked from the M0 checker and critic passes, each with the task that owns it.
+
+### From T9.22's checker (9815a57, 2026-11-22)
+
+- T9.22 (The browser tab is named after the note) checker P2: in j02-title the peer tab is first awaited under the 5 s rename deadline, so the 1 s tab deadline is not enforced for a peer rename; a tab lagging 3 s would still pass (T9.46).
+- T9.22 (The browser tab is named after the note) checker P2: no test covers a live rename reaching a link visitor's tab (j13-vault-nav checks only a static title), and the before and after screenshots are not a controlled pair (T9.46).
+- T9.22 (The browser tab is named after the note) checker P2: flake candidates for the intermittent-failure investigation: j13-vaults.spec.ts:118 (webkit, workspace; deleted banner missing at :179, run 45100743917 attempt 1), j15-comments-drafts.spec.ts:621 (chromium, large), selftest/recording.spec.ts:43 (chromium, pastecap) and the memory job '^structure cap' ('create: fetch failed', runs 45095628304 and 45100738971); each green on rerun.
 
 ### From T9.19's checker (f7d0753, 2026-11-22)
 
