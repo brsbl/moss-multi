@@ -308,15 +308,16 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
     const token = share();
     return token ? `${path}?share=${encodeURIComponent(token)}` : path;
   };
-  // The address's history (T9.19): the notes the panes show, the focused note with the panes then, and the note the
-  // browser's Back or Forward last chose.
+  // The address's history (T9.19): the notes the panes show, the focused note with the panes then, the last live note
+  // focused (the one a trashed note's view leaves in the address), and the note the browser's Back or Forward last chose.
   let shownNotes: string[] = [];
   let focused: { id: string | null; panes: string[] } | null = null;
+  let lastLive: string | null = null;
   let popped: string | null = null;
   const live = (noteId: string) => known.get(noteId)?.trashedAt == null;
-  /** The address names the focused note again, when it is live and the address names another. */
+  /** The address names the last live note focused again, when the address names another. */
   const addressFocused = () => {
-    const id = focused?.id;
+    const id = lastLive;
     if (id && live(id) && docIdFromPath(pathname()) !== id) browser.replacePath(withShare(`/d/${encodeURIComponent(id)}`));
   };
 
@@ -984,7 +985,7 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
         // mounted the pane twice. Until moss reaches the chosen note, the notes its switch passes are not visits, however
         // long it takes; a switch that did not happen (moss's switch-result seam) puts the shown note back in the
         // address. A note trashed since its entry was made opens in moss's Trash view, as moss's own arrow opens it,
-        // and the address keeps naming the note shown before it (A§8).
+        // and the address keeps naming the last live note focused (A§8).
         const offPop = browser.onPopState(() => {
           const id = docIdFromPath(pathname());
           if (!id || !callback) return;
@@ -1114,11 +1115,10 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
         // A trashed note has no address: a fresh load of it is the one 404 (A§8). Back or Forward may have reached it.
         if (!id || !live(id)) {
           if (id && popped === id) popped = null;
-          if (id && address === id && before?.id && live(before.id)) {
-            browser.replacePath(withShare(`/d/${encodeURIComponent(before.id)}`));
-          }
+          if (id && address === id) addressFocused();
           return;
         }
+        lastLive = id;
         if (popped === id && address === id) {
           popped = null;
           await refreshForNavigation(id);
