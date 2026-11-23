@@ -397,6 +397,49 @@ test.describe('setup resends', () => {
   });
 });
 
+test.describe('setup on a stale connection', () => {
+  // A pooled keep-alive connection the far end closed as a setup request went out on it fails as "fetch failed"
+  // (other side closed) before any answer: the request is sent once more on a new connection, and counted.
+  test('a sign-in whose connection closed under it is resent once and recorded', async () => {
+    let posts = 0;
+    const server = createServer((req, res) => {
+      posts += 1;
+      if (posts === 1) {
+        req.socket.destroy();
+        return;
+      }
+      res.writeHead(200, { 'content-type': 'application/json', 'set-cookie': 'session=s; Path=/; HttpOnly' });
+      res.end('{}');
+    });
+    await new Promise<void>((done) => server.listen(0, '127.0.0.1', done));
+    try {
+      const baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+      await signIn(baseUrl, { label: 'ada', name: 'Ada', email: 'mm-selftest-stale-1@example.invalid', password: 'p', id: null });
+      expect(posts).toBe(2);
+      const resends = test.info().annotations.filter((a) => a.type === 'setup-resend').map((a) => JSON.parse(a.description ?? ''));
+      expect(resends).toEqual([{ kind: 'sign-in', cause: 'stale connection', count: 1 }]);
+    } finally {
+      await new Promise((done) => server.close(done));
+    }
+  });
+
+  test('a second close is not resent again', async () => {
+    let posts = 0;
+    const server = createServer((req) => {
+      posts += 1;
+      req.socket.destroy();
+    });
+    await new Promise<void>((done) => server.listen(0, '127.0.0.1', done));
+    try {
+      const baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+      await expect(signIn(baseUrl, { label: 'ada', name: 'Ada', email: 'mm-selftest-stale-2@example.invalid', password: 'p', id: null })).rejects.toThrow(/fetch failed/);
+      expect(posts).toBe(2);
+    } finally {
+      await new Promise((done) => server.close(done));
+    }
+  });
+});
+
 test.describe('infrastructure classification', () => {
   test('Cloudflare pages, D1 7429, Worker 1101 and dead stacks are infrastructure', () => {
     expect(classifyInfra('<!DOCTYPE html><!--[if lt IE 7]> <html class="no-js ie6 oldie" lang="en-US"> <![endif]--> cloudflare')).not.toBeNull();
