@@ -6,10 +6,10 @@ import type { APIRequestContext, Browser, BrowserContext, Page, TestInfo } from 
 import { isLoopback, recordingFor } from '../../scripts/deploy/canary-artifacts.mjs';
 import { APP_STATE_ATTR, NAMES } from './contract.ts';
 import { authKind, recordAuth } from './auth-pace.ts';
-import { observeEditor } from './detectors.js';
+import { observeEditor, paneExport } from './detectors.js';
 import { assertNotInfra, closeEachConnection, InfraBlocked } from './infra.ts';
 import {
-  actorFindings, awaitingRecovery, domFindings, networkDrops, principalFindings, typedFindings, type ActorView, type DeclaredHttp, type Finding,
+  actorFindings, awaitingRecovery, domFindings, networkDrops, principalFindings, resyncedDocs, typedFindings, type ActorView, type DeclaredHttp, type Finding,
 } from './invariants.ts';
 import { mintPrincipal, newPrincipal, poolPrincipal, seededPrincipal, signIn, type Principal } from './principals.ts';
 import { makeSeverable, type Sever } from './sever.ts';
@@ -94,6 +94,21 @@ export function recordsScreens(stack: Pick<Stack, 'baseUrl'> | null): boolean {
 let minted = 0;
 /** How long, off loopback, a dropped doc socket's replacement may take to reach sync once the leg ends. */
 const RECOVERY_MS = 15_000;
+/** How long a resynced replica and a fresh load of its doc may take to show the same text. */
+const EXPORT_MS = 15_000;
+
+type ExportVerdict = 'same' | 'different' | 'closed';
+type Shown = { mode: string | null; title: string; body: string } | null;
+
+/**
+ * Whether a resynced replica shows what the server serves: its pane against the same person's fresh load of the doc.
+ * Both modes equal, title and body must match; an editor who chose Suggest or Review sees a private composite the
+ * fresh load (Edit) does not, so then only the title is compared.
+ */
+export function sameExport(replica: Shown, fresh: Shown): boolean {
+  if (!replica || !fresh) return false;
+  return replica.title === fresh.title && (replica.mode !== fresh.mode || replica.body === fresh.body);
+}
 
 /**
  * A declared-setup API request opens its own connection: a pooled keep-alive connection the server side closed while
@@ -280,14 +295,21 @@ export class Actors {
   async findings(): Promise<Finding[]> {
     const findings: Finding[] = [];
     const offLoopback = this.options.stack !== null && !isLoopback(this.options.stack.baseUrl);
-    for (const actor of this.list) findings.push(...(await actorFindings(actor, this.journey, await this.versionFor(actor), { offLoopback })));
+    for (const actor of this.list) {
+      const diverged = new Set([...(this.exports.get(actor) ?? new Map())].filter(([, verdict]) => verdict === 'different').map(([docId]) => docId));
+      findings.push(...(await actorFindings(actor, this.journey, await this.versionFor(actor), { offLoopback, diverged })));
+    }
     findings.push(...(await typedFindings(this.list, this.typed)));
     findings.push(...principalFindings(this.principals, this.soloReason));
     return findings;
   }
 
+  /** Per actor, each resynced drop's doc and what its export comparison found (compareExports). */
+  private readonly exports = new Map<Actor, Map<string, ExportVerdict>>();
+
   async assertInvariants(): Promise<void> {
     await this.awaitRecoveries();
+    await this.compareExports();
     this.noteDrops();
     const findings = await this.findings();
     this.testInfo.annotations.push({ type: 'invariants', description: JSON.stringify({ findings: findings.length }) });
@@ -301,8 +323,8 @@ export class Actors {
    */
   private noteDrops(): void {
     if (!this.options.stack || isLoopback(this.options.stack.baseUrl)) return;
-    const drops = this.list.flatMap((actor) => networkDrops(actor.telemetry.sockets).map(({ docId, at, recovered, recoveryMs }) =>
-      ({ doc: docId, actor: actor.label, at, recovered, recoveryMs })));
+    const drops = this.list.flatMap((actor) => networkDrops(actor.telemetry.sockets, this.exports.get(actor)).map(({ docId, at, recovered, recoveryMs, export: found }) =>
+      ({ doc: docId, actor: actor.label, at, recovered, recoveryMs, ...(found ? { export: found } : {}) })));
     if (drops.length > 0) this.testInfo.annotations.push({ type: 'network-drops', description: JSON.stringify(drops) });
   }
 
@@ -316,6 +338,41 @@ export class Actors {
     const deadline = Date.now() + RECOVERY_MS;
     const pending = () => this.list.some((actor) => !actor.page.isClosed() && awaitingRecovery(actor.telemetry.sockets));
     while (pending() && Date.now() < deadline) await new Promise((done) => setTimeout(done, 250));
+  }
+
+  /**
+   * Off loopback, a drop recovers only to an identical export (T8.F): each doc whose dropped socket resynced, while its
+   * pane is still open, must show what a fresh load of the doc in the same person's context shows, within EXPORT_MS.
+   * A doc no pane shows any more has no replica left to compare (`closed`).
+   */
+  private async compareExports(): Promise<void> {
+    if (!this.options.stack || isLoopback(this.options.stack.baseUrl)) return;
+    for (const actor of this.list) {
+      const docs = resyncedDocs(actor.telemetry.sockets);
+      if (docs.length === 0) continue;
+      const verdicts = new Map<string, ExportVerdict>();
+      this.exports.set(actor, verdicts);
+      for (const docId of docs) verdicts.set(docId, await this.compareExport(actor, docId));
+    }
+  }
+
+  private async compareExport(actor: Actor, docId: string): Promise<ExportVerdict> {
+    const read = (page: Page): Promise<Shown> => page.evaluate(paneExport, { names: NAMES, docId }).catch(() => null);
+    if (actor.page.isClosed() || (await read(actor.page)) === null) return 'closed';
+    const fresh = await actor.context.newPage();
+    try {
+      await fresh.goto(`/d/${docId}`).catch(() => undefined);
+      const deadline = Date.now() + EXPORT_MS;
+      for (;;) {
+        const [replica, loaded] = [await read(actor.page), await read(fresh)];
+        if (replica === null) return 'closed';
+        if (sameExport(replica, loaded)) return 'same';
+        if (Date.now() >= deadline) return 'different';
+        await new Promise((done) => setTimeout(done, 500));
+      }
+    } finally {
+      await fresh.close().catch(() => undefined);
+    }
   }
 
   /** Attaches the census and, where recording is allowed, a 2x PNG of each offending actor, then fails the test. */

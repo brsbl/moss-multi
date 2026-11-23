@@ -150,3 +150,21 @@ export function fieldTexts({ names, docId }) {
     };
   });
 }
+
+/**
+ * A dropped doc's replica as its first pane shows it (T8.F): the pane's mode and its title and body text, with remote
+ * carets and labels left out; null while the pane is missing or a field is still binding.
+ * @param {{ names: Names, docId: string }} arg
+ * @returns {{ mode: string | null, title: string, body: string } | null}
+ */
+export function paneExport({ names, docId }) {
+  const pane = document.querySelector(`[${names.pane}][${names.docId}="${docId}"]`);
+  if (!pane) return null;
+  const title = pane.querySelector(`[${names.titleBinding}]`);
+  const body = pane.querySelector(`[${names.bodyBinding}]`) ?? pane.querySelector(names.lexical);
+  if (!title || !body) return null;
+  if (title.getAttribute(names.titleBinding) === 'unbound' || body.getAttribute(names.bodyBinding) === 'unbound') return null;
+  const copy = /** @type {Element} */ (body.cloneNode(true));
+  for (const remote of copy.querySelectorAll(names.remote.map((name) => `[${name}]`).join(', '))) remote.remove();
+  return { mode: pane.getAttribute(names.editMode), title: title.textContent ?? '', body: copy.textContent ?? '' };
+}

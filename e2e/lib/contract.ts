@@ -12,6 +12,7 @@ export const NAMES = {
   titleBinding: dom.TITLE_BINDING_ATTR,
   bodyBinding: dom.BODY_BINDING_ATTR,
   generation: dom.EDITOR_GENERATION_ATTR,
+  editMode: dom.EDIT_MODE_ATTR,
   canvas: dom.EDITOR_CANVAS_ATTR,
   collabChrome: dom.COLLAB_CHROME_ATTR,
   overlay: dom.OVERLAY_SURFACE_ATTR,

@@ -65,6 +65,11 @@ export interface Network {
    * is listed in the run's summary, and a run allows DROP_ALLOWANCE of them (scripts/deploy/network-drops.mjs).
    */
   offLoopback?: boolean;
+  /**
+   * Docs whose replica, after a recovered drop, did not show what the server serves (Actors.compareExports): their drop
+   * did not recover to an identical export, so it is a finding, not the reconnect path working.
+   */
+  diverged?: ReadonlySet<string>;
 }
 
 /** The later socket of its doc and document that received the server's sync step 2 first, if any. */
@@ -75,17 +80,32 @@ const replacement = (dropped: SocketEntry, group: SocketEntry[]): SocketEntry | 
 /** A dropped socket is recovered when a later socket of its doc and document received the server's sync step 2. */
 const recovered = (dropped: SocketEntry, group: SocketEntry[]): boolean => replacement(dropped, group) !== undefined;
 
-export interface NetworkDrop { docId: string; at: number; recovered: boolean; recoveryMs: number | null }
+export interface NetworkDrop {
+  docId: string; at: number; recovered: boolean; recoveryMs: number | null;
+  /** After the resync: the replica showed what the server serves (`same`), did not (`different`), or no pane was open. */
+  export?: 'same' | 'different' | 'closed';
+}
 
-/** Every network drop (a heard 1006) in a census: when it closed, and whether and how fast a later socket resynced. */
-export function networkDrops(sockets: SocketEntry[]): NetworkDrop[] {
+/**
+ * Every network drop (a heard 1006) in a census: when it closed, and whether and how fast a later socket resynced. With
+ * `exports`, each resynced drop also names what the export comparison found; a `different` one did not recover.
+ */
+export function networkDrops(sockets: SocketEntry[], exports?: ReadonlyMap<string, 'same' | 'different' | 'closed'>): NetworkDrop[] {
   return [...socketGroups(sockets).values()].flatMap((group) => group.filter(networkDropped).map((drop) => {
     const at = drop.closedAt ?? drop.openedAt;
     const next = replacement(drop, group);
     const syncedAt = next?.syncedAt;
-    return { docId: drop.docId, at, recovered: next !== undefined, recoveryMs: syncedAt === undefined ? null : Math.max(0, syncedAt - at) };
+    const found = next === undefined ? undefined : exports?.get(drop.docId);
+    return {
+      docId: drop.docId, at, recovered: next !== undefined && found !== 'different', recoveryMs: syncedAt === undefined ? null : Math.max(0, syncedAt - at),
+      ...(found ? { export: found } : {}),
+    };
   }));
 }
+
+/** The docs of a census's drops that resynced: the ones whose replica Actors compares with the server's export. */
+export const resyncedDocs = (sockets: SocketEntry[]): string[] =>
+  [...new Set(networkDrops(sockets).filter((drop) => drop.recovered).map((drop) => drop.docId))];
 
 /**
  * Off loopback, whether a 1006 drop has not recovered yet: no later socket of its doc and document reached sync. Its
@@ -171,7 +191,7 @@ const ARTIFACT_MS = 50;
 export function socketProblems(
   sockets: SocketEntry[],
   reconnects: Map<string, number>,
-  { offLoopback = false }: Network = {},
+  { offLoopback = false, diverged = new Set() }: Network = {},
   tryAgain: Map<string, number> = new Map(),
 ): string[] {
   const groups = socketGroups(sockets);
@@ -191,8 +211,9 @@ export function socketProblems(
         if (socket.code === TRY_AGAIN) tryAgainSeen.set(docId, (tryAgainSeen.get(docId) ?? 0) + 1);
       }
       for (const socket of group.filter(networkDropped)) {
-        if (recovered(socket, group)) drop += 1;
-        else problems.push(`${docId}: a socket dropped (1006) and no later socket of its document reached sync`);
+        if (!recovered(socket, group)) problems.push(`${docId}: a socket dropped (1006) and no later socket of its document reached sync`);
+        else if (diverged.has(docId)) problems.push(`${docId}: a socket dropped (1006) and resynced, but its replica differs from the server's export`);
+        else drop += 1;
       }
       recoveredSeen += drop;
     }

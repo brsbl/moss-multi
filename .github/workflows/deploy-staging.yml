@@ -536,7 +536,7 @@ jobs:
             --run-id "$RUN_ID" --principals seeded --seed-token "$SEED_TOKEN" --seed-slots "${BROWSER:0:1}$SHARD"
           echo "STACK_STATE=$RUNNER_TEMP/canary/state.json" >> "$GITHUB_ENV"
       # The seeded accounts' password, masked before it reaches the environment; the pool secret stays in this step.
-      # One re-run of only the failed shards claims the slots its first attempt could have used, and signs in past them.
+      # The seeding attempt and one failed-only re-run each sign in to their own half of the shard's slots (seed.mjs rerun).
       - name: Suite password
         env:
           CANARY_POOL_SECRET: ${{ secrets.CANARY_POOL_SECRET }}
@@ -579,7 +579,9 @@ jobs:
 
   # The run's network drops (T8.F): each leg lists the 1006 drops its actors heard, recovered or not, in its summary;
   # across the canary, the probe and every suite shard the run allows DROP_ALLOWANCE recovered ones and none that never
-  # recovered (scripts/deploy/network-drops.mjs). Only the summaries are read: doc ids, actor labels and times.
+  # recovered (scripts/deploy/network-drops.mjs). Every attempt's summaries are read, so a failed-only re-run adds to the
+  # first attempt's drops and to each shard's request budget. Only the summaries are read: doc ids, actor labels, times
+  # and request counts.
   drops:
     name: Network drops
     needs: [preflight, canary, sp9, suite]
@@ -595,7 +597,7 @@ jobs:
           node-version-file: .node-version
       - uses: actions/download-artifact@v8
         with:
-          pattern: staging-*-${{ github.run_attempt }}
+          pattern: staging-*
           path: ${{ runner.temp }}/summaries
       - name: At most the allowance, every one recovered
         shell: bash
@@ -603,6 +605,13 @@ jobs:
           mapfile -t files < <(find "$RUNNER_TEMP/summaries" -name summary.json | sort)
           if [ "${#files[@]}" -eq 0 ]; then echo "::error::no summaries to read"; exit 1; fi
           node scripts/deploy/network-drops.mjs check "${files[@]}" | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Each shard within its request budget across attempts
+        if: always()
+        shell: bash
+        run: |
+          mapfile -t files < <(find "$RUNNER_TEMP/summaries" -name requests.json | sort)
+          if [ "${#files[@]}" -eq 0 ]; then echo "No request counts to read"; exit 0; fi
+          node scripts/deploy/network-drops.mjs requests "${files[@]}" | tee -a "$GITHUB_STEP_SUMMARY"
 
   # The pilot, after the same gate: its own gate, secret check, deploy and read-only smoke. It is passed only the pilot
   # secrets and the shared Cloudflare ones, and never the staging or canary ones.
