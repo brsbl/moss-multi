@@ -25,6 +25,11 @@ const RENAME_MS = 5_000;
 /** The DocDO projects a title at most every 750 ms (A§5.1); this is well past it. */
 const PROJECTION_SETTLED_MS = 2_500;
 const UNTITLED = 'Untitled';
+/** The tab follows a rename within a second (T9.22). */
+const TAB_MS = 1_000;
+const escapeRe = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+/** The browser tab: "<note> — Moss", with the vault between when the note lives in the vault on screen (T9.31). */
+const tabOf = (name: string): RegExp => new RegExp(`^${escapeRe(name)} — (?:[^—]+ — )?Moss$`);
 
 const token = () => randomBytes(2).toString('hex');
 
@@ -106,13 +111,19 @@ test('j02-title: @tierA a rename reaches the other person\'s title, sidebar row 
   await openDoc(ben, docId);
   await expect(row(ben, docId), "the note Ben opened is in Ben's sidebar").toHaveCount(1);
 
+  await expect.poll(() => ben.page.title(), { message: "Ben's tab names the untitled note" }).toMatch(tabOf(UNTITLED));
+
   const name = `Quarterly plan ${token()}`;
   await ui.typeTitle(ada, docId, name);
+  await expect.poll(() => ada.page.title(), { message: "Ada's tab follows her rename", timeout: TAB_MS }).toMatch(tabOf(name));
   await untilAll(measure, {
     'rename to peer title': async () => (await ui.fieldText(ben, docId, 'title')) === name,
     'rename to peer sidebar row': async () => (await rowTitle(ben, docId)) === name,
     'rename to peer breadcrumb': async () => (await crumbText(ben, docId)).includes(name),
+    'rename to peer tab': async () => tabOf(name).test(await ben.page.title()),
   }, RENAME_MS);
+  // The tab reads the breadcrumb's live title, so it never trails the title field by more than a second.
+  await expect.poll(() => ben.page.title(), { message: "Ben's tab names the renamed note", timeout: TAB_MS }).toMatch(tabOf(name));
   await expect(ui.title(ben, docId), 'nothing moved focus into Ben\'s title').not.toBeFocused();
   expect(await rowTitle(ada, docId), "Ada's own row follows her title").toBe(name);
   await ui.waitAcked(ada, docId);

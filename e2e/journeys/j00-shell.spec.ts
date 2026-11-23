@@ -576,3 +576,42 @@ test("Moss's back arrow is a visit: after A, B, C and the arrow back to B, the b
   await shows(a, 'Back a third time');
   expect(await historyLength(page), 'Back adds no entry').toBe(before + 1);
 });
+
+// T9.22: the browser tab is named after the focused pane's note, from the same live title as the breadcrumb.
+const escapeRe = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+/** "<note> — Moss", with the vault between them when the note lives in the vault on screen (T9.31). */
+const tabOf = (name: string): RegExp => new RegExp(`^${escapeRe(name)} — (?:[^—]+ — )?Moss$`);
+const RENAME_TAB_MS = 1_000;
+
+test('the tab is named after the focused note: "moss" with none open, Untitled for an empty title, a rename within a second, the focused split pane (T9.22)', async ({ actors, stack }) => {
+  const ada = await openShell(actors, await actors.principal('ada'));
+  actors.solo('one person names her own notes');
+  const { page } = ada;
+  // A canary pool principal reopens on its last-viewed note (A§4.2); a fresh one starts on the empty canvas.
+  if (!stack.canary) {
+    await expect(page.locator(`[${EDITOR_PANE_ATTR}]`), 'no note is open yet').toHaveCount(0);
+    expect(await page.title(), 'the empty canvas keeps the page title').toBe('moss');
+  }
+
+  const tok = randomBytes(2).toString('hex');
+  const names = { a: `Apples ${tok}`, b: `Pears ${tok}` };
+  const a = await openNewNote(ada);
+  await expect.poll(() => page.title(), { message: 'a new note with an empty title' }).toMatch(tabOf('Untitled'));
+  await ui.typeTitle(ada, a, names.a);
+  await expect.poll(() => page.title(), { message: 'the tab follows the rename', timeout: RENAME_TAB_MS }).toMatch(tabOf(names.a));
+  const b = await openNewNote(ada, [a]);
+  await expect.poll(() => page.title(), { message: 'the tab names the note now open' }).toMatch(tabOf('Untitled'));
+  await ui.typeTitle(ada, b, names.b);
+  await expect.poll(() => page.title(), { message: 'the tab follows the second rename', timeout: RENAME_TAB_MS }).toMatch(tabOf(names.b));
+
+  // A opens again in the split: it binds once more.
+  ada.expectReconnects(1, a);
+  await page.locator(`[${SIDEBAR_ROW_ATTR}][${DOC_ID_ATTR}="${a}"]`).click({ button: 'right' });
+  await page.getByRole('menuitem', { name: 'Open in Split Tab', exact: true }).click();
+  await ui.waitBodyLive(ada, a);
+  await expect.poll(() => ui.paneIds(ada), { message: 'B left, A right' }).toEqual([b, a]);
+  for (const [docId, name] of [[b, names.b], [a, names.a], [b, names.b]] as const) {
+    await ui.body(ada, docId).click();
+    await expect.poll(() => page.title(), { message: `the tab names the focused pane's note, ${name}` }).toMatch(tabOf(name));
+  }
+});
