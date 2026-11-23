@@ -667,6 +667,20 @@ describe('canary recording', () => {
       expect(failureTrace({ errors: [timedOut] })).toEqual(['kind timeout, expect']);
     });
 
+    it("names a failure that has no kind and no finding by its error class and its frames in the suite's .js and deploy scripts", async () => {
+      const { failureTrace } = await import('./canary-reporter.mjs');
+      const stack = [
+        `TypeError: Cannot read properties of null (reading '${SESSION}')`,
+        '    at fieldTexts (/__w/moss-multi/moss-multi/e2e/lib/detectors.js:141:22)',
+        '    at gateRetry (/__w/moss-multi/moss-multi/scripts/deploy/retry-gate.mjs:79:11)',
+        `    at fetch (${URL_STAGING}/api/me?token=SECRET:1:1)`,
+      ].join('\n');
+      const lines = failureTrace({ errors: [{ message: `TypeError: Cannot read properties of null (reading '${SESSION}')`, stack }] });
+      expect(lines).toEqual(['at e2e/lib/detectors.js:141 < scripts/deploy/retry-gate.mjs:79', 'error TypeError']);
+      expect(lines.join('\n')).not.toMatch(/SECRET|reading/);
+      expect(failureTrace({ errors: [{ message: `${SESSION} went wrong`, stack: '' }] }), 'no class, nothing printed').toEqual([]);
+    });
+
     it('prints a field still unbound and numeric expected and received values, never text values', async () => {
       const { failureTrace } = await import('./canary-reporter.mjs');
       const unbound = { message: 'invariants: 1 finding(s)\n  invariant 7 [ben] 9f8e7d6c-5b4a-4321-8fed-cba987654321 body: still unbound after 15 s', stack: '' };
