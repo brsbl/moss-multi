@@ -1044,6 +1044,7 @@ async function nameOutsideScroll(dialog: Locator, line: string): Promise<void> {
 
 test('j08 compact: Share names the note, folder or vault in its first visible line, kept while the list scrolls, and every role reads the product\'s role words (T9.46) @p:ppl-2@2', async ({ actors, stack }) => {
   const ada = await openShell(actors, 'ada');
+  actors.solo('one owner reads her own Share dialogs; the invited addresses have no account');
   const headers = { origin: stack.baseUrl };
   const { vault } = (await (await ada.context.request.get('/api/workspace')).json()) as { vault: { id: string } };
   const folderName = `Trip docs ${randomBytes(2).toString('hex')}`;
