@@ -9,8 +9,6 @@ import { grantDoc } from '../lib/grants.ts';
 import { expect, test, ui } from '../lib/test.ts';
 
 const PEER_TIMEOUT = 10_000;
-/** A lost step 1's answer is asked again at most 30 s later, plus a heartbeat and the round trip. */
-const CATCH_UP_TIMEOUT = 40_000;
 
 async function note(actors: Actors, baseUrl: string, markdown: string) {
   const ada = await actors.session(await actors.principal('ada'));
@@ -832,7 +830,6 @@ const payloadTexts = (actor: Actor, id: string, type: string, getter: string) =>
 
 for (const [kind, spec] of Object.entries(PAYLOAD_KINDS)) {
   test(`j01 registers: after Ben's doc socket black-holes while Ada types into a ${kind} block, his copy catches up without a reload and his field takes typing @p:col-4`, async ({ actors, stack }) => {
-    test.setTimeout(150_000);
     const { ada, ben: principal, id } = await note(actors, stack.baseUrl, spec.markdown);
     const ben = await actors.session(principal, { severable: true });
     await join(ben, id);
@@ -855,9 +852,8 @@ for (const [kind, spec] of Object.entries(PAYLOAD_KINDS)) {
     ben.sever!.restore();
 
     await typeAtEnd(ada, '+2');
-    // A step 1 Ben sent into the black hole lost its answer; while Ada's frames arrive his next one waits up to
-    // RESYNC_HOLD_MS (30 s, doc-session.ts) after it. Off loopback the black hole is long enough to span a resync.
-    await expect.poll(() => texts(ben), { message: 'Ben catches up without a reload', timeout: CATCH_UP_TIMEOUT }).toEqual([`${spec.seed}+1+2`]);
+    // '+2' cannot integrate without the lost '+1': Ben asks for what he missed as it arrives.
+    await expect.poll(() => texts(ben), { message: 'Ben catches up without a reload', timeout: PEER_TIMEOUT }).toEqual([`${spec.seed}+1+2`]);
     await typeAtEnd(ada, '+3');
     await expect.poll(() => texts(ben), { message: "Ada's later edits keep arriving", timeout: PEER_TIMEOUT }).toEqual([`${spec.seed}+1+2+3`]);
 

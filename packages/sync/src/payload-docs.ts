@@ -272,6 +272,8 @@ export interface PayloadSyncOptions {
   note?: Y.Doc;
   /** Payload `id`'s unacked writes were set aside (true), or go out again (false). */
   parked?(id: string, parked: boolean): void;
+  /** A server frame of payload `id` was applied to `doc`. */
+  received?(id: string, doc: Y.Doc): void;
 }
 
 /**
@@ -387,6 +389,7 @@ export class PayloadSync {
     // A step 2 answers this client's step 1; an update that integrates whole is a reveal's state or a first text.
     if (frame.step === PAYLOAD_STEP2 || (!doc.store.pendingStructs && !doc.store.pendingDs)) this.host.arrived(frame.id);
     if (this.#parked.has(frame.id)) this.#unpark();
+    this.options.received?.(frame.id, doc);
     return true;
   }
 
