@@ -399,6 +399,24 @@ Moss's marker patterns (`\{%c:\s*([A-Za-z0-9_,\-\s]+?)\s*%\}` and the `%%m:` for
 - `apps/web/src/host/history/HistoryView.tsx`, `packages/viewer/src/moss-file.ts`, `packages/sync/src/doc-do.ts`, `push.ts`, `title-line.ts`, `editor/plugins/FileLinkPlugin.tsx`, `editor/utils/noteFrontmatter.ts`: only `splitFrontmatter` and `disassembleNote`, no marker regex; the frontmatter pattern is anchored at the start, so linear.
 - `editor/markdown/normalize.ts`: imports only a type.
 
+### T9.47 — what a peer's block change still does to your caret
+
+Each is the behaviour before T9.47 unless it says otherwise, and each has a test that pins it; none is fixed by T9.47.
+
+1. Peers can see your fallback caret for one frame: the binding publishes it while it applies the peer's change, and the corrected position follows in the same task. Removing that frame needs the awareness positions rewritten before the binding syncs, a vendored seam (j01-caret J9 asserts the settled state).
+2. Keys still on their way to the server when a peer replaces your block are lost with it, or stay in the first half when the peer splits it before your caret; your caret is placed on your words regardless (j01-caret-flight K1-K6, peer-caret.test.ts U4). A limit of the stored layout.
+3. While an input method composition is open nothing is restored. No real input method has been run against this (peer-caret.test.ts C8).
+4. With the body not focused, the editor's selection is restored and the browser's is not; whether a later selection change from the browser overrides it is unverified (j01-caret-keep M4 checks focus only).
+5. Suggest and Review: the module is not registered.
+6. Undo: the first key after a restore starts a new undo step, as a click would (j01-caret-keep M8). Undo-step carets, comment anchors and suggestion marks that name the replaced block are not repaired.
+7. Merges and moves: a peer's Backspace-merge, a peer's undo of their Enter, a tick that sorts your check list, any block move (j01-caret-keep M1-M3, peer-caret.test.ts C1, C2, U8).
+8. A peer's bold or link before your caret in the same text moves it (peer-caret.test.ts C1).
+9. Refused on purpose: a conversion that re-creates the lines around yours in the same update: a whole list changed between bullets and numbers, a bullet that joins the lists above and below into one, or several of a co-editor's edits delivered together after a reconnect; a commit that also changed the line above; a peer's multi-paragraph paste into your line; a commit that changed your line on both sides of the caret; your Backspaces in flight across a peer's Enter; a peer's Enter and their typing at your place in one commit; inserted text the two-position test cannot place; a third person's unsent characters on your right inside a split tail; your own Backspaces bringing your caret exactly to the peer's split point (peer-caret.test.ts C2-C7); a peer's Markdown shortcut (`# `, `> `, `- `) typed at the start of your line while your own typed keys or Backspaces are in flight, since your line then differs from the converted block at both ends (peer-caret-text.test.ts).
+10. A range end that was not lost keeps its old offset even if the same commit shifted it.
+11. A conversion larger than 256 KiB arrives in pieces with its deletes last, so the delete and the insert land in different commits and nothing is restored.
+12. A local Lexical update still pending when the peer's change arrives shares its commit; not shown reachable from the socket path, and not handled.
+13. Accepted by design: when your line is replaced on its own, the one new line in its place takes your caret whenever its text begins or ends like your line, even if a co-editor deleted your paragraph and wrote that line fresh.
+
 ## Follow-ups (P2)
 
 Parked from the M0 checker and critic passes, each with the task that owns it.

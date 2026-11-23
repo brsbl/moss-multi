@@ -26,6 +26,10 @@ export const GROUPS = {
   editing: ['j00-persist', 'j01'],
   // Sharing a note, presence and undo between peers.
   coedit: ['j01-coedit', 'j01-presence', 'j01-undo'],
+  // A peer's Enter or block change under a waiting caret (T9.47): idle and ranges; keys in flight; what must not change.
+  caret: ['j01-caret'],
+  caretFlight: ['j01-caret-flight'],
+  caretKeep: ['j01-caret-keep'],
   // Code, HTML and formula fields across joins, moves and removals; auto-linking on long words.
   registers: ['j01-registers', 'j01-autolink'],
   // Typing in a 40,000-line note against a small control (T3.B13); comments on blocks and what a comment composer
