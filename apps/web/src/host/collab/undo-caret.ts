@@ -103,7 +103,7 @@ function $restoreCaret(binding: Binding, caret: Caret | null, entries: Entries):
 }
 
 /** A point Lexical can hold, or null: its node gone, or its offset past the node's end. */
-function $point(key: string | null, offset: number): [string, number, 'text' | 'element'] | null {
+export function $point(key: string | null, offset: number): [string, number, 'text' | 'element'] | null {
   if (key === null) return null;
   let node = $getNodeByKey(key);
   if (!node || !node.isAttached()) return null;

@@ -47,6 +47,7 @@ import { cursorController } from './cursors.ts';
 import { isLanding, subscribeLanding } from './landing.ts';
 import { subscribeTerminal, terminalOf, useTerminal } from './terminal.ts';
 import { trackUndoFocus } from './undo.ts';
+import { keepCaretThroughPeers } from './peer-caret.ts';
 import { NoticeBand, NoticeStack } from './NoticeStack.tsx';
 import { showActionFeedback, withdrawActionFeedback } from './feedback.ts';
 import { settleRefusal } from '../refusal.ts';
@@ -639,7 +640,9 @@ function DocBinding({ docId, binding }: { docId: string; binding: PaneBinding })
     setOverlayReady(true);
   }), [editor]);
   useEffect(() => () => { overlayRef.current?.remove(); }, []);
-  const { resetting, revision } = usePaneState(binding);
+  const { resetting, revision, mode } = usePaneState(binding);
+  // A peer's Enter or block change keeps the caret on its words (T9.47); Suggest and Review keep their own caret.
+  useEffect(() => (mode === 'edit' ? keepCaretThroughPeers(editor) : undefined), [editor, mode]);
   useEffect(() => {
     if (resetting) binding.reset(editor);
   }, [binding, editor, resetting]);
