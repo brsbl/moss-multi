@@ -10,7 +10,7 @@ import { describe, expect, it } from 'vitest';
 import { canaryState } from './canary-state.mjs';
 import { PER_FULL_RUN } from './growth.mjs';
 import { prunePlan, PRUNE_CAP } from './prune.mjs';
-import { claimSlot, rerunClaims, SEED_PER_SHARD, SEED_SLOTS, seedEmail, seedHash, seedSql, seedToken, suitePassword } from './seed.mjs';
+import { claimRange, claimSlot, rerunClaims, SEED_PER_SHARD, SEED_SLOTS, seedEmail, seedHash, seedSql, seedToken, suitePassword } from './seed.mjs';
 
 const WORKFLOW = yaml.load(readFileSync(new URL('../../.github/workflows/deploy-staging.yml', import.meta.url), 'utf8'));
 const SECRET = 'k'.repeat(64);
@@ -84,18 +84,25 @@ describe('the staging suite seed (T8.2) @p:R15', () => {
   });
 
   it("lets a re-run of only the failed shards sign in to slots its first attempt never used, once", () => {
-    // A shard signs in to at most about a third of its slots (SEED_PER_SHARD), so a second attempt starts at the half.
-    expect(rerunClaims('s5-1', '5', '1')).toBe(0);
-    expect(rerunClaims('s5-1', '5', '2')).toBe(SEED_PER_SHARD / 2);
+    // Each attempt holds its own half of a shard's slots: the seeding attempt the first, one failed-only re-run the
+    // second, whatever either uses (past its half a shard signs up new principals instead).
+    const half = SEED_PER_SHARD / 2;
+    expect(rerunClaims('s5-1', '5', '1')).toEqual({ from: half, to: SEED_PER_SHARD });
+    expect(rerunClaims('s5-1', '5', '2')).toEqual({ from: 0, to: half });
     expect(() => rerunClaims('s5-1', '5', '3')).toThrow(/once/);
     expect(() => rerunClaims('s5-1', '6', '2')).toThrow(/run/);
     expect(() => rerunClaims('s5-2', '5', '1')).toThrow(/attempt/);
-    const dir = mkdtempSync(join(os.tmpdir(), 'seed-rerun-'));
-    try {
-      for (let k = 0; k < rerunClaims('s5-1', '5', '2'); k += 1) claimSlot(dir, k + 1);
-      expect(claimSlot(dir, SEED_PER_SHARD)).toBe(SEED_PER_SHARD / 2);
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
+    for (const [attempt, first, last] of [['1', 0, half - 1], ['2', half, SEED_PER_SHARD - 1]]) {
+      const dir = mkdtempSync(join(os.tmpdir(), 'seed-rerun-'));
+      try {
+        const { from, to } = rerunClaims('s5-1', '5', attempt);
+        claimRange(dir, from, to);
+        const used = [];
+        for (let slot = claimSlot(dir, SEED_PER_SHARD); slot !== null; slot = claimSlot(dir, SEED_PER_SHARD)) used.push(slot);
+        expect([used[0], used.at(-1), used.length]).toEqual([first, last, half]);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
     }
     // The suite's password step claims those slots instead of refusing a failed-only re-run.
     const password = WORKFLOW.jobs.suite.steps.find((step) => /seed\.mjs password/.test(step.run ?? ''));
