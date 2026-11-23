@@ -316,6 +316,8 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
   let focused: { id: string | null; panes: string[] } | null = null;
   let lastLive: string | null = null;
   let popped: string | null = null;
+  /** Counts in-place opens and Back or Forward, so only the newest pending open switches. */
+  let opening = 0;
   const live = (noteId: string) => known.get(noteId)?.trashedAt == null;
   /**
    * The address names the last live note focused again, when the address names another; once that note left the panes
@@ -990,12 +992,18 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
       onExternalFileOpen: silent,
       onInternalFileOpen: (callback?: Listener<[string]>) => {
         // A note deleted or no longer shared since its notice was written ends here, before moss switches to it (T9.46).
-        const open = (id: string): Promise<boolean> => askDocAccess(id, fetcher).then((answer) => {
-          if (answer.kind === 'denied') return false;
-          void refreshForNavigation(id);
-          callback?.(id);
-          return true;
-        });
+        // A note chosen, or another open or Back started, while the answer is out wins: the late answer switches nothing.
+        const open = (id: string): Promise<boolean | 'superseded'> => {
+          const mine = ++opening;
+          const from = focused?.id ?? null;
+          return askDocAccess(id, fetcher).then((answer) => {
+            if (answer.kind === 'denied') return false;
+            if (mine !== opening || (focused?.id ?? null) !== from) return 'superseded';
+            void refreshForNavigation(id);
+            callback?.(id);
+            return true;
+          });
+        };
         // The browser's Back or Forward opens the note through moss's own switch, which adds no history entry. The
         // listing is read once moss has switched (setFocusedNoteId), as for any visit: read during the switch, it
         // mounted the pane twice. Until moss reaches the chosen note, the notes its switch passes are not visits, however
@@ -1005,6 +1013,7 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
         const offPop = browser.onPopState(() => {
           const id = docIdFromPath(pathname());
           if (!id || !callback) return;
+          opening += 1;
           popped = live(id) ? id : null;
           if (!popped) addressFocused();
           const result: unknown = (callback as (noteId: string) => unknown)(id);
