@@ -2629,7 +2629,10 @@ export function App() {
     const subscribe = window.electronAPI.notes.onInternalFileOpen;
     if (typeof subscribe !== 'function') return;
     const cleanup = subscribe((noteId) => {
-      void runSerializedNoteSwitch(async () => {
+      // moss-multi seam: switch-result (T9.19): the opener learns whether the switch happened, so the browser's Back
+      // that asked for it can put the shown note back in the address when it did not.
+      let switched = false;
+      return runSerializedNoteSwitch(async () => {
         try {
           const record = await window.electronAPI.notes.getById(noteId);
           if (record) {
@@ -2649,10 +2652,11 @@ export function App() {
             if (!canSwitch) return;
           }
           navigateToNote(noteId);
+          switched = true;
         } catch (error) {
           console.error('[open-file] Failed to open internal note:', error);
         }
-      });
+      }).then(() => switched);
     });
     return cleanup;
   }, [applyNoteRecordToStore, flushBeforeNoteSwitch, hasElectronBridge, navigateToNote, runSerializedNoteSwitch, store]);
