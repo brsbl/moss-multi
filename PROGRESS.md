@@ -1,6 +1,6 @@
 # moss-multi progress
 
-**Overall: 79% done** (240 of 304 planned tasks verified)
+**Overall: 79% done** (241 of 304 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
@@ -12,7 +12,7 @@
 | M5 Suggestions | Suggest mode, vetting, accept/reject | 31 / 31 | in progress |
 | M6 History | Versions, view, diff, identity-preserving restore | 20 / 20 | in progress |
 | M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 26 / 26 | in progress |
-| M8 Ship | Everything on a permanent staging URL with demo content | 17 / 17 | |
+| M8 Ship | Everything on a permanent staging URL with demo content | 18 / 19 | |
 
 A task counts only after an independent checker passes it on green CI. Each milestone also ends with the cumulative journey suite green in Chromium and WebKit and a naive-user critic pass.
 
@@ -297,10 +297,22 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-10-19 — T8.Q second pass verified: staging and the pilot now carry M7's later fixes (allowlisted scoped sync, stale-save priors, held first-sync pieces) and m3–m6's reply box, read-only controls, folder permissions and upload reader deadline, with the full lane green on the restacked m8 (already counted on 2026-10-15).
 - 2026-10-20 — T8.U verified: m8 now sits on the final M7, so staging carries T3.B4's paste path without reservations, T3.B28/T3.B30, T5.B2–B4 and T5.S14, T7.P3's packed CLI and replicas, and T7.S9, with the full lane green on the restacked m8.
 - 2026-11-21 — T8.V verified: staging and the pilot now carry m3's text, structure and storage limits, the lean stored layout, in-place export and paste rollback, and an outdated protocol-1 web bundle is refused on its doc socket (4426) and REST writes (426) before it can write the old layout.
+- 2026-11-23 — T8.F verified: the full journey suite, the security sweep (52 of 52) and the demo pass on staging on commit 7b55f7a, with each recovered connection drop listed in the run summary and a run failing past 2 recovered drops or on any unrecovered one.
 
 ## Follow-ups (P2)
 
 Parked from the M0 checker and critic passes, each with the task that owns it.
+
+### From T8.F's checker (fec015f, 2026-11-23)
+
+- T8.F checker P2 (Slow catch-up after a lost sync message whose acknowledgement is also lost, 10 to 14 s for code, HTML and formula blocks): payload asks are skipped while the outbox is busy and a lost ack keeps it busy for about 10 s; nothing is lost → T8.G (branch t/T8.G), accepted by a control and treatment pair on staging.
+- T8.F checker P2 (Staging is at its growth cap and cannot start a full-suite deploy): 29,360 note objects against a cap of 30,000 with 1,200 needed; prune or change the cap before the next full-suite run.
+- T8.F checker P2 (The connection-drop gate compares text only, counts a closed pane as recovered, and reads "different" when the fresh load cannot open the note): e2e/lib/actors.ts sameExport and compareExport, e2e/lib/invariants.ts networkDrops; record what differed, the pane's last close code and whether the fresh load opened.
+- T8.F checker P2 (Whether a suggester's text typed around a connection drop survives the 60 s suggestion cooldown, close code 4429, is not yet verified): in the red staging runs 9 of 22 "different" comparisons were a suggester whose replacement socket the server closed with 4429; being checked separately in CI, and a loss would be a launch blocker of its own.
+- T8.F checker P2 (13 Worker exceptions in one minute on staging, HTTP 500 on comments, access, backlinks, content, have no known cause): deploy 45245524556, 21:40 UTC on 2026-11-23, during the degraded route.
+- T8.F checker P2 (A failed-only re-run of a suite shard is not gated against earlier product failures): retry-gate.mjs admits retry 0 and seed.mjs carries no leg verdicts across attempts.
+- T8.F checker P2 (The j15 comment-composer leg repeats its gesture until the composer opens): the selection hand-back race behind it should be fixed in the product.
+- T8.F checker P2 (The demo screenshots on the pull request predate the final build): nothing visible changed since; re-capture with the next staging deploy.
 
 ### From T8.F's staging runs (2026-11-22 to 23)
 
