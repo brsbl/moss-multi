@@ -304,7 +304,9 @@ Parked from the M0 checker and critic passes, each with the task that owns it.
 
 ### From T8.F's staging runs (2026-11-22 to 23)
 
-No leg was re-run inside a deploy. Failures in the two full-suite deploys after the resume, per leg:
+Deploy 45135817095 of `7b55f7a` passed the full suite in one attempt, both engines, with no leg re-run, 1 recovered drop (export `same`) and no infrastructure retry; the sweep on that build passed 52 of 52. Each earlier failure below is fixed at its cause: the setup resend (`setupFetch`), the review retry after a Durable Object reset (`retryingReset`, `retriedReview`), and the leave-aware chunk logging and recovery (WebKit stops a page's loads as a navigation starts; red in rehearsal 45121810915, 6 of 6, green in 45132450810, 12 of 12). The j16-paste leg past the cap passed 6 of 6 in that rehearsal and in the deploy; the staging log now names a failure with no kind by its error class.
+
+Failures in the two full-suite deploys before those fixes, per leg:
 
 | Deploy | Leg | Engine | What failed | Class |
 |---|---|---|---|---|
