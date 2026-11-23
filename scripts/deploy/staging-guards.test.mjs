@@ -157,6 +157,32 @@ describe("a staging run's network drops (T8.F) @p:R15", () => {
     ]);
   });
 
+  it('fails a run with a drop that resynced to a different export, and names it', async () => {
+    const { dropLine, dropsOf, dropVerdict } = await import('./network-drops.mjs');
+    const drops = dropsOf([{ type: 'network-drops', description: JSON.stringify([{ ...drop('d1', NOW), export: 'different' }, { ...drop('d2', NOW), export: 'same' }]) }]);
+    expect(drops.map((d) => [d.recovered, d.export])).toEqual([[false, 'different'], [true, 'same']]);
+    const verdict = dropVerdict([row('j01 › a', drops)]);
+    expect(verdict.problems).toEqual(['1 network drop (1006) resynced to a different export']);
+    expect(dropLine(verdict.drops[0])).toBe('j01 › a: doc d1 [ben] at 2026-11-21T12:00:00.000Z, resynced to a different export');
+  });
+
+  it("counts every attempt's drops and requests: a failed-only re-run adds to the first attempt's, never replaces it", async () => {
+    const workflow = yaml.load(readFileSync(new URL('../../.github/workflows/deploy-staging.yml', import.meta.url), 'utf8'));
+    const job = Object.values(workflow.jobs).find((j) => (j.steps ?? []).some((s) => /network-drops\.mjs check/.test(s.run ?? '')));
+    const download = job.steps.find((s) => /download-artifact/.test(s.uses ?? ''));
+    expect(download.with.pattern).toBe('staging-*');
+    expect(job.steps.some((s) => /network-drops\.mjs requests/.test(s.run ?? ''))).toBe(true);
+    const { requestTotals } = await import('./network-drops.mjs');
+    // One shard: 3000 requests in attempt 1, 2500 in its re-run, past a 5000 budget across the run.
+    const totals = requestTotals([
+      { artifact: 'staging-suite-webkit-7-1', used: 3000, limit: 5000 },
+      { artifact: 'staging-suite-webkit-7-2', used: 2500, limit: 5000 },
+      { artifact: 'staging-suite-chromium-1-1', used: 4000, limit: 5000 },
+    ]);
+    expect(totals.problems).toEqual(['staging-suite-webkit-7: 5500 requests across 2 attempts, 5000 allowed']);
+    expect(requestTotals([{ artifact: 'staging-suite-webkit-7-1', used: 3000, limit: 5000 }, { artifact: 'staging-suite-webkit-7-2', used: 1000, limit: 5000 }]).problems).toEqual([]);
+  });
+
   it("keeps a leg's drops in the summary, fields checked, no text", () => {
     const annotation = { type: 'network-drops', description: JSON.stringify([
       drop('d1', NOW), { doc: 'https://x/?share=secret', actor: 'ben', at: NOW, recovered: true, recoveryMs: 1 }, { doc: 'd2', actor: 'ben', at: 'x', recovered: true },

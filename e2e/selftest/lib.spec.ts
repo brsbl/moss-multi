@@ -264,6 +264,27 @@ test.describe('a network drop off loopback (invariants 1 and 3, T8.2)', () => {
     expect(socketProblems(lost, new Map(), OFF)).toContain('d: a socket dropped (1006) and no later socket of its document reached sync');
     expect(networkDrops(lost)).toEqual([{ docId: 'd', at: 100, recovered: false, recoveryMs: null }]);
   });
+  test('off loopback, a drop that resynced to a replica differing from the server\'s export fails and is not recovered (T8.F)', async () => {
+    const { networkDrops } = await import('../lib/invariants.ts');
+    const one = [socket(0, 100, 1006), socket(200, null, null, { synced: true, syncedAt: 300 })];
+    expect(socketProblems(one, new Map(), { ...OFF, diverged: new Set(['d']) })).toContain(
+      "d: a socket dropped (1006) and resynced, but its replica differs from the server's export",
+    );
+    expect(networkDrops(one, new Map([['d', 'different']]))).toEqual([{ docId: 'd', at: 100, recovered: false, recoveryMs: 200, export: 'different' }]);
+    // The same drop with an identical export, or with no pane left to compare, is the reconnect path working.
+    expect(socketProblems(one, new Map(), { ...OFF, diverged: new Set() })).toEqual([]);
+    expect(networkDrops(one, new Map([['d', 'same']]))).toEqual([{ docId: 'd', at: 100, recovered: true, recoveryMs: 200, export: 'same' }]);
+    expect(networkDrops(one, new Map([['d', 'closed']]))[0]).toMatchObject({ recovered: true, export: 'closed' });
+  });
+  test('a resynced replica matches a fresh load only on the same text; across modes only the title is compared (T8.F)', async () => {
+    const { sameExport } = await import('../lib/actors.ts');
+    const shown = (mode: string, title: string, body: string) => ({ mode, title, body });
+    expect(sameExport(shown('edit', 'T', 'one two'), shown('edit', 'T', 'one two'))).toBe(true);
+    expect(sameExport(shown('edit', 'T', 'one two'), shown('edit', 'T', 'one'))).toBe(false);
+    expect(sameExport(shown('edit', 'T', 'x'), shown('edit', 'T2', 'x'))).toBe(false);
+    expect(sameExport(shown('suggest', 'T', 'one two'), shown('edit', 'T', 'one'))).toBe(true);
+    expect(sameExport(shown('edit', 'T', 'x'), null)).toBe(false);
+  });
   test('a socket the page closed while it was still connecting hears 1006 but is no network drop', async () => {
     const { networkDrops } = await import('../lib/invariants.ts');
     const asked = [socket(0, 100, 1006, { close: 'asked -, then 1006' }), synced(200)];
