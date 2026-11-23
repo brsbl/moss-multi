@@ -316,10 +316,16 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
   let focused: { id: string | null; panes: string[] } | null = null;
   let lastLive: string | null = null;
   let popped: string | null = null;
+  /** Counts in-place opens and Back or Forward, so only the newest pending open switches. */
+  let opening = 0;
   const live = (noteId: string) => known.get(noteId)?.trashedAt == null;
-  /** The address names the last live note focused again, when the address names another. */
+  /**
+   * The address names the last live note focused again, when the address names another; once that note left the panes
+   * (a split pane went on to a trashed note), it names a live note still showing instead (T9.46).
+   */
   const addressFocused = () => {
-    const id = lastLive;
+    const showing = lastLive !== null && shownNotes.length > 0 && !shownNotes.includes(lastLive) ? shownNotes.find(live) : undefined;
+    const id = showing ?? lastLive;
     if (id && live(id) && docIdFromPath(pathname()) !== id) browser.replacePath(withShare(`/d/${encodeURIComponent(id)}`));
   };
 
@@ -985,9 +991,18 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
       },
       onExternalFileOpen: silent,
       onInternalFileOpen: (callback?: Listener<[string]>) => {
-        const open = (id: string) => {
-          void refreshForNavigation(id);
-          callback?.(id);
+        // A note deleted or no longer shared since its notice was written ends here, before moss switches to it (T9.46).
+        // A note chosen, or another open or Back started, while the answer is out wins: the late answer switches nothing.
+        const open = (id: string): Promise<boolean | 'superseded'> => {
+          const mine = ++opening;
+          const from = focused?.id ?? null;
+          return askDocAccess(id, fetcher).then((answer) => {
+            if (answer.kind === 'denied') return false;
+            if (mine !== opening || (focused?.id ?? null) !== from) return 'superseded';
+            void refreshForNavigation(id);
+            callback?.(id);
+            return true;
+          });
         };
         // The browser's Back or Forward opens the note through moss's own switch, which adds no history entry. The
         // listing is read once moss has switched (setFocusedNoteId), as for any visit: read during the switch, it
@@ -998,6 +1013,7 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
         const offPop = browser.onPopState(() => {
           const id = docIdFromPath(pathname());
           if (!id || !callback) return;
+          opening += 1;
           popped = live(id) ? id : null;
           if (!popped) addressFocused();
           const result: unknown = (callback as (noteId: string) => unknown)(id);
@@ -1124,7 +1140,8 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
         // A trashed note has no address: a fresh load of it is the one 404 (A§8). Back or Forward may have reached it.
         if (!id || !live(id)) {
           if (id && popped === id) popped = null;
-          if (id && address === id) addressFocused();
+          // Also when the note the address names has just left the panes.
+          if (id && (address === id || (address !== null && shownNotes.length > 0 && !shownNotes.includes(address)))) addressFocused();
           return;
         }
         lastLive = id;

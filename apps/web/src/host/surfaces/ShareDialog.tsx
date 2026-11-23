@@ -1,7 +1,7 @@
 // Share, v2 (T1.1, T2.4, T3.6): one dialog for a note, a folder or a vault. An owner adds a person by email at view,
 // comment, edit or owner access, or one of their own agents by the id copied from Settings → Agents (at most edit;
 // PRODUCT ruling 20), sees who has access (and emails waiting on an invite), and creates, copies and
-// revokes links. Moss has no sharing, so it is built from Settings' own parts (T9.36): ModalShell, micro section
+// revokes links. Moss has no sharing, so it is built from Settings' own parts (T9.36): ModalShell's frame, micro section
 // labels over flat rows, its 24 px text actions, the DS Input, and the application menu's 28 px checked rows for every
 // role chooser (the invite's, each person's and invite's, a new link's), whose last item is Remove access. The first
 // line names the note, folder or vault. The note's More actions (useCanShare), a folder's context menu
@@ -10,14 +10,16 @@
 // vault above it, one heading per place, and which of those places have links, each with a Manage action to that
 // place's own dialog (T9.7). Sharing by email makes an invite link and says nothing is emailed; an agent's id adds the
 // agent; each Copy confirms on itself (T9.8).
-import { ModalShell } from '@moss-desktop/renderer/components/ModalShell';
+import { DialogDimOverlay } from '@moss-desktop/renderer/components/DialogDimOverlay';
+import { useNotePaneDialogPosition } from '@moss/shared/components/ui/use-note-pane-dialog-position';
+import { Dialog } from '@moss/shared/primitives';
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@moss/shared/components/ui/dropdown-menu';
 import { Input } from '@moss/shared/components/ui/input';
 import { LINK_ROLES, SHARE_ROLES, type LinkRole, type Role, type ShareRole } from '@moss-multi/protocol/roles';
-import { Check, ChevronDown } from 'lucide-react';
+import { Check, ChevronDown, X } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type FormEvent, type KeyboardEvent, type ReactNode } from 'react';
 import { useDocRole } from '../access.ts';
 import { sessionFetch, useSessionEnded } from '../session-fetch.ts';
@@ -289,6 +291,46 @@ function SubHeading({ children, action }: { children: string; action?: ReactNode
   );
 }
 
+/**
+ * Moss's ModalShell (Settings' 480 px linen dialog), its header naming the place instead of a micro label: the first line
+ * a person sees is "Note “Packing list”", and it stays put while the list under it scrolls (T9.46). The dialog's
+ * accessible name stays its title.
+ */
+function ShareShell({ open, onOpenChange, title, description, kind, named, children }: {
+  open: boolean; onOpenChange: (open: boolean) => void; title: string; description: string; kind: string; named: string | null; children: ReactNode;
+}): ReactNode {
+  const position = useNotePaneDialogPosition({ open, maxWidthPx: 480 });
+  return (
+    <Dialog.Root open={open} onOpenChange={onOpenChange}>
+      <Dialog.Portal>
+        <DialogDimOverlay />
+        <Dialog.Content
+          data-remote-web-surface-blocking-dialog="true"
+          style={position}
+          className="fixed left-1/2 top-1/2 z-dialog-content flex max-h-modal w-full max-w-modal -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-2xl border border-border-subtle bg-surface-linen shadow-lg outline-none data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95"
+        >
+          <Dialog.Description className="sr-only">{description}</Dialog.Description>
+          <Dialog.Title className="sr-only">{title}</Dialog.Title>
+          <div className="flex shrink-0 items-center justify-between gap-2 px-6 pb-2 pt-4">
+            <p className="min-w-0 truncate text-sm text-ink-default" title={named ?? undefined}>
+              <span className="text-ink-muted">{kind}</span>
+              {named ? ` “${named}”` : null}
+            </p>
+            <Dialog.Close className="-mr-3 shrink-0 rounded-full p-1 text-ink-faint/60 transition-colors hover:bg-border-subtle hover:text-ink-muted focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ink-default/15">
+              <X className="h-3.5 w-3.5" strokeWidth={1.75} />
+              <span className="sr-only">Close</span>
+            </Dialog.Close>
+          </div>
+          <div className="space-y-6 overflow-y-auto px-6 pb-8 pt-2 [&::-webkit-scrollbar-thumb:hover]:bg-ink-default/20 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-ink-default/10 [&::-webkit-scrollbar-track]:bg-surface-transparent [&::-webkit-scrollbar]:w-1">
+            {children}
+          </div>
+        </Dialog.Content>
+      </Dialog.Portal>
+    </Dialog.Root>
+  );
+}
+
+
 function ShareDialog({ target, open, onOpenChange }: { target: ShareTarget; open: boolean; onOpenChange: (open: boolean) => void }): ReactNode {
   const [members, setMembers] = useState<Member[] | null>(null);
   const [invites, setInvites] = useState<PendingInvite[]>([]);
@@ -444,11 +486,7 @@ function ShareDialog({ target, open, onOpenChange }: { target: ShareTarget; open
   const statusInvite = status?.invite ? invites.find((invite) => invite.email === status.invite) : undefined;
 
   return (
-    <ModalShell open={open} onOpenChange={onOpenChange} title={title} description={description}>
-      <p className="-mt-1 truncate text-sm text-ink-default" title={named ?? undefined}>
-        <span className="text-ink-muted">{kind}</span>
-        {named ? ` “${named}”` : null}
-      </p>
+    <ShareShell open={open} onOpenChange={onOpenChange} title={title} description={description} kind={kind} named={named}>
       <div className="space-y-2">
         <span className={SECTION_LABEL}>Invite people</span>
         <form aria-label="Share with a person" onSubmit={share} className="space-y-2">
@@ -601,7 +639,7 @@ function ShareDialog({ target, open, onOpenChange }: { target: ShareTarget; open
         ) : null}
         <StatusLine status={status} where="links" />
       </div>
-    </ModalShell>
+    </ShareShell>
   );
 }
 

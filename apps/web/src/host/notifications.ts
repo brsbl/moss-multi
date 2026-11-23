@@ -39,14 +39,15 @@ export function groupNotices(list: Notice[]): NoticeGroup[] {
 }
 
 /** Opens a notice's target and acknowledges it only once the target is reached; one that never opens stays unread and
- * is remembered as unreachable, so its row can say why. */
+ * is remembered as unreachable, so its row can say why. One the user left for another note before it opened stays
+ * unread and says nothing. */
 export async function openNotice(notice: Notice, deps: {
-  open: (notice: Notice) => Promise<boolean>; markRead: (ids: string[]) => void; unreachable: (id: string) => void;
+  open: (notice: Notice) => Promise<boolean | 'superseded'>; markRead: (ids: string[]) => void; unreachable: (id: string) => void;
 }): Promise<boolean> {
   const reached = await deps.open(notice);
-  if (reached) deps.markRead([notice.id]);
-  else deps.unreachable(notice.id);
-  return reached;
+  if (reached === true) deps.markRead([notice.id]);
+  else if (reached === false) deps.unreachable(notice.id);
+  return reached === true;
 }
 
 export interface NotificationsDeps {

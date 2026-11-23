@@ -237,3 +237,29 @@ test('j13-vault-nav: search says Searching… until the index answers, says when
   await expect(noteRow(ada, soup), 'the Home note is found from Pantry').toBeVisible({ timeout: BIND_TIMEOUT });
   await expect(noteRow(ada, soup), 'its result names its vault').toContainText('Home');
 });
+
+test('j13-vault-nav: a switch that fails after New vault says so where she is, with Settings still open on Vaults (T9.46) @p:note-4', async ({ actors }) => {
+  const ada = await actors.open(await actors.principal('ada'), { viewport: DESKTOP });
+  actors.solo('one owner makes a vault');
+  const page = ada.page;
+  const before = new Set((await listing(ada)).vaults.map((vault) => vault.id));
+  // The switch to the vault just made fails; every other listing read answers.
+  ada.expectHttp(429, /\/api\/workspace/);
+  await page.route(/\/api\/workspace\?/, (route) => {
+    const vault = new URL(route.request().url()).searchParams.get('vault');
+    return vault && !before.has(vault) ? route.fulfill({ status: 429, contentType: 'application/json', body: '{"message":"Slow down."}' }) : route.fallback();
+  });
+  await (await ui.openVaultList(page)).getByRole('menuitem', { name: 'New vault…', exact: true }).click();
+  const field = page.getByRole('textbox', { name: 'New vault name', exact: true });
+  await expect(field).toBeFocused();
+  await field.fill(`Pantry ${Date.now().toString(36)}`);
+  await field.press('Enter');
+  const settings = page.getByRole('dialog');
+  const error = settings.getByRole('alert').filter({ hasText: 'Could not switch vaults. Please try again.' });
+  await expect(error, 'the failed switch is said in Settings, still open').toBeVisible({ timeout: BIND_TIMEOUT });
+  await expect(settings.getByRole('button', { name: 'Manage vaults', exact: true }), 'on Vaults, disclosed').toHaveAttribute('aria-expanded', 'true');
+  await page.keyboard.press('Escape');
+  await expect(settings).toHaveCount(0);
+  await ui.expectVault(page, 'Home');
+  await page.unroute(/\/api\/workspace\?/);
+});

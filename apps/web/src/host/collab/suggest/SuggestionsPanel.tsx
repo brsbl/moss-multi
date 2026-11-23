@@ -674,12 +674,13 @@ export function SuggestionsButton({ docId, source, showCount = true, anchor, peo
               {people ? <div className="ml-auto flex shrink-0 items-center">{people}</div> : null}
             </div>}
             {open.length && !reviewing && !at ? (
-              // The way into Review, saying what it pauses; in Review the pane's bottom row is its one state and exit.
+              // The way into Review, saying what it pauses, as one row in the place of Moss's comment-list search row; in
+              // Review the pane's bottom row is its one state and exit.
               <button
                 type="button"
                 aria-label="Review suggestions"
                 aria-describedby={entryNote}
-                className="mx-1 mt-1 flex shrink-0 items-baseline justify-between gap-2 rounded-md px-2 py-1 text-left transition-colors hover:bg-surface-note-hover focus:outline-none focus-visible:bg-surface-note-hover"
+                className="flex h-9 shrink-0 items-center justify-between gap-2 border-b border-border-subtle px-3 text-left transition-colors hover:bg-surface-panel focus:outline-none focus-visible:bg-surface-panel"
                 onClick={() => {
                   requestMode(docId, 'review');
                   closePanel(docId);

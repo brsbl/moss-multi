@@ -821,10 +821,16 @@ export function useMossMultiPane(note: { id: string; trashedAt?: number | null }
 }
 
 /** The pane's one bottom region (T9.30): while Moss's docked toolbar shows, it stands 8 px above it (T9.40). */
+/** Where Moss's Trash notice stands above the pane's bottom (CanvasAreaContent, bottom-8). */
+const TRASH_NOTICE_BOTTOM_PX = 32;
+
 function BottomRegion({ docId, children }: { docId: string; children: ReactNode }): ReactNode {
   const toolbar = useToolbarHeight(docId);
+  // A note gone to Trash says so where Moss's own Trash notice stands, 32 px up (T9.46).
+  const trashed = useTerminal(docId) === 'deleted';
+  const bottom = toolbar ? REGION_BOTTOM_PX + toolbar + REGION_GAP_PX : trashed ? TRASH_NOTICE_BOTTOM_PX : null;
   return (
-    <div {...{ [BOTTOM_REGION_ATTR]: '' }} className={BOTTOM_REGION} style={toolbar ? { bottom: REGION_BOTTOM_PX + toolbar + REGION_GAP_PX } : undefined}>
+    <div {...{ [BOTTOM_REGION_ATTR]: '' }} className={BOTTOM_REGION} style={bottom === null ? undefined : { bottom }}>
       {children}
     </div>
   );

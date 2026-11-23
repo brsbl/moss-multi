@@ -69,6 +69,8 @@ export const GROUPS = {
   history: ['j17'],
   // The quiet note shell: its cues, More actions entries and the footer's app menu (shell's WebKit shard is full).
   quietShell: ['j21'],
+  // The quiet shell's composed states (quietShell's WebKit shard is full).
+  quietComposed: ['j21-composed'],
   // Vault navigation through the app menu and Settings, where the vault is named, and search (quietShell's and
   // workspace's WebKit shards are full).
   vaultNav: ['j13-vault-nav', 'j12'],

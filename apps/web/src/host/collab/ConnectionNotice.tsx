@@ -84,7 +84,7 @@ export function useNotice(docId: string | null): { kind: ConnectionBanner; termi
 /** The connection's card; `extra` holds the actions for what it leads over (T9.41), its own action first. */
 export function NoticeCard({ docId, notice, extra }: { docId: string | null; notice: ConnectionNoticeView; extra?: ReactNode }): ReactNode {
   const icon = notice.terminal
-    ? <AlertTriangle aria-hidden className={`${ICON} text-accent-terracotta/80`} />
+    ? <AlertTriangle aria-hidden className="h-4 w-4 shrink-0 text-accent-terracotta/80" /* Moss's Trash notice icon */ />
     : <CloudOff aria-hidden className={`${ICON} text-ink-faint`} />;
   const own = terminalAction(notice.terminal, docId);
   return (

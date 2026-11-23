@@ -544,6 +544,48 @@ test('split view: clicking between the panes moves the address and adds no histo
   expect(await historyLength(page), 'a pane going to another note adds one entry').toBe(settled + 1);
 });
 
+test('split view: Forward to a note trashed while it showed in the other pane leaves the address on the live note still showing (T9.46)', async ({ actors }) => {
+  const ada = await openShell(actors, await actors.principal('ada'));
+  actors.solo('one person moves between her own split panes');
+  const { page } = ada;
+  const a = await openNewNote(ada);
+  const b = await openNewNote(ada, [a]);
+  const c = await openNewNote(ada, [a, b]);
+  const row = (docId: string) => page.locator(`[${SIDEBAR_ROW_ATTR}][${DOC_ID_ATTR}="${docId}"]`);
+  ada.expectReconnects(2, a);
+  ada.expectReconnects(1, b);
+  // Moss's switch back to the pane beside a trashed note binds C once more.
+  ada.expectReconnects(1, c);
+  // C on the left; on the right A, then B (a visit), then Back to A.
+  await row(a).click({ button: 'right' });
+  await page.getByRole('menuitem', { name: 'Open in Split Tab', exact: true }).click();
+  await ui.waitBodyLive(ada, a);
+  await expect.poll(() => ui.paneIds(ada), { message: 'C left, A right' }).toEqual([c, a]);
+  await row(b).click();
+  await ui.waitBodyLive(ada, b);
+  await expect(page).toHaveURL(addressOf(b));
+  await page.goBack({ waitUntil: 'commit' });
+  await ui.waitBodyLive(ada, a);
+  await expect.poll(() => ui.paneIds(ada), { message: 'Back shows A on the right' }).toEqual([c, a]);
+  // The left pane, C, takes focus: the live note the address should keep.
+  await ui.body(ada, c).click();
+  await expect(page).toHaveURL(addressOf(c));
+
+  // Her other window trashes B (declared setup: that window's API call); this tab hears it live.
+  const origin = new URL(page.url()).origin;
+  ada.expectHttp(404, `/api/docs/${b}/backlinks`);
+  expect((await ada.context.request.delete(`${origin}/api/docs/${b}`, { headers: { origin } })).status(), 'declared setup: B goes to Trash').toBe(200);
+  await expect(row(b), 'B leaves her notes').toHaveCount(0, { timeout: 5_000 });
+  ada.observations.delete(b);
+  await page.goForward({ waitUntil: 'commit' });
+  await expect(page.getByText(/This note is in Trash/), 'Forward shows B in Trash').toBeVisible({ timeout: 15_000 });
+  await expect.poll(() => ui.paneIds(ada), { message: 'B shows in one pane, beside a live note' }).toContain(b);
+  const [live] = (await ui.paneIds(ada)).filter((id) => id !== b);
+  expect(live, 'a live note still shows in the other pane').toBeDefined();
+  await expect(page, 'the address names the live note still showing, not one that left').toHaveURL(addressOf(live));
+  await ui.waitBodyLive(ada, live);
+});
+
 test("Moss's back arrow is a visit: after A, B, C and the arrow back to B, the browser's Back shows C, then B, then A (T9.19)", async ({ actors }) => {
   const ada = await openShell(actors, await actors.principal('ada'));
   actors.solo('one person moves between her own notes');

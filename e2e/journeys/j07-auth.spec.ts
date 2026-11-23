@@ -275,7 +275,7 @@ const TIER_A = [
   { width: 1440, height: 1000 },
 ];
 
-test('the login card works at 390x844 and 1440x1000 @p:tech-9 @tierA @evidence', async ({ actors, stack }) => {
+test('the login card works at 390x844 and 1440x1000, a malformed email named under its field (T9.46) @p:tech-9 @tierA @evidence', async ({ actors, stack }) => {
   for (const [i, size] of TIER_A.entries()) {
     const person = await actors.principal(i === 0 ? 'ada' : 'ben');
     const actor = await actors.anonymous('/login', { label: `${person.label}-${size.width}` });
@@ -354,6 +354,14 @@ test('the login card works at 390x844 and 1440x1000 @p:tech-9 @tierA @evidence',
     expect(await submitTop(), `${size.width}x${size.height}: the error does not move the form`).toBe(before);
     await expect(form.getByLabel('Email', { exact: true }), 'the malformed field is marked').toHaveAttribute('aria-invalid', 'true');
     await expect(form.getByLabel('Password', { exact: true }), 'typed values are kept').toHaveValue('typed');
+    // T9.46: the error sits directly under the Email field it names, above Password, not on the line under Password.
+    const [emailBox, alertBox, passwordLabel] = await Promise.all([
+      form.getByLabel('Email', { exact: true }).boundingBox(),
+      alert.boundingBox(),
+      form.getByText('Password', { exact: true }).boundingBox(),
+    ]);
+    expect(alertBox!.y, `${size.width}x${size.height}: the error is under Email`).toBeGreaterThanOrEqual(emailBox!.y + emailBox!.height - 0.5);
+    expect(alertBox!.y + alertBox!.height, `${size.width}x${size.height}: and above Password`).toBeLessThanOrEqual(passwordLabel!.y + 0.5);
     await actors.checkpoint(`login-card-error-${size.width}x${size.height}`);
 
     await ui.signInThroughCard(actor, person);

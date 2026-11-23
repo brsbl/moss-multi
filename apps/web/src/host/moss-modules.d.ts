@@ -248,6 +248,16 @@ declare module '@moss/shared/components/ui/label' {
   export const Label: ForwardRefExoticComponent<LabelHTMLAttributes<HTMLLabelElement> & RefAttributes<HTMLLabelElement>>;
 }
 
+declare module '@moss-desktop/renderer/components/DialogDimOverlay' {
+  import type { ComponentType } from 'react';
+  export const DialogDimOverlay: ComponentType<{ className?: string }>;
+}
+
+declare module '@moss/shared/components/ui/use-note-pane-dialog-position' {
+  import type { CSSProperties } from 'react';
+  export function useNotePaneDialogPosition(options: { open: boolean; maxWidthPx: number }): CSSProperties | undefined;
+}
+
 // moss's modal frame (Settings' shell), which the Share dialog (T1.1) is built in.
 declare module '@moss-desktop/renderer/components/ModalShell' {
   import type { ComponentType, ReactNode } from 'react';
@@ -339,5 +349,14 @@ declare module '@moss/shared/primitives' {
       onEscapeKeyDown?: (event: KeyboardEvent) => void;
     }>;
     Title: ComponentType<HTMLAttributes<HTMLHeadingElement>>;
+  };
+  // moss's dialog primitive, which the Share dialog's frame (ModalShell's) is built from.
+  export const Dialog: {
+    Root: ComponentType<{ children: ReactNode; open?: boolean; onOpenChange?: (open: boolean) => void }>;
+    Portal: ComponentType<{ children: ReactNode }>;
+    Content: ComponentType<HTMLAttributes<HTMLDivElement> & { 'data-remote-web-surface-blocking-dialog'?: string }>;
+    Title: ComponentType<HTMLAttributes<HTMLHeadingElement>>;
+    Description: ComponentType<HTMLAttributes<HTMLParagraphElement>>;
+    Close: ComponentType<HTMLAttributes<HTMLButtonElement>>;
   };
 }

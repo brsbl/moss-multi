@@ -16,7 +16,7 @@ import {
   APP_STATE_ATTR, DOC_ID_ATTR, DOC_STATE_ATTR, EDITOR_PANE_ATTR, INPUT_REFUSAL_ATTR, SIDEBAR_ROW_ATTR, TITLE_BINDING_ATTR,
   TOP_BAR_ATTR,
 } from '../lib/contract.ts';
-import { grantDoc } from '../lib/grants.ts';
+import { grantDoc, linkDoc } from '../lib/grants.ts';
 import { expect, test, ui } from '../lib/test.ts';
 
 const BIND_TIMEOUT = 15_000;
@@ -102,7 +102,7 @@ async function untilAll(
   }
 }
 
-test('j02-title: @tierA a rename reaches the other person\'s title, sidebar row and breadcrumb within 5 s, with no keystroke or remount there @p:col-5 @p:tech-2 @evidence', async ({ actors, measure }) => {
+test('j02-title: @tierA a rename reaches the other person\'s title, sidebar row and breadcrumb within 5 s and their tab within 1 s (T9.46), with no keystroke or remount there @p:col-5 @p:tech-2 @evidence', async ({ actors, measure }) => {
   const ada = await openShell(actors, 'ada');
   const ben = await openShell(actors, 'ben');
   await actors.requireDistinct(2);
@@ -115,7 +115,11 @@ test('j02-title: @tierA a rename reaches the other person\'s title, sidebar row 
 
   const name = `Quarterly plan ${token()}`;
   await ui.typeTitle(ada, docId, name);
-  await expect.poll(() => ada.page.title(), { message: "Ada's tab follows her rename", timeout: TAB_MS }).toMatch(tabOf(name));
+  // T9.46: both tabs follow within a second of Ada's last keystroke, Ben's included.
+  await Promise.all([
+    expect.poll(() => ada.page.title(), { message: "Ada's tab follows her rename", timeout: TAB_MS, intervals: [50] }).toMatch(tabOf(name)),
+    expect.poll(() => ben.page.title(), { message: "Ben's tab follows within a second of her last keystroke", timeout: TAB_MS, intervals: [50] }).toMatch(tabOf(name)),
+  ]);
   await untilAll(measure, {
     'rename to peer title': async () => (await ui.fieldText(ben, docId, 'title')) === name,
     'rename to peer sidebar row': async () => (await rowTitle(ben, docId)) === name,
@@ -130,6 +134,21 @@ test('j02-title: @tierA a rename reaches the other person\'s title, sidebar row 
   await ui.expectNoRemount(ada, docId, 'after renaming');
   await ui.expectNoRemount(ben, docId, 'after a peer renamed');
   await actors.checkpoint('renamed');
+});
+
+test('j02-title: @tierA a share-link visitor\'s tab follows an editor\'s rename of the open note within 1 s (T9.46) @p:col-5', async ({ actors }) => {
+  const ada = await openShell(actors, 'ada');
+  actors.solo('the owner and a signed-out link visitor');
+  const docId = await ui.createNote(ada);
+  await ui.waitLive(ada, docId);
+  const token = await linkDoc(ada, docId, 'viewer');
+  const visitor = await actors.anonymous(`/d/${docId}?share=${token}`, { label: 'visitor' });
+  await ui.waitOpen(visitor, docId, 'readonly');
+  await expect.poll(() => visitor.page.title(), { message: "the visitor's tab names the untitled note" }).toMatch(tabOf(UNTITLED));
+  const name = `Shared plan ${token.slice(0, 4)}`;
+  await ui.typeTitle(ada, docId, name);
+  await expect.poll(() => visitor.page.title(), { message: "the visitor's tab follows within a second of the last keystroke", timeout: TAB_MS, intervals: [50] })
+    .toMatch(tabOf(name));
 });
 
 interface TitleLog { title: string[]; row: string[]; crumb: string[] }

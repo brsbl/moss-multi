@@ -40,7 +40,9 @@ export async function departTo(href: string): Promise<boolean> {
   return false;
 }
 
-type DocOpener = (docId: string) => void;
+/** Opens a note through moss's switch; a promise of false says it cannot open (gone or no longer shared), and
+ * 'superseded' that the user went elsewhere before it could. */
+type DocOpener = (docId: string) => void | Promise<boolean | 'superseded'>;
 let opener: DocOpener | null = null;
 
 /** The bridge hands moss's in-app note switch (its internal-open subscription) to navigation. */
@@ -56,20 +58,23 @@ const MAX_OPENING_MS = 30_000;
 
 /** Opens a note in this tab, in place; without moss mounted, it is a page load like any other leave. Once its body
  * is bound, a live body takes focus, so keys typed straight on through the switch land in the note that opened. The
- * promise is true once the note's body is bound, false when it ends refused or gone (a terminal pane) or never binds. */
-export function openDoc(docId: string): Promise<boolean> {
+ * promise is true once the note's body is bound, false when it ends refused or gone (a terminal pane) or never binds,
+ * and 'superseded' when another note was chosen before this one could open. */
+export function openDoc(docId: string): Promise<boolean | 'superseded'> {
   if (!opener) return departTo(`/d/${encodeURIComponent(docId)}`);
-  let resolve!: (opened: boolean) => void;
-  const result = new Promise<boolean>((done) => { resolve = done; });
+  let resolve!: (opened: boolean | 'superseded') => void;
+  const result = new Promise<boolean | 'superseded'>((done) => { resolve = done; });
   const guard = armOpeningGuard();
   const ofDoc = `[${EDITOR_PANE_ATTR}][${DOC_ID_ATTR}="${CSS.escape(docId)}"]`;
   const pane = `${ofDoc}[${DOC_STATE_ATTR}="live"]`;
   const bound = `${pane} [${BODY_BINDING_ATTR}="live"], ${pane} [${BODY_BINDING_ATTR}="readonly"]`;
   let settled = false;
-  const settle = (body: HTMLElement | null) => {
+  // An open that asks the server first counts no pane, even one already showing the note, until it may open.
+  let answered = true;
+  const settle = (body: HTMLElement | null, superseded = false) => {
     if (settled) return;
     settled = true;
-    resolve(body !== null);
+    resolve(superseded ? 'superseded' : body !== null);
     observer.disconnect();
     clearTimeout(timer);
     const active = document.activeElement;
@@ -86,6 +91,7 @@ export function openDoc(docId: string): Promise<boolean> {
     guard.disarm();
   };
   const check = () => {
+    if (!answered) return;
     const body = document.querySelector<HTMLElement>(bound);
     if (body) settle(body);
     else if (document.querySelector(`${ofDoc}[${DOC_STATE_ATTR}="terminal"]`)) settle(null);
@@ -93,7 +99,16 @@ export function openDoc(docId: string): Promise<boolean> {
   const observer = new MutationObserver(check);
   const timer = setTimeout(() => settle(null), MAX_OPENING_MS);
   observer.observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: [DOC_STATE_ATTR, DOC_ID_ATTR, BODY_BINDING_ATTR] });
-  opener(docId);
+  const asked = opener(docId);
+  if (asked instanceof Promise) {
+    answered = false;
+    void asked.then((opens) => {
+      answered = true;
+      if (opens === 'superseded') settle(null, true);
+      else if (!opens) settle(null);
+      else check();
+    }, () => { answered = true; check(); });
+  }
   check();
   return result;
 }

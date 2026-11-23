@@ -138,8 +138,16 @@ function Vaults({ bridge, active, vaults, onClose }: { bridge: Bridge; active: V
     const { vault } = await vaultRequest('/api/vaults', 'POST', { name });
     setCreating(false);
     if (!vault) return;
-    onClose();
-    if (!(await switchToVault(bridge, vault.id))) setError(SWITCH_FAILED);
+    // Settings closes on the new vault; a failed switch is said here, where she is.
+    setPending(true);
+    setError(null);
+    const switched = await switchToVault(bridge, vault.id);
+    setPending(false);
+    if (switched) onClose();
+    else {
+      setOpen(true);
+      setError(SWITCH_FAILED);
+    }
   };
   const rename = async (name: string) => {
     refocus.current = renameButton;
