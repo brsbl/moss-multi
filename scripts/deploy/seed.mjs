@@ -133,7 +133,7 @@ export function rerunClaims(token, runId, attempt) {
   if (!Number.isInteger(now) || now < seeded) throw new Error(`attempt ${attempt} is before the seeding attempt ${seeded}`);
   if (now === seeded) return 0;
   if (now === seeded + 1) return SEED_PER_SHARD / 2;
-  throw new Error(`the seeded principals allow one failed-only re-run; attempt ${attempt} needs a re-run of all jobs`);
+  throw new Error(`the seeded principals allow a failed-only re-run once; attempt ${attempt} needs a re-run of all jobs`);
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
