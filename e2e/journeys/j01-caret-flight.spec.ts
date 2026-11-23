@@ -94,6 +94,7 @@ test("j01 caret flight: K8 Ben's socket goes dark while Ada types zz at his care
   await checkbox(ada);
   await expect(item(ui.body(ada, id))).toHaveText('Target paragraph where Benzz waits.');
   // The reconnect brings both of Ada's changes in one sync.
+  ben.expectReconnects(1, id);
   sever.reset();
   sever.restore();
   await expect(item(ui.body(ben, id)), "Ada's changes reach Ben on reconnect").toHaveCount(1, { timeout: 30_000 });

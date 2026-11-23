@@ -684,10 +684,12 @@ describe('controls: what the module leaves as today @p:col-1', () => {
   });
 
   const composing = (root: HTMLElement) => root.dispatchEvent(new Event('compositionstart'));
+  // On a jsdom root the caret is set without the DOM selection: jsdom's selectionchange would read it back elsewhere.
+  const parkOffDom = (ben: Peer) => ben.editor.update(() => { $select($line(LINE), MID); }, { discrete: true, tag: SKIP_DOM_SELECTION_TAG });
   it('C8 composing, not editable, no selection: as today', async () => {
     const once = async (module: boolean, prepare: (ben: Peer) => void, park = true) => {
       const [ada, ben] = await note(PLAIN, ['ada', 'ben'], { ben: { module, root: true } });
-      if (park) ben.edit(() => { $select($line(LINE), MID); });
+      if (park) parkOffDom(ben);
       prepare(ben);
       ada.edit(heading());
       await deliver(ada, ben);
@@ -704,7 +706,7 @@ describe('controls: what the module leaves as today @p:col-1', () => {
   ] as const) {
     it(`C8b ${name}: restored, without touching the DOM selection of an unfocused editor`, async () => {
       const [ada, ben] = await note(PLAIN, ['ada', 'ben'], { ben: { root: true } });
-      ben.edit(() => { $select($line(LINE), MID); });
+      parkOffDom(ben);
       prepare(ben.element!);
       const from = ben.commits.length;
       ada.edit(heading());

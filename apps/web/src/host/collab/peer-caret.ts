@@ -151,6 +151,9 @@ function isLine(node: LexicalNode | null): node is ElementNode {
   return !($isElementNode(first) && !first.isInline());
 }
 
+/** `isLine` without narrowing its argument's type. */
+const lineNode = (node: LexicalNode): boolean => isLine(node);
+
 /** The next node in document order; `over` skips the node's children. */
 function after(node: LexicalNode, over: boolean): LexicalNode | null {
   if (!over && $isElementNode(node)) {
@@ -171,7 +174,7 @@ function before(node: LexicalNode): LexicalNode | null {
     const parent = node.getParent();
     return parent && parent.getKey() !== 'root' ? parent : null;
   }
-  while ($isElementNode(at) && !isLine(at) && !at.isInline()) {
+  while ($isElementNode(at) && !at.isInline() && !lineNode(at)) {
     const last: LexicalNode | null = at.getLastChild();
     if (!last) break;
     at = last;
