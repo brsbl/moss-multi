@@ -26,6 +26,11 @@ const CONVERSIONS: Conversion[] = [
     act: async (ada, id) => { await park(ada, id, TARGET, TARGET.length); await ada.page.keyboard.type('> '); },
     seen: (body) => body.locator('blockquote').filter({ hasText: 'Target paragraph' }),
   },
+  {
+    name: 'J4b "# " typed at the start',
+    act: async (ada, id) => { await park(ada, id, TARGET, TARGET.length); await ada.page.keyboard.type('# '); },
+    seen: (body) => body.locator('h1').filter({ hasText: 'Target paragraph' }),
+  },
 ];
 
 for (const c of CONVERSIONS) {

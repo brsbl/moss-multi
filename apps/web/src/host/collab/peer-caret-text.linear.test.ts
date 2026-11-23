@@ -19,6 +19,9 @@ const CALLS: [string, (text: string) => void][] = [
     replacedOffset(text.slice(0, half), text.slice(half), changed(text, 'start'));
     replacedOffset(text.slice(0, half), text.slice(half), changed(text, 'end'));
     replacedOffset(text, '', changed(text, 'end'));
+    // A long left whose suffix is the replacement's head; and one that differs from it in the head's first character only.
+    replacedOffset(`>${text.slice(0, half)}`, text.slice(half), text);
+    replacedOffset(`>${changed(text.slice(0, half), 'start')}`, text.slice(half), text);
   }],
   ['splitOffset', (text) => {
     const half = text.length >> 1;

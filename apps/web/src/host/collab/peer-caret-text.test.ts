@@ -25,10 +25,17 @@ describe('replacedOffset: my line was replaced one for one @p:col-1', () => {
     ["a peer's zz at the end of the line in the same commit", LEFT, RIGHT, `${LINE}zz`, LEFT.length],
     ["a peer's \"- \" shortcut at my offset 0", '- ', LINE, LINE, 0],
     ['a peer undoes the conversion', LEFT, RIGHT, LINE, LEFT.length],
+    // A peer's Markdown shortcut at the start of my line: its marker key reached me first, and the conversion consumed it.
+    ...(['>', '#', '-', '1.'] as const).map((marker): [string, string, string, string, number] => [
+      `a peer's "${marker} " shortcut at the start of my line, my caret mid-line`, `${marker}${LEFT}`, RIGHT, LINE, LEFT.length,
+    ]),
+    ['a peer\'s "> " shortcut at the start of my line, my caret at the end', `>${LINE}`, '', LINE, LINE.length],
     // Refusals decided by text.
     ['refused: the commit changed my line on both sides of the caret', LEFT, RIGHT, `x${LINE}y`, null],
     ['refused: unrelated text where my line stood', LEFT, RIGHT, 'Something else entirely.', null],
     ['refused: a prefix of my line where it stood, the caret beyond it', LEFT, RIGHT, 'Target para', null],
+    ["refused: a peer's shortcut while three of my typed keys are in flight", `>${LEFT}abc`, RIGHT, LINE, null],
+    ['refused: a replacement that ends like my line but is not a suffix of it', `>${LEFT}`, RIGHT, 'Another paragraph that waits.', null],
   ];
   for (const [name, left, right, t, want] of rows) {
     it(name, () => expect(replacedOffset(left, right, t)).toBe(want));

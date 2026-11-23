@@ -435,6 +435,31 @@ describe('rules: a peer\'s block change keeps the waiting caret on its words @p:
     });
     expect(outcome.where).toMatchObject(caret('listitem', LINE, 0));
   });
+  // The shortcut typed at the start of Ben's line: its marker key reaches him first, then its space converts the block
+  // and consumes the marker, in two deliveries.
+  const SHORTCUTS: { marker: string; type: string; convert: () => void }[] = [
+    { marker: '#', type: 'heading', convert: () => $setBlocksType($range(), () => $createHeadingNode('h1')) },
+    { marker: '>', type: 'quote', convert: () => $setBlocksType($range(), () => $createQuoteNode()) },
+    { marker: '-', type: 'listitem', convert: () => $insertList('bullet') },
+  ];
+  for (const c of SHORTCUTS) {
+    for (const at of [MID, LINE.length]) {
+      it(`U1 "${c.marker} " typed at the start of Ben's line, Ben idle at ${at}`, async () => {
+        const outcome = await run({
+          md: PLAIN, ben: [LINE, at], apart: true,
+          ada: [typeAt(LINE, 0, c.marker), () => {
+            const line = $line(`${c.marker}${LINE}`);
+            $select(line, 1).insertText(' ');
+            (line.getFirstChild() as TextNode).spliceText(0, 2, '');
+            $select(line, 0);
+            c.convert();
+          }],
+        });
+        expect(outcome.lines, 'the marker is consumed').toContainEqual([c.type, LINE]);
+        expect(outcome.where).toMatchObject(caret(c.type, LINE, at));
+      });
+    }
+  }
 
   const ENTERS: { name: string; md: string; ben: [string, number]; ada: () => void; want: ReturnType<typeof caret> }[] = [
     { name: 'before his caret', md: PLAIN, ben: [LINE, MID], ada: enter(LINE, 6), want: caret('paragraph', TAIL, TAIL.length - RIGHT.length) },
@@ -633,6 +658,10 @@ describe('controls: what the module leaves as today @p:col-1', () => {
     ['C1 Ada merges Ben\'s line up, an identical paragraph below', { md: [PREV, '', LINE, '', LINE].join('\n'), ben: [LINE, MID], ada: [mergeUp(LINE)] }],
     ['C1 Ada merges the next line into Ben\'s', { md: PLAIN, ben: [LINE, MID], ada: [() => { const line = $line(LINE); const next = $line(NEXT); line.append(...next.getChildren()); next.remove(); }] }],
     ['C1 Ada deletes Ben\'s paragraph', { md: PLAIN, ben: [LINE, MID], ada: [() => { $line(LINE).remove(); }] }],
+    ['C1 one update: Ada deletes Ben\'s paragraph and writes one in its place that ends like his line but is not a suffix of it', {
+      md: PLAIN, ben: [LINE, MID],
+      ada: [() => { const line = $line(LINE); line.insertAfter($createParagraphNode().append($createTextNode('Another paragraph that waits.'))); line.remove(); }],
+    }],
     ...(['Alpha line.', LINE, 'Charlie line.'] as const).map((at): [string, Scenario] => [
       `C2 [A, L, C] to [C, A, L], Ben in ${at}`,
       { md: ['Alpha line.', '', LINE, '', 'Charlie line.'].join('\n'), ben: [at, 3], ada: [() => { $line('Alpha line.').insertBefore($line('Charlie line.')); }] },
