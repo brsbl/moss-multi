@@ -244,7 +244,7 @@ test('j13-vault-nav: a switch that fails after New vault says so where she is, w
   const page = ada.page;
   const before = new Set((await listing(ada)).vaults.map((vault) => vault.id));
   // The switch to the vault just made fails; every other listing read answers.
-  ada.expectHttp(429, /\/api\/workspace\?/);
+  ada.expectHttp(429, /\/api\/workspace/);
   await page.route(/\/api\/workspace\?/, (route) => {
     const vault = new URL(route.request().url()).searchParams.get('vault');
     return vault && !before.has(vault) ? route.fulfill({ status: 429, contentType: 'application/json', body: '{"message":"Slow down."}' }) : route.fallback();

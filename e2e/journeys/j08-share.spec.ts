@@ -1024,7 +1024,7 @@ async function nameStaysWhileScrolling(dialog: Locator, line: string): Promise<v
     scroller.scrollTop = scroller.scrollHeight;
     return true;
   });
-  expect(scrolled, 'declared setup: the list is long enough to scroll').toBe(true);
+  expect(scrolled, `declared setup: the list of ${line} is long enough to scroll`).toBe(true);
   const name = dialog.locator('p:not(.sr-only)').filter({ hasText: line }).first();
   await expect.poll(() => name.evaluate((el) => {
     const box = el.getBoundingClientRect();
@@ -1051,7 +1051,7 @@ test('j08 compact: Share names the note, folder or vault in its first visible li
       expect(invited.ok(), 'declared setup: an invite').toBe(true);
     }
   }
-  await ada.page.setViewportSize({ width: 1440, height: 480 });
+  await ada.page.setViewportSize({ width: 1440, height: 360 });
   await ada.page.reload();
   await ada.page.locator(`html[${APP_STATE_ATTR}="ready"]`).waitFor({ state: 'attached', timeout: 30_000 });
 
