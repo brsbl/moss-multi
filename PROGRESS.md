@@ -1,6 +1,6 @@
 # moss-multi progress
 
-**Overall: 93% done** (282 of 302 planned tasks verified)
+**Overall: 94% done** (283 of 302 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
@@ -13,7 +13,7 @@
 | M6 History | Versions, view, diff, identity-preserving restore | 20 / 20 | in progress |
 | M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 26 / 26 | in progress |
 | M8 Ship | Everything on a permanent staging URL with demo content | 17 / 17 | |
-| M9 Polish | Understand every control without help: fixes found by using the whole product | 42 / 43 | |
+| M9 Polish | Understand every control without help: fixes found by using the whole product | 43 / 43 | |
 
 A task counts only after an independent checker passes it on green CI. Each milestone also ends with the cumulative journey suite green in Chromium and WebKit and a naive-user critic pass.
 
@@ -305,6 +305,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-11-22 — T9.48g verified: a WebKit test that fails because the browser's network process crashed is now labelled BLOCKED as an engine fault instead of a product failure, and every failed WebKit test attaches the engine's process evidence before its pages close.
 - 2026-11-22 — T9.19 verified: the browser's Back and Forward move between the notes a person opened, without a page load and with folders still expanded, and a step back or forward to a note since trashed keeps the last live note in the address.
 - 2026-11-22 — T9.22 verified: the browser tab is named after the focused note (“<title> — moss”, “Untitled — moss”, or “moss” with no note open), follows a rename by anyone, and journey tests now check it.
+- 2026-11-23 — T9.46 verified: the assembled product reads like Moss at its seams: View only and Comment only explain themselves inside the Review row, the Suggestions list has one 36 px Review row, Share names the note, folder or vault in its header, a bad email's error sits under Email, a note in Trash shows no suggestion marks, and a slow notice open no longer overrides a newer focus.
 
 ## T1.1s identity audit
 
@@ -400,6 +401,14 @@ Moss's marker patterns (`\{%c:\s*([A-Za-z0-9_,\-\s]+?)\s*%\}` and the `%%m:` for
 ## Follow-ups (P2)
 
 Parked from the M0 checker and critic passes, each with the task that owns it.
+
+### From T9.46's checker (b136fc2, 2026-11-23)
+
+- T9.46 (The whole product looks like Moss) checker P2: a slow notice open can still override a newer switch to the Trash view while that switch waits on its trash read: the late access answer leaves the focus unchanged, so the notice's note opens after Trash has shown.
+- T9.46 (The whole product looks like Moss) checker P2: the notice-open regression tests are jsdom unit tests whose open callback bypasses Moss's real switch queue, so they miss the queued-switch ordering above; a Playwright leg with a delayed /api/docs/:id would cover it.
+- T9.46 (The whole product looks like Moss) checker P2: the whole-product visual matrix is incomplete: History, Settings, the inbox, 640 and 1024 px widths, Bot and 50-session states, the refusal card with a note in Trash and with no note open, and the commenter's Review state are not yet captured.
+- T9.46 (The whole product looks like Moss) checker P2: remaining visual differences from Moss: the Suggestions popover's shadow is heavier and its corners tighter (about 8 px against 12 px); Share's close button is a bare X where Moss's modal header circles it faintly; the login email error sits 1-2 px under the field's focus ring; the pressed View only refusal card is about 38 px tall against the 24 px tooltip, with a stronger shadow.
+- T9.46 (The whole product looks like Moss) checker P2: flake candidates for the intermittent-failure investigation: j01-registers.spec.ts:761 (webkit, registers; setup POST /api/docs 'socket hang up', run 45132107814 attempt 1, green on rerun) and the memory job 'structure ceiling: the largest table' (run 45128205862).
 
 ### From T9.22's checker (9815a57, 2026-11-22)
 
