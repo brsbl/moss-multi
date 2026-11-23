@@ -633,12 +633,15 @@ test('j11-media: a private image one account loaded never reaches the next accou
   expect(benRead.length, "no byte of Ada's image reaches him").not.toBe(size);
 });
 
-/** SP9's near-cap probe: what one upload of `sent` stored, read back against `expected`, the file meant to be stored. */
-async function nearCapProbe(actor: Actor, docId: string, name: string, sent: Buffer, expected: Buffer): Promise<{ ok: boolean; failures: string[]; ms: number }> {
+/**
+ * SP9's near-cap probe: what one upload of `sent` stored, read back against `expected`, the file meant to be stored.
+ * The upload carries its label in the header deploy-staging's probe tail filters on, to time it in the Worker.
+ */
+async function nearCapProbe(actor: Actor, docId: string, label: 'near-cap' | 'truncated', sent: Buffer, expected: Buffer): Promise<{ ok: boolean; failures: string[]; ms: number }> {
   const failures: string[] = [];
   const started = Date.now();
-  const stored = await actor.context.request.post(`/api/docs/${docId}/assets?filename=${name}`, {
-    headers: { origin: origin(actor), 'content-type': 'video/webm' }, data: sent, timeout: 120_000,
+  const stored = await actor.context.request.post(`/api/docs/${docId}/assets?filename=${label}.webm`, {
+    headers: { origin: origin(actor), 'content-type': 'video/webm', 'x-sp9-probe': label }, data: sent, timeout: 120_000,
   });
   const ms = Date.now() - started;
   if (stored.status() !== 201) return { ok: false, failures: [`upload ${stored.status()}`], ms };
@@ -674,9 +677,9 @@ test('j11-media: SP9 near-cap probe: a 95 MiB video stores whole, its hash and a
   for (let i = 0; i < cap; i += 4) video.writeUInt32LE(i, i);
   bytes(WEBM.name).copy(video);
   // The red control: the same file cut short must fail the probe.
-  const truncated = await nearCapProbe(ada, docId, 'truncated.webm', video.subarray(0, cap - 1024 * 1024), video);
+  const truncated = await nearCapProbe(ada, docId, 'truncated', video.subarray(0, cap - 1024 * 1024), video);
   expect(truncated.ok, 'a truncated upload fails the probe').toBe(false);
-  const probe = await nearCapProbe(ada, docId, 'near-cap.webm', video, video);
+  const probe = await nearCapProbe(ada, docId, 'near-cap', video, video);
   test.info().annotations.push({ type: 'sp9-near-cap', description: JSON.stringify({ bytes: cap, uploadMs: probe.ms }) });
   expect(probe.failures, 'the near-cap upload stores and reads back exactly').toEqual([]);
 });

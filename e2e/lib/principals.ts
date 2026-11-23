@@ -1,6 +1,10 @@
 // Per-run principals (S-test §3.3). Sign-up and sign-in go through the real auth API as declared setup (the auth
 // journey uses the login UI instead); the guard makes the owner's accounts unreachable by construction.
 import { createHmac, randomBytes } from 'node:crypto';
+import { test } from '@playwright/test';
+import { claimSlot, seedEmail } from '../../scripts/deploy/seed.mjs';
+import { authHeadroom, type AuthKind, extendTimeout, recordAuth, RESERVE } from './auth-pace.ts';
+import type { CanaryState } from './stack.ts';
 
 export const EXAMPLE_DOMAIN = '@example.invalid';
 
@@ -57,38 +61,129 @@ export function newPrincipal(runToken: string, label: string, n: number): Princi
 /** Signs up `mm-<runToken>-<label>-<n>@example.invalid` with a same-origin Origin (better-auth 403s without it). */
 export async function mintPrincipal(baseUrl: string, runToken: string, label: string, n: number): Promise<Principal> {
   const { email, name, password } = newPrincipal(runToken, label, n);
-  const { response, text, lost } = await setupPost(baseUrl, '/api/auth/sign-up/email', { email, password, name });
+  let stale = false;
+  const post = () => setupFetch('sign-up', `${baseUrl}/api/auth/sign-up/email`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', origin: baseUrl },
+    body: JSON.stringify({ email, password, name }),
+    signal: AbortSignal.timeout(15_000),
+  }, () => { stale = true; });
+  const passed = await pastAuthLimit('sign-up', post);
+  const { response } = passed;
+  const lost = passed.lost || stale;
+  const text = await response.text();
   // A sign-up lost after the Worker stored it is answered "already exists" on the resend: sign in for its id.
   if (lost && !response.ok && /already exists/i.test(text)) {
-    const signedIn = await setupPost(baseUrl, '/api/auth/sign-in/email', { email, password });
-    if (!signedIn.response.ok) throw new Error(`sign-in for ${email}: ${signedIn.response.status} ${signedIn.text.slice(0, 200)}`);
-    return { label, name, email, password, id: (JSON.parse(signedIn.text) as { user?: { id?: string } }).user?.id ?? null };
+    const signedIn = (await pastAuthLimit('sign-in', () => postSignIn(baseUrl, { label, name, email, password, id: null }))).response;
+    const signedInText = await signedIn.text();
+    if (!signedIn.ok) throw new Error(`sign-in for ${email}: ${signedIn.status} ${signedInText.slice(0, 200)}`);
+    return { label, name, email, password, id: (JSON.parse(signedInText) as { user?: { id?: string } }).user?.id ?? null };
   }
   if (!response.ok) throw new Error(`sign-up for ${email}: ${response.status} ${text.slice(0, 200)}`);
   const id = (JSON.parse(text) as { user?: { id?: string } }).user?.id ?? null;
   return { label, name, email, password, id };
 }
 
-// wrangler dev's proxy answers a POST whose forward was lost on a closing keep-alive connection with this 503 (see
-// patches/wrangler@4.113.0.patch); a local workerd busy with a large doc's work widens that race.
-const LOST_FORWARD = 'Your worker restarted mid-request';
+/** Codes of a pooled connection the far end closed before any answer: undici's "other side closed", or a reset. */
+const STALE_CONNECTION = new Set(['UND_ERR_SOCKET', 'UND_ERR_CLOSED', 'ECONNRESET', 'EPIPE']);
 
 /**
- * A declared-setup auth POST, sent once more if wrangler's proxy lost its forward. `lost` says a resend happened, so
- * the first may have been applied.
+ * Node's fetch for setup requests off the browser. Its keep-alive pool can send a request on a connection the far end
+ * is closing (Cloudflare's edge, like the dev proxy closeEachConnection guards against): "fetch failed" before any
+ * answer. Such a request is sent once more on a new connection, and the resend recorded; any other failure, or a
+ * second close, is thrown. `resent` hears the resend, for a caller whose first request may have been applied.
  */
-async function setupPost(baseUrl: string, path: string, body: object): Promise<{ response: Response; text: string; lost: boolean }> {
-  const send = () => fetch(`${baseUrl}${path}`, {
+export async function setupFetch(kind: AuthKind | 'setup', url: string, init: RequestInit, resent?: () => void): Promise<Response> {
+  try {
+    return await fetch(url, init);
+  } catch (error) {
+    const code = (error as { cause?: { code?: unknown } }).cause?.code;
+    if (!(error instanceof TypeError) || typeof code !== 'string' || !STALE_CONNECTION.has(code)) throw error;
+    noteResend(kind, 'stale connection', 1);
+    resent?.();
+    const timeout = init.signal ? AbortSignal.timeout(15_000) : undefined;
+    return fetch(url, { ...init, ...(timeout ? { signal: timeout } : {}) });
+  }
+}
+
+const LOST_FORWARD = 'Your worker restarted mid-request';
+
+/** A seeded principal's sign-in session, handed to its first browser context (session tokens are single-issue). */
+const seededSessions = new Map<string, SessionCookie[]>();
+
+/**
+ * A per-run principal the staging deploy wrote for this run (scripts/deploy/seed.mjs): staging allows 30 sign-ups a day
+ * per address, far fewer than the suite needs. Claims this shard's next slot, signs in, names it as `newPrincipal`
+ * would, and opens its workspace, which makes the home vault a sign-up's hook would have made. Past the slots, it
+ * signs up as `mintPrincipal` does.
+ */
+export async function seededPrincipal(baseUrl: string, seed: NonNullable<CanaryState['seed']>, password: string, runToken: string, label: string, n: number): Promise<Principal> {
+  const slot = claimSlot(seed.claimDir, seed.count);
+  if (slot === null) return mintPrincipal(baseUrl, runToken, label, n);
+  const { name } = newPrincipal(runToken, label, n);
+  const principal: Principal = { label, name, email: seedEmail(seed.token, seed.slots, slot), password, id: null };
+  assertTestEmail(principal.email);
+  const { response } = await pastAuthLimit('sign-in', () => postSignIn(baseUrl, principal));
+  const text = await response.clone().text();
+  if (!response.ok) throw new Error(`sign-in for seeded ${principal.email}: ${response.status} ${text.slice(0, 200)}`);
+  principal.id = (JSON.parse(text) as { user?: { id?: string } }).user?.id ?? null;
+  const cookies = sessionCookies(response, baseUrl, principal.email);
+  const cookie = cookies.map((c) => `${c.name}=${c.value}`).join('; ');
+  const named = await setupFetch('setup', `${baseUrl}/api/auth/update-user`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json', origin: baseUrl },
-    body: JSON.stringify(body),
+    headers: { 'content-type': 'application/json', origin: baseUrl, cookie },
+    body: JSON.stringify({ name }),
     signal: AbortSignal.timeout(15_000),
   });
-  const first = await send();
-  const text = await first.text();
-  if (first.status !== 503 || !text.startsWith(LOST_FORWARD)) return { response: first, text, lost: false };
-  const again = await send();
-  return { response: again, text: await again.text(), lost: true };
+  if (!named.ok) throw new Error(`naming seeded ${principal.email}: ${named.status}`);
+  const workspace = await setupFetch('setup', `${baseUrl}/api/workspace`, { headers: { cookie }, signal: AbortSignal.timeout(15_000) });
+  if (!workspace.ok) throw new Error(`the workspace of seeded ${principal.email}: ${workspace.status}`);
+  await workspace.arrayBuffer();
+  seededSessions.set(`${baseUrl} ${principal.email}`, cookies);
+  return principal;
+}
+
+/**
+ * Sign-up and sign-in are limited per address off the hook stack (auth.ts): staging and the canary rehearsal. Setup
+ * paces itself under the limit (auth-pace.ts); a 429 that still comes (another job sharing the address) waits out the
+ * window, at most six times.
+ */
+async function pastAuthLimit(kind: AuthKind, post: () => Promise<Response>): Promise<{ response: Response; lost: boolean }> {
+  await authHeadroom(kind, RESERVE);
+  let response = await post();
+  let limited = 0;
+  for (; limited < 6 && response.status === 429; limited += 1) {
+    const waitMs = Math.min(Number(response.headers.get('x-retry-after')) || 60, 65) * 1000 + 500;
+    extendTimeout(waitMs);
+    await new Promise((done) => setTimeout(done, waitMs));
+    response = await post();
+  }
+  noteResend(kind, '429', limited);
+  // wrangler dev's proxy answers a POST whose forward was lost on a closing keep-alive connection with this 503 (see
+  // patches/wrangler@4.113.0.patch); the request is sent again, at most three times. `lost` says a resend happened,
+  // so the first may have been applied.
+  let resent = 0;
+  for (; resent < 3 && response.status === 503 && (await response.clone().text()).startsWith(LOST_FORWARD); resent += 1) {
+    await new Promise((done) => setTimeout(done, 1_000));
+    response = await post();
+  }
+  noteResend(kind, 'lost forward', resent);
+  const lost = resent > 0;
+  if (response.status !== 429) recordAuth(kind);
+  return { response, lost };
+}
+
+/**
+ * Records `count` resends of a setup `kind` request on the running test, for the run's credential-free summary
+ * (scripts/deploy/canary-artifacts.mjs resendsOf); a no-op outside a test.
+ */
+function noteResend(kind: AuthKind | 'setup', cause: '429' | 'lost forward' | 'stale connection', count: number): void {
+  if (count === 0) return;
+  try {
+    test.info().annotations.push({ type: 'setup-resend', description: JSON.stringify({ kind, cause, count }) });
+  } catch {
+    // Outside a test.
+  }
 }
 
 export function parseSetCookie(header: string, url: string): SessionCookie {
@@ -110,7 +205,7 @@ export function parseSetCookie(header: string, url: string): SessionCookie {
 }
 
 async function postSignIn(baseUrl: string, principal: Principal): Promise<Response> {
-  return fetch(`${baseUrl}/api/auth/sign-in/email`, {
+  return setupFetch('sign-in', `${baseUrl}/api/auth/sign-in/email`, {
     method: 'POST',
     headers: { 'content-type': 'application/json', origin: baseUrl },
     body: JSON.stringify({ email: principal.email, password: principal.password }),
@@ -137,8 +232,13 @@ export async function signIn(baseUrl: string, principal: Principal): Promise<Ses
   assertTestEmail(principal.email);
   const pooled = principal.pooled ? pooledSessions.get(`${baseUrl} ${principal.email}`) : undefined;
   if (pooled) return pooled.map((cookie) => ({ ...cookie }));
-  const { response, text } = await setupPost(baseUrl, '/api/auth/sign-in/email', { email: principal.email, password: principal.password });
-  if (!response.ok) throw new Error(`sign-in for ${principal.email}: ${response.status} ${text.slice(0, 200)}`);
+  const seeded = seededSessions.get(`${baseUrl} ${principal.email}`);
+  if (seeded) {
+    seededSessions.delete(`${baseUrl} ${principal.email}`);
+    return seeded;
+  }
+  const { response } = await pastAuthLimit('sign-in', () => postSignIn(baseUrl, principal));
+  if (!response.ok) throw new Error(`sign-in for ${principal.email}: ${response.status} ${(await response.text()).slice(0, 200)}`);
   const cookies = sessionCookies(response, baseUrl, principal.email);
   if (principal.pooled) pooledSessions.set(`${baseUrl} ${principal.email}`, cookies);
   return cookies.map((cookie) => ({ ...cookie }));

@@ -79,6 +79,8 @@ export const GROUPS = {
   suggestPasteCells: ['j16-paste-cells', 'j16-paste-undo', 'j16-review-kept'],
   // Reviewing suggestions: the panel, accept, reject and withdraw.
   review: ['j16-review'],
+  // A review racing its card's preview (T8.2), apart so the review shard fits its budget.
+  reviewRace: ['j16-review-race'],
   // Edit-mode wedges over the gap cursor and their previews; formulas committed while suggesting.
   suggestMarks: ['j16-marks'],
   // The strike census: every block kind on each side of a boundary, every edge key and strike position.

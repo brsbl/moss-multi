@@ -8,6 +8,7 @@ import { payloadDocsFor } from '@moss-multi/sync/payload-docs';
 import { Composite, destroyView, openRecords, SpanSet, type Built } from '@moss-multi/sync/suggest/client';
 import { useEffect, useSyncExternalStore } from 'react';
 import type * as Y from 'yjs';
+import { reportChunkFailure } from '../../ChunkReloadBoundary.tsx';
 import { bindingOf } from '../binding-registry.ts';
 import { restoreCaret, type CaretMark } from './caret.ts';
 import { rangesWhere } from './chars.ts';
@@ -30,7 +31,7 @@ function loadedPasteStack(): PasteStack | null {
       pasteStack = module.registerPasteStack;
     }, (error: unknown) => {
       pasteStackLoading = false;
-      console.error('[suggest] the paste handlers did not load', error);
+      reportChunkFailure('[suggest] the paste handlers did not load', error);
     });
   }
   return pasteStack;

@@ -35,6 +35,9 @@
       "preview_urls": false,
       "routes": [],
       "observability": { "enabled": true },
+      // Beside the staging D1 (WNAM, primary at SJC): every access check is a sequential D1 round trip, and a DO is
+      // created beside the Worker invocation that first reaches it, so both run near D1 rather than near each caller.
+      "placement": { "mode": "targeted", "region": "aws:us-west-1" },
       "vars": {
         // Hooks never exist on staging (A§19); config.ts also refuses "1" with a non-loopback BETTER_AUTH_URL.
         "MOSS_TEST_HOOKS": "0"

@@ -132,15 +132,39 @@ export function remountSince({ names, docId, mark, generation }) {
 }
 
 /**
- * Invariant 7 input: the title and body text of every pane showing the doc.
+ * Invariant 7 input: the title and body text of every pane showing the doc, with each field's binding state.
  * @param {{ names: Names, docId: string }} arg
- * @returns {{ title: string, body: string }[]}
+ * @returns {{ title: string, body: string, titleBinding: string | null, bodyBinding: string | null }[]}
  */
 export function fieldTexts({ names, docId }) {
   return [...document.querySelectorAll(`[${names.pane}][${names.docId}="${docId}"]`)].map((pane) => {
     const title = pane.querySelector(`[${names.titleBinding}]`);
     // The bound root carries the binding attribute; moss also marks its editor wrapper `data-lexical-editor`.
     const body = pane.querySelector(`[${names.bodyBinding}]`) ?? pane.querySelector(names.lexical);
-    return { title: title ? (title.textContent ?? '') : '', body: body ? (body.textContent ?? '') : '' };
+    return {
+      title: title ? (title.textContent ?? '') : '',
+      body: body ? (body.textContent ?? '') : '',
+      // `unbound` while a field binds or rebinds: what it shows is not the doc's text yet (A§19).
+      titleBinding: title?.getAttribute(names.titleBinding) ?? null,
+      bodyBinding: body?.getAttribute(names.bodyBinding) ?? null,
+    };
   });
+}
+
+/**
+ * A dropped doc's replica as its first pane shows it (T8.F): the pane's mode and its title and body text, with remote
+ * carets and labels left out; null while the pane is missing or a field is still binding.
+ * @param {{ names: Names, docId: string }} arg
+ * @returns {{ mode: string | null, title: string, body: string } | null}
+ */
+export function paneExport({ names, docId }) {
+  const pane = document.querySelector(`[${names.pane}][${names.docId}="${docId}"]`);
+  if (!pane) return null;
+  const title = pane.querySelector(`[${names.titleBinding}]`);
+  const body = pane.querySelector(`[${names.bodyBinding}]`) ?? pane.querySelector(names.lexical);
+  if (!title || !body) return null;
+  if (title.getAttribute(names.titleBinding) === 'unbound' || body.getAttribute(names.bodyBinding) === 'unbound') return null;
+  const copy = /** @type {Element} */ (body.cloneNode(true));
+  for (const remote of copy.querySelectorAll(names.remote.map((name) => `[${name}]`).join(', '))) remote.remove();
+  return { mode: pane.getAttribute(names.editMode), title: title.textContent ?? '', body: copy.textContent ?? '' };
 }

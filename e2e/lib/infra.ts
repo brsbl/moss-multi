@@ -11,10 +11,13 @@ export class InfraBlocked extends Error {
 
 export const isInfraBlocked = (message: string | undefined): boolean => /\bInfraBlocked: /.test(message ?? '');
 
+// The Worker's own exception (1101) and resource limit (1102) come first: Cloudflare renders them on its error page too,
+// and the staging retry gate (scripts/deploy/retry-gate.mjs) never retries them.
 const SIGNATURES: [RegExp, string][] = [
+  [/\berror code: 1101\b|\bWorker threw exception\b|\bcf-error-code">1101</i, 'Worker 1101'],
+  [/\berror code: 1102\b|\bWorker exceeded resource limits\b|\bcf-error-code">1102</i, 'Worker 1102'],
   [/<!--\[if lt IE 7\]>[\s\S]*\bie6 oldie\b/i, 'a Cloudflare error page'],
   [/\bD1(?:_ERROR)?\b[^\n]*\b7429\b/i, 'D1 7429 (overloaded)'],
-  [/\berror code: 1101\b|\bWorker threw exception\b/i, 'Worker 1101'],
   [/\bECONNREFUSED\b|\bECONNRESET\b|socket hang up/i, 'the stack is unreachable'],
   [/\bEADDRINUSE\b/, 'a port in use'],
   [/Executable doesn't exist|browserType\.launch: |Failed to launch/i, 'the browser failed to launch'],

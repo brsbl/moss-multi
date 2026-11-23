@@ -10,6 +10,7 @@ import WebSocket from 'ws';
 import * as Y from 'yjs';
 import { DOC_SOCKET_PATH } from '../../packages/protocol/src/dom-contract.ts';
 import { CLOSE } from '../../packages/protocol/src/sync.ts';
+import { chargeSocket } from '../lib/budget.ts';
 import { forged, raw } from '../../packages/sync/test/harness/raw-frames.ts';
 import { cookieHeader, openDocClient, PROTOCOL_QUERY } from '../lib/doc-client.ts';
 import { signIn } from '../lib/principals.ts';
@@ -47,6 +48,7 @@ function syncMessage(kind: 1 | 2, update: Uint8Array): Uint8Array {
 function sendRaw(baseUrl: string, docId: string, cookie: string, frame: Uint8Array): Promise<number | null> {
   const url = `${baseUrl.replace(/^http/, 'ws')}${DOC_SOCKET_PATH}${encodeURIComponent(docId)}?${PROTOCOL_QUERY}&_pk=raw-${randomUUID()}`;
   return new Promise((resolve, reject) => {
+    chargeSocket(url);
     const socket = new WebSocket(url, { headers: { origin: baseUrl, cookie } });
     let sent = false;
     let quiet: NodeJS.Timeout | null = null;
@@ -224,7 +226,8 @@ const FIXTURES: Fixture[] = [
 ];
 
 for (const fixture of FIXTURES) {
-  test(`j15-comments-guard: ${fixture.name} land nothing in comments, park nothing, and stay so after a DocDO reset @p:tech-3`, async ({ actors, stack }) => {
+  // local-only: resets the DocDO through the loopback hook.
+  test(`j15-comments-guard: ${fixture.name} land nothing in comments, park nothing, and stay so after a DocDO reset @local-only @p:tech-3`, async ({ actors, stack }) => {
     actors.solo('one editor sends raw frames; the guard refuses by struct, never by who else is connected');
     const ada = await actors.principal('ada');
     const cookie = cookieHeader(await signIn(stack.baseUrl, ada));

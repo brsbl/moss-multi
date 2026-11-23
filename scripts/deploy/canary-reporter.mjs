@@ -1,14 +1,187 @@
 // The run log against a non-loopback target (e2e/playwright.config.ts; deploy-staging.yml's canary). That log is
 // public, and a failed authenticated request's error carries Playwright's call log, cookie header included. So this
-// prints each test's title, status and duration and withholds error text and test output; the JSON reporter keeps
-// the detail on the runner, which nothing uploads.
+// prints each test's title, status and duration, and for a failure only fixed facts: where in the suite it failed, the
+// kind of error, numeric expected and received values, and which invariants it broke; error text and test output are
+// withheld. The JSON reporter keeps the detail on the runner, which nothing uploads.
+
+import { resendsOf } from './canary-artifacts.mjs';
+import { dropLine, dropsOf } from './network-drops.mjs';
+import { retryClass } from './retry-gate.mjs';
 
 /** @param {number} ms */
 const seconds = (ms) => `${(ms / 1000).toFixed(1)} s`;
 
+// A stack frame in the suite's own source (`e2e/<dir>/<file>.<ts|js|mjs>:<line>`) or a deploy script, nothing else of it.
+const FRAME = /\/(e2e\/(?:journeys|lib)\/[\w.-]+\.(?:ts|js|mjs)|scripts\/deploy\/[\w.-]+\.mjs):(\d+):\d+\)?$/;
+// An error's class at the start of its message or stack (`TypeError: ...`): a fixed identifier, never the text after it.
+const CLASS = /^([A-Z][A-Za-z]{0,40})(?::|$)/;
+
+// Fixed labels for what an error message says; only the label is printed.
+const KINDS = [
+  ['timeout', /\bTimeout \d+ms exceeded|Test timeout of/],
+  ['expect', /\bexpect\(/],
+  ['request', /\bapiRequestContext\.|fetch failed|socket hang up|ECONNRESET/],
+  ['navigation', /\bpage\.goto:|net::ERR_/],
+  ['auth limit', /: 429 /],
+  ['auth', /\bsign-(?:in|up) for /],
+  ['infrastructure', /\bInfraBlocked\b|^infrastructure/i],
+];
+
+/**
+ * A failure's credential-free trace: the suite source lines on each error's stack (at most four), fixed labels for the
+ * kind of error, and the facts of its invariant findings. No text of the error is printed.
+ * @param {{ errors?: { message?: string, stack?: string }[] }} result
+ */
+export function failureTrace(result) {
+  const lines = [];
+  for (const error of result.errors ?? []) {
+    const frames = (error.stack ?? '').split('\n').flatMap((line) => {
+      const match = /^\s+at /.test(line) ? FRAME.exec(line) : null;
+      return match ? [`${match[1]}:${match[2]}`] : [];
+    });
+    if (frames.length > 0) lines.push(`at ${[...new Set(frames)].slice(0, 4).join(' < ')}`);
+    const plain = (error.message ?? '').replace(ANSI, '');
+    const kinds = KINDS.filter(([, pattern]) => pattern.test(plain)).map(([kind]) => kind);
+    if (kinds.length > 0) lines.push(`kind ${kinds.join(', ')}`);
+    const values = numericValues(error.message ?? '');
+    const facts = [...(values ? [values] : []), ...findingFacts(error.message ?? ''), ...inductionFacts(error.message ?? ''), ...requestFacts(plain)];
+    lines.push(...facts);
+    // Nothing else to go on: the error's class, so a failure is never unnamed.
+    const name = CLASS.exec(plain)?.[1] ?? CLASS.exec(error.stack ?? '')?.[1];
+    if (kinds.length === 0 && facts.length === 0 && name) lines.push(`error ${name}`);
+  }
+  return lines;
+}
+
+/**
+ * A refused sign-in or sign-up's status, and a failed API request's method and route (Playwright's call log), as
+ * fixed facts: never the address, the body, the query or a header.
+ * @param {string} message
+ */
+export function requestFacts(message) {
+  const facts = [];
+  const auth = /\bsign-(in|up) for \S{1,200}: (\d{3}) /.exec(message);
+  if (auth) facts.push(`auth: sign-${auth[1]} answered ${auth[2]}`);
+  const call = /^[ \t]*- → ([A-Z]{3,7}) [a-z]+:\/\/[^/\s]+(\/[^\s?#]*)/m.exec(message);
+  if (call) facts.push(`request: ${call[1]} ${route(call[2])}`);
+  return facts;
+}
+
+/**
+ * A failed wake proof's problems (e2e/lib/hibernate.ts inductionProblems) as fixed facts with their millisecond
+ * counts; never an instance id or a timestamp.
+ * @param {string} message
+ */
+export function inductionFacts(message) {
+  message = message.replace(ANSI, '');
+  const facts = [];
+  if (/\binstance \S{1,80} still serves the doc/.test(message)) facts.push('induction: the same instance serves the doc');
+  if (/\binstance constructed at \d{1,16}, not after the baseline's/.test(message)) facts.push('induction: not constructed after the baseline');
+  const before = /\binstance constructed (\d{1,9}) ms before the decisive action/.exec(message);
+  if (before) facts.push(`induction: constructed ${before[1]} ms before the decisive action`);
+  const after = /\binstance constructed (\d{1,9}) ms after the decisive action ended/.exec(message);
+  if (after) facts.push(`induction: constructed ${after[1]} ms after the decisive action ended`);
+  return facts;
+}
+
+const ANSI = new RegExp(`${String.fromCharCode(27)}\\[[\\d;]*m`, 'g');
+
+/**
+ * An assertion's expected and received values when both are plain numbers (a latency, a count), else null: a text
+ * value can carry anything the page showed, so it is never printed.
+ * @param {string} message
+ */
+export function numericValues(message) {
+  message = message.replace(ANSI, '');
+  const expected = /^Expected: {1,8}((?:[<>]=? )?-?\d{1,9}(?:\.\d{1,6})?)$/m.exec(message);
+  const received = /^Received: {1,8}(-?\d{1,9}(?:\.\d{1,6})?)$/m.exec(message);
+  return expected && received ? `expected ${expected[1]}, received ${received[1]}` : null;
+}
+
+/**
+ * A console error's fixed class: a resource load failure with its status, a WebSocket failure and which socket, or nothing.
+ * @param {string} detail
+ */
+const consoleKind = (detail) => {
+  const load = /Failed to load resource: the server responded with a status of (\d{3})/.exec(detail);
+  if (load) return ` (load ${load[1]})`;
+  if (!/WebSocket/i.test(detail)) return '';
+  // Which socket, as a fixed label: never its URL, which carries ids and tokens.
+  if (/\/parties\/doc-d-o\//.test(detail)) return ' (websocket: doc)';
+  if (/\/api\/workspace\/ws\b/.test(detail)) return ' (websocket: workspace)';
+  return ' (websocket: other)';
+};
+
+/**
+ * One socket's end in an invariant 3 finding (`#2 closed after 12 ms: asked 1000, then 1006 reason`) as a fixed fact:
+ * its lifetime and close codes, never the close reason's text.
+ * @param {string} item
+ */
+const socketEnd = (item) => {
+  if (/^#\d{1,3} open$/.test(item)) return 'open';
+  const closed = /^#\d{1,3} closed after (\d{1,9}) ms: (.*)$/.exec(item);
+  if (!closed) return '?';
+  const codes = [...closed[2].matchAll(/(?:^|, then )(asked )?(\d{4}|-)/g)].map(([, asked, code]) => `${asked ?? ''}${code}`);
+  return `${closed[1]} ms (${codes.length > 0 ? codes.join(' then ') : 'no close event'})`;
+};
+
+/** A request path as its route: every segment that is not a short lowercase word (an id or a token) becomes `:id`. */
+const route = (path) => path.split('/').map((segment) => (segment === '' || /^[a-z][a-z-]{0,19}$/.test(segment) ? segment : ':id')).join('/');
+
+/**
+ * The invariant findings in an e2e/lib/actors.ts failure, as fixed facts: the invariant, the actor's label, and for
+ * invariants 1, 3, 7 and 8 the HTTP status, method and route, the socket counts, the field and counts, or the principal
+ * count. Never the text.
+ * @param {string} message
+ */
+export function findingFacts(message) {
+  const facts = [];
+  for (const line of message.split('\n')) {
+    const match = /^\s*invariant (\d) \[([\w-]{1,24})\] (.*)$/.exec(line);
+    if (!match) continue;
+    const [, n, actor, detail] = match;
+    let fact = '';
+    if (n === '1') {
+      const http = /^HTTP (\d{3}) ([A-Z]{3,7}) (?:[a-z]+:\/\/[^/\s]+)?(\/[^\s?#]*)/.exec(detail);
+      if (http) fact = `HTTP ${http[1]} ${http[2]} ${route(http[3])}`;
+      else if (detail.startsWith('console error')) fact = `console error${consoleKind(detail)}`;
+      else if (detail.startsWith('page error')) fact = 'page error';
+    } else if (n === '3') {
+      const sockets = /\b(\d{1,6}) socket opens in one document, (\d{1,6}) allowed/.exec(detail);
+      if (sockets) fact = `${sockets[1]} socket opens, ${sockets[2]} allowed`;
+      const ended = /\((\d{1,6}) errored; (#\d[^()]{0,2000})\)$/.exec(detail);
+      if (sockets && ended) fact += ` (${ended[1]} errored; ${ended[2].split('; ').slice(0, 20).map(socketEnd).join(', ')})`;
+      const drops = /\b(\d{1,6}) recovered network drops \(1006\), (\d{1,3}) allowed/.exec(detail);
+      if (drops) fact = `${drops[1]} recovered network drops (1006), ${drops[2]} allowed`;
+      if (/\ba socket dropped \(1006\) and no later socket of its document reached sync/.test(detail)) fact = 'a 1006 drop never recovered to sync';
+      const tryAgain = /\b(\d{1,6}) try-again closes \(1013\), (\d{1,6}) declared/.exec(detail);
+      if (tryAgain) fact = `${tryAgain[1]} try-again closes (1013), ${tryAgain[2]} declared`;
+    } else if (n === '8') {
+      const distinct = /^(\d{1,3}) distinct principal\(s\)/.exec(detail);
+      if (distinct) fact = `${distinct[1]} distinct principal(s)`;
+      else if (/ is not a test principal /.test(detail)) fact = 'not a test principal';
+      else if (/needs a reason/.test(detail)) fact = 'solo without a reason';
+    } else if (n === '7') {
+      const field = / (title|body): /.exec(detail)?.[1] ?? '';
+      const counts = /appears (\d+) time\(s\), typed (\d+)/.exec(detail);
+      if (counts) fact = `${field} appears ${counts[1]}, typed ${counts[2]}`;
+      else fact = / still unbound after /.test(detail) ? `${field} still unbound` : `${field} out of order`;
+    }
+    facts.push(`invariant ${n} [${actor}]${fact ? ` ${fact}` : ''}`);
+  }
+  return [...new Set(facts)].slice(0, 8);
+}
+
 export default class CanaryReporter {
   /** @type {Map<string, number>} */
   counts = new Map();
+  /** @type {string[]} Every retry this run allowed, with its infrastructure class. */
+  retried = [];
+  /** @type {string[]} Each leg's setup resends, by fixed label. */
+  resent = [];
+  resends = 0;
+  /** @type {string[]} Every network drop a leg recorded (network-drops.mjs). */
+  drops = [];
 
   printsToStdio() {
     return true;
@@ -23,13 +196,35 @@ export default class CanaryReporter {
   }
 
   /**
-   * @param {{ titlePath(): string[] }} test
-   * @param {{ status: string, duration: number }} result
+   * @param {{ retries?: number, titlePath(): string[] }} test
+   * @param {{ status: string, duration: number, retry?: number, errors?: { message?: string, stack?: string }[], annotations?: { type?: string, description?: string }[] }} result
    */
   onTestEnd(test, result) {
     this.counts.set(result.status, (this.counts.get(result.status) ?? 0) + 1);
     // titlePath: the root, the project, the file, describes and the test.
-    console.log(`  ${result.status} ${test.titlePath().filter(Boolean).slice(1).join(' › ')} (${seconds(result.duration)})`);
+    const title = test.titlePath().filter(Boolean).slice(1).join(' › ');
+    console.log(`  ${result.status} ${title} (${seconds(result.duration)})`);
+    for (const line of failureTrace(result)) console.log(`      ${line}`);
+    const resends = Object.entries(resendsOf(result.annotations ?? []));
+    if (resends.length > 0) {
+      const line = resends.map(([label, n]) => `${label} x${n}`).join(', ');
+      console.log(`      setup resends: ${line}`);
+      this.resent.push(`${title}: ${line}`);
+      this.resends += resends.reduce((sum, [, n]) => sum + n, 0);
+    }
+    for (const drop of dropsOf(result.annotations ?? [])) {
+      const line = dropLine({ leg: title, ...drop });
+      console.log(`      network drop: ${line.slice(title.length + 2)}`);
+      this.drops.push(line);
+    }
+    // A failed attempt that has a retry left: the retry runs only after a named infrastructure class (retry-gate.mjs;
+    // e2e/lib/reporter.ts records the verdict the retry reads).
+    const retry = result.retry ?? 0;
+    if (result.status !== 'passed' && result.status !== 'skipped' && retry < (test.retries ?? 0)) {
+      const infra = retryClass(result.errors);
+      console.log(infra ? `      retry: attempt ${retry + 1} failed on infrastructure (${infra}); it runs once more` : '      no retry: not infrastructure');
+      if (infra) this.retried.push(`${title}: ${infra}`);
+    }
   }
 
   onError() {
@@ -40,5 +235,8 @@ export default class CanaryReporter {
   onEnd(result) {
     const counts = [...this.counts].map(([status, n]) => `${n} ${status}`).join(', ') || 'no tests';
     console.log(`${result.status}: ${counts} in ${seconds(result.duration)}`);
+    console.log(`${this.retried.length} retr${this.retried.length === 1 ? 'y' : 'ies'} on infrastructure${this.retried.map((line) => `\n  ${line}`).join('')}`);
+    console.log(`${this.resends} setup resend${this.resends === 1 ? '' : 's'}${this.resent.map((line) => `\n  ${line}`).join('')}`);
+    console.log(`${this.drops.length} network drop${this.drops.length === 1 ? '' : 's'} (1006)${this.drops.map((line) => `\n  ${line}`).join('')}`);
   }
 }

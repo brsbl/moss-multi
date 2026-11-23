@@ -13,9 +13,17 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { deployedProblems, hookProblems } from './assert-deployed.mjs';
 import { canarySummary, recordingFor } from './canary-artifacts.mjs';
 import { canaryState } from './canary-state.mjs';
+import * as growth from './growth.mjs';
+import { growthProblems, GROWTH_CAP, PER_FULL_RUN, readGrowth } from './growth.mjs';
+import { localOnlyProblems, scanJourneys } from './local-only.mjs';
 import { preflightProblems } from './preflight.mjs';
+import { prunePlan, pruneSql, PRUNE_CAP } from './prune.mjs';
+import { gateRetry, recordVerdict, retryClass } from './retry-gate.mjs';
 import { gateProblems, runProblems } from './run-gate.mjs';
 import { forbiddenFiles, migrationProblems, parseJsonc, readStagingEnv, stagingConfig } from './staging-config.mjs';
+
+// The staging D1 lives in WNAM (wrangler d1 info): an AWS region beside it.
+const STAGING_PLACEMENT = { mode: 'targeted', region: 'aws:us-west-1' };
 import { testedRunProblems } from './tested-run.mjs';
 
 const COMMIT = 'c'.repeat(40);
@@ -73,6 +81,12 @@ describe('staging config', () => {
     });
     expect(config.rules).toEqual(BUILT.rules);
     expect(BUILT.name, 'the input is not mutated').toBe('moss-multi');
+  });
+
+  it('places the staging Worker, and the DOs it creates, beside the staging D1 (WNAM), not beside each caller', () => {
+    const config = stagingConfig(BUILT, readStagingEnv(), { d1Id: D1_ID, url: URL_STAGING });
+    expect(config.placement).toEqual(STAGING_PLACEMENT);
+    expect(BUILT.placement, 'the local build stays unplaced').toBeUndefined();
   });
 
   it('refuses a loopback or non-https URL, a placeholder D1 id outside a dry run, and renamed resources', () => {
@@ -305,8 +319,113 @@ describe('deploy-staging.yml', () => {
 
   it('uploads only the credential-free canary files', () => {
     const uploads = Object.values(WORKFLOW.jobs).flatMap((job) => (job.steps ?? []).filter((step) => step.uses?.startsWith('actions/upload-artifact')));
-    expect(uploads).toHaveLength(1);
-    expect(uploads[0].with.path.trim().split('\n').map((line) => line.trim()).sort()).toEqual(['e2e/canary-artifacts/requests.json', 'e2e/canary-artifacts/summary.json']);
+    expect(uploads.length).toBeGreaterThanOrEqual(1);
+    const allowed = {
+      tail: [['e2e/canary-artifacts/tail-summary.json']],
+      sp9: [['e2e/canary-artifacts/sp9-probe.json', 'e2e/canary-artifacts/summary.json']],
+      other: [['e2e/canary-artifacts/requests.json', 'e2e/canary-artifacts/summary.json']],
+    };
+    for (const [name, job] of Object.entries(WORKFLOW.jobs)) {
+      for (const upload of (job.steps ?? []).filter((step) => step.uses?.startsWith('actions/upload-artifact'))) {
+        expect(allowed[name === 'tail' || name === 'sp9' ? name : 'other'], name).toContainEqual(upload.with.path.trim().split('\n').map((line) => line.trim()).sort());
+      }
+    }
+  });
+
+  it('runs the full suite on staging only when dispatched with suite=full, after the canary, in both engines @p:R15', () => {
+    const input = WORKFLOW.on.workflow_dispatch.inputs.suite;
+    expect(input).toMatchObject({ type: 'choice', default: 'canary' });
+    expect(input.options).toEqual(['canary', 'full']);
+    const [name, job] = Object.entries(WORKFLOW.jobs).find(([, j]) => (j.steps ?? []).some((step) => /--project=staging-"\$BROWSER"/.test(step.run ?? ''))) ?? [];
+    expect(name, 'a job runs the staging projects').toBeTruthy();
+    expect(job.if).toMatch(/inputs\.suite == 'full'/);
+    expect(needsOf(name)).toEqual(expect.arrayContaining(['preflight', 'deploy', 'canary']));
+    expect(job.strategy.matrix.browser).toEqual(['chromium', 'webkit']);
+    expect(job.strategy['fail-fast']).toBe(false);
+    const run = job.steps.find((step) => /playwright test/.test(step.run ?? '')).run;
+    expect(run).toMatch(/--project=staging-"?\$\{?BROWSER/);
+    expect(run).not.toMatch(/--reporter|PLAYWRIGHT_/);
+    // The only narrowing is the suite_grep input, empty by default, for re-checking a staging-only failure, and the SP9
+    // probe, which the sp9 job ran (tail-summary.test.mjs).
+    expect(run.match(/--grep\b.*/g)).toEqual(['--grep-invert "SP9 near-cap probe")', '--grep "$GREP" --pass-with-no-tests); echo "Only the legs matching --grep $GREP"; fi']);
+    expect(WORKFLOW.on.workflow_dispatch.inputs.suite_grep).toMatchObject({ type: 'string', default: '' });
+    expect(job.steps.find((step) => /playwright test/.test(step.run ?? '')).env.GREP).toBe('${{ inputs.suite_grep }}');
+    // Per-run principals the deploy seeded, and this run's own budget. Only the step deriving the run's password holds
+    // the pool secret (seed.test.mjs).
+    const state = job.steps.find((step) => /canary-state\.mjs/.test(step.run ?? ''));
+    expect(state.run).toMatch(/--principals seeded/);
+    expect(state.run).toMatch(/--budget/);
+    expect(job.steps.filter((step) => /CANARY_POOL_SECRET/.test(JSON.stringify(step))).map((step) => step.name)).toEqual(['Suite password']);
+  });
+});
+
+describe('the staging suite @p:R15', () => {
+  it('tags every journey leg that needs the local stack @local-only, each with a reason', () => {
+    const scan = scanJourneys();
+    expect(scan.flatMap((spec) => spec.problems)).toEqual([]);
+    const local = Object.fromEntries(scan.filter((spec) => spec.localOnly.length > 0).map((spec) => [spec.file, spec.localOnly.length]));
+    for (const file of ['j00-roundtrip.spec.ts', 'j01-registers.spec.ts', 'j02-title.spec.ts', 'j03-connection.spec.ts', 'j04-hibernation.spec.ts']) {
+      expect(local[file], file).toBeGreaterThan(0);
+    }
+    // A hook read alone is not local: the owner-only instance route answers it on staging, so j09's cold wake and
+    // j04's warm creator run there.
+    expect(local['j09-revoke-live.spec.ts'], 'j09 cold runs on staging').toBeUndefined();
+    // The wake on staging is j04's owner-route leg, which stays in the suite.
+    expect(readFileSync(fileURLToPath(new URL('../../e2e/journeys/j04-hibernation.spec.ts', import.meta.url)), 'utf8')).toMatch(/owner-only route @staging/);
+  });
+
+  it('flags an untagged hook leg, a stack lever, the default hook probe, and a tag with no reason', () => {
+    const spec = [
+      "test('probes', async ({ stack }) => { await stack.docInstance('d'); });",
+      "test('restarts', async ({ stack }) => { await induce(stack, { docId, lever: 'restart', probe: p }); });",
+      "test('hook probe', async ({ stack }) => { await induce(stack, { docId }); });",
+      "test('tagged @local-only', async ({ stack }) => { await stack.pause(); });",
+      '// local-only: SIGSTOPs the stack.',
+      "test('explained @local-only', async ({ stack }) => { await stack.pause(); });",
+      "test('owner route', async ({ stack }) => { await induce(stack, { docId, lever: canary ? 'idle' : 'reset', probe: ownerProbe(stack, a) }); });",
+      'for (const s of [1, 2]) {',
+      '  // local-only: resets the DO through the hook.',
+      "  test(`loop ${s === 2 ? ' @local-only' : ''}`, async ({ stack }) => { if (s === 2) await stack.resetDoc('d'); });",
+      '}',
+      '// local-only: reads the DO through the loopback hook.',
+      "test('hook read @local-only', async ({ stack }) => { await stack.docInstance('d'); });",
+      '// local-only: serves a page on another port of the stack host.',
+      "test('other origin @local-only', async ({ stack }) => { await servePage(host); });",
+    ].join('\n');
+    const problems = localOnlyProblems(spec, 'x.spec.ts');
+    expect(problems).toHaveLength(5);
+    expect(problems[0]).toMatch(/x\.spec\.ts:1 uses a test hook/);
+    expect(problems[1]).toMatch(/:2 uses a restart or reset lever/);
+    expect(problems[2]).toMatch(/:3 uses induce\(\) with the hook probe/);
+    expect(problems[3]).toMatch(/:4 is @local-only with no/);
+    expect(problems[4]).toMatch(/:13 is @local-only but uses no local-only lever/);
+  });
+
+  it('runs every journey but the @local-only legs in each engine on staging, recording nothing', async () => {
+    const dir = mkdtempSync(join(os.tmpdir(), 'suite-config-'));
+    try {
+      const statePath = join(dir, 'state.json');
+      writeFileSync(statePath, JSON.stringify({ baseUrl: URL_STAGING }));
+      vi.stubEnv('STACK_STATE', statePath);
+      vi.resetModules();
+      const config = (await import('../../e2e/playwright.config.ts')).default;
+      for (const engine of ['chromium', 'webkit']) {
+        const project = config.projects.find((p) => p.name === `staging-${engine}`);
+        expect(project, engine).toBeTruthy();
+        expect(project.testDir).toMatch(/journeys$/);
+        expect(project.dependencies ?? []).toEqual([]);
+        expect(project.grep).toBeUndefined();
+        expect(project.grepInvert.test('j03 a leg @local-only @p:col-6')).toBe(true);
+        expect(project.grepInvert.test('j04-hibernation: proven through the owner-only route @staging')).toBe(false);
+        expect({ ...config.use, ...project.use }).toMatchObject({ browserName: engine, trace: 'off', screenshot: 'off', video: 'off' });
+        expect(project.retries, 'a staging leg may run once more, only after an infrastructure failure (retry-gate.mjs)').toBe(1);
+      }
+      expect(config.retries, 'nowhere else').toBe(0);
+      expect(config.projects.filter((p) => p.retries !== undefined).map((p) => p.name)).toEqual(['staging-chromium', 'staging-webkit']);
+    } finally {
+      vi.unstubAllEnvs();
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 
@@ -316,39 +435,57 @@ const PILOT_SECRETS = ['CLOUDFLARE_API_TOKEN', 'CLOUDFLARE_ACCOUNT_ID', 'PILOT_U
 const triggers = (workflow) => workflow.on ?? workflow[true];
 const PILOT_GROUP = "${{ inputs.target == 'pilot' && 'deploy-staging-pilot' || 'deploy-staging' }}";
 
-// Whether a job or step runs for a target. Only the conditions the deploy workflows use; anything else fails the test.
-function runsFor(condition, target) {
-  if (condition === undefined) return true;
+// The terms of a condition, joined by &&: always(), `inputs.<name> == '<value>'` and `needs.<job>.result == 'success'`.
+// Only the conditions the deploy workflows use; anything else fails the test.
+function terms(condition) {
+  if (condition === undefined) return [];
   const raw = String(condition).trim();
   const text = raw.startsWith('${{') && raw.endsWith('}}') ? raw.slice(3, -2).trim() : raw;
-  if (text === 'always()') return true;
-  const match = /^inputs\.target == '(\w+)'$/.exec(text);
-  if (!match) throw new Error(`unknown condition: ${condition}`);
-  return match[1] === target;
+  return text.split('&&').map((term) => {
+    const trimmed = term.trim();
+    if (trimmed === 'always()') return { text: trimmed, always: true };
+    const input = /^inputs\.(target|suite) == '(\w+)'$/.exec(trimmed);
+    if (input) return { text: trimmed, input: input[1], value: input[2] };
+    const need = /^needs\.(\w+)\.result == 'success'$/.exec(trimmed);
+    if (need) return { text: trimmed, need: need[1] };
+    throw new Error(`unknown condition: ${condition}`);
+  });
 }
 
-// The jobs that run for a target, each with only its running steps: a job whose needs did not all run is skipped.
-function runningFor(workflow, target) {
+// Whether a job or step runs for the dispatch inputs, given the jobs that ran.
+const runsFor = (condition, inputs, ran = {}) =>
+  terms(condition).every((term) => term.always || (term.need ? Boolean(ran[term.need]) : inputs[term.input] === term.value));
+
+// The jobs that run for the dispatch inputs, each with only its running steps: a job whose needs did not all run is
+// skipped, unless its condition holds always().
+function runningFor(workflow, target, suite = 'canary') {
+  const inputs = { target, suite };
   const ran = {};
   const pending = Object.entries(workflow.jobs);
   while (pending.length) {
     const at = pending.findIndex(([, job]) => [job.needs ?? []].flat().every((need) => need in ran || !(need in workflow.jobs)));
     expect(at, 'the job graph has no cycle').toBeGreaterThanOrEqual(0);
     const [[name, job]] = pending.splice(at, 1);
-    const needsRan = [job.needs ?? []].flat().every((need) => ran[need]);
-    ran[name] = needsRan && runsFor(job.if, target) ? { ...job, steps: job.steps?.filter((step) => runsFor(step.if, target)) } : null;
+    const needsRan = terms(job.if).some((term) => term.always) || [job.needs ?? []].flat().every((need) => ran[need]);
+    ran[name] = needsRan && runsFor(job.if, inputs, ran) ? { ...job, steps: job.steps?.filter((step) => runsFor(step.if, inputs, ran)) } : null;
   }
   return Object.fromEntries(Object.entries(ran).filter(([, job]) => job));
 }
 
-// The workflow as target=staging sees it: no target input, no pilot job, no staging-only condition.
+// The workflow as target=staging sees it: no target input, no pilot job, no target term in any condition.
 function stagingView(workflow) {
-  const strip = ({ if: condition, ...rest }) => (condition === undefined || runsFor(condition, 'pilot') !== runsFor(condition, 'staging') ? rest : { ...rest, if: condition });
+  const forStaging = (condition) => terms(condition).every(({ input, value }) => input !== 'target' || value === 'staging');
+  const strip = ({ if: condition, ...rest }) => {
+    if (condition === undefined) return rest;
+    const kept = terms(condition).filter(({ input }) => input !== 'target');
+    if (kept.length === terms(condition).length) return { ...rest, if: condition };
+    return kept.length ? { ...rest, if: kept.map(({ text }) => text).join(' && ') } : rest;
+  };
   const on = structuredClone(triggers(workflow));
   delete on.workflow_dispatch.inputs.target;
   const jobs = {};
   for (const [name, job] of Object.entries(workflow.jobs)) {
-    if (!runsFor(job.if, 'staging')) continue;
+    if (!forStaging(job.if)) continue;
     jobs[name] = strip({ ...job, ...(job.steps ? { steps: job.steps.map(strip) } : {}) });
   }
   const { name, permissions, env } = workflow;
@@ -363,22 +500,26 @@ describe('deploy-staging.yml target', () => {
     expect(triggers(WORKFLOW).workflow_dispatch.inputs.target).toMatchObject({ type: 'choice', options: ['staging', 'pilot'], default: 'staging' });
   });
 
-  it('target=staging runs exactly the workflow registered on main', () => {
+  it('target=staging runs the staging workflow the pilot leaves unchanged', () => {
     const running = runningFor(WORKFLOW, 'staging');
-    expect(Object.keys(running)).toEqual(['preflight', 'deploy', 'canary']);
+    expect(Object.keys(running)).toEqual(['preflight', 'deploy', 'canary', 'drops']);
     expect(running.preflight.steps).toHaveLength(WORKFLOW.jobs.preflight.steps.length);
-    // deploy-staging.yml at main a3bb1b31 through stagingView: byte-identical jobs, steps, triggers, env and concurrency.
-    // A deliberate change to the staging jobs updates this hash.
-    expect(sha256(stagingView(WORKFLOW))).toBe('ebb9449a5ac7380ba7f741dc661350d1c5437611a50f00fe0d22397f889e8f72');
+    expect(Object.keys(runningFor(WORKFLOW, 'staging', 'full'))).toEqual(['preflight', 'deploy', 'canary', 'sp9', 'tail', 'suite', 'drops']);
+    // deploy-staging.yml at t/T8.F (T8.2's canary, SP9 probe and full suite; T8.F's suite-only growth count and the
+    // network drops job, reading every attempt's drops and request counts; one failed-only re-run of the suite) through stagingView: the same jobs, steps, triggers, env and concurrency. A deliberate change to
+    // the staging jobs updates this hash.
+    expect(sha256(stagingView(WORKFLOW))).toBe('324f3474ba90d4fef3dba5cd1bb94743ff583752c213a671c10987536fc1790d');
   });
 
   it('target=pilot runs only the gate, then deploy-pilot.yml: no staging deploy, canary or upload', () => {
     const running = runningFor(WORKFLOW, 'pilot');
     expect(Object.keys(running)).toEqual(['preflight', 'pilot']);
+    expect(Object.keys(runningFor(WORKFLOW, 'pilot', 'full'))).toEqual(['preflight', 'pilot']);
     expect(running.pilot).toMatchObject({ needs: 'preflight', uses: './.github/workflows/deploy-pilot.yml', with: { ci_run_id: '${{ inputs.ci_run_id }}' } });
     expect(running.preflight.steps.map((step) => step.id ?? step.uses)).toEqual(['actions/checkout@v6', 'gate']);
     expect(running.preflight.steps.at(-1).run).toMatch(/run-gate\.mjs/);
     for (const name of ['deploy', 'canary']) expect(WORKFLOW.jobs[name].if, `${name} is staging-only`).toBe("inputs.target == 'staging'");
+    for (const name of ['sp9', 'tail', 'suite']) expect(WORKFLOW.jobs[name].if, `${name} is staging-only`).toMatch(/inputs\.target == 'staging' && inputs\.suite == 'full'/);
   });
 
   it('queues the pilot apart from staging, and apart from the group deploy-pilot.yml holds', () => {
@@ -387,7 +528,7 @@ describe('deploy-staging.yml target', () => {
   });
 
   it('scopes secrets per target: staging never sees a pilot secret, the pilot only its own and the Cloudflare ones', () => {
-    const staging = JSON.stringify(runningFor(WORKFLOW, 'staging'));
+    const staging = JSON.stringify(runningFor(WORKFLOW, 'staging', 'full'));
     expect(staging).not.toMatch(/PILOT_/);
     const pilot = runningFor(WORKFLOW, 'pilot');
     expect(JSON.stringify(pilot.preflight), 'the gate holds no secret').not.toMatch(/secrets\./);
@@ -495,6 +636,124 @@ describe('canary recording', () => {
       expect(output).toMatch(/SYNTHETIC-CALLLOG/);
     }, 120_000);
 
+    it("prints a failure's suite source lines, kind and invariant facts, and no text of the error", async () => {
+      const { failureTrace } = await import('./canary-reporter.mjs');
+      const message = [
+        'invariants: 5 finding(s)',
+        `  invariant 1 [ada] HTTP 404 GET ${URL_STAGING}/s/Zq9SHARE-TOKEN7x/assets/9f8e7d6c-5b4a-4321-8fed-cba987654321 (undeclared)`,
+        `  invariant 1 [ada] console error: Failed to load resource (${URL_STAGING}/api/me?token=SECRET)`,
+        `  invariant 3 [ben] 9f8e7d6c-5b4a-4321-8fed-cba987654321: 2 socket opens in one document, 1 allowed`,
+        '  invariant 7 [ben] 9f8e7d6c-5b4a-4321-8fed-cba987654321 title: "Suggest refusal" appears 0 time(s), typed 1',
+        `  invariant 2 [cy] cookie: ${SESSION}`,
+      ].join('\n');
+      const stack = [
+        `Error: ${message}`,
+        `    at Actors.fail (/__w/moss-multi/moss-multi/e2e/lib/actors.ts:260:11)`,
+        `    at /__w/moss-multi/moss-multi/e2e/journeys/j09-revoke-live.spec.ts:121:5`,
+        `    at fetch (${URL_STAGING}/api/me?token=SECRET:1:1)`,
+      ].join('\n');
+      const lines = failureTrace({ errors: [{ message, stack }] });
+      expect(lines).toEqual([
+        'at e2e/lib/actors.ts:260 < e2e/journeys/j09-revoke-live.spec.ts:121',
+        'invariant 1 [ada] HTTP 404 GET /s/:id/assets/:id',
+        'invariant 1 [ada] console error',
+        'invariant 3 [ben] 2 socket opens, 1 allowed',
+        'invariant 7 [ben] title appears 0, typed 1',
+        'invariant 2 [cy]',
+      ]);
+      expect(lines.join('\n')).not.toMatch(/SYNTHETIC|SHARE-TOKEN|SECRET|Suggest refusal|workers\.dev|9f8e7d6c/);
+      expect(failureTrace({ status: 'passed' })).toEqual([]);
+      const timedOut = { message: `expect(locator).toHaveAttribute(expected) failed\nLocator: a[href="${URL_STAGING}/s/SHARE-TOKEN"]\nTimeout 10000ms exceeded`, stack: '' };
+      expect(failureTrace({ errors: [timedOut] })).toEqual(['kind timeout, expect']);
+    });
+
+    it("names a failure that has no kind and no finding by its error class and its frames in the suite's .js and deploy scripts", async () => {
+      const { failureTrace } = await import('./canary-reporter.mjs');
+      const stack = [
+        `TypeError: Cannot read properties of null (reading '${SESSION}')`,
+        '    at fieldTexts (/__w/moss-multi/moss-multi/e2e/lib/detectors.js:141:22)',
+        '    at gateRetry (/__w/moss-multi/moss-multi/scripts/deploy/retry-gate.mjs:79:11)',
+        `    at fetch (${URL_STAGING}/api/me?token=SECRET:1:1)`,
+      ].join('\n');
+      const lines = failureTrace({ errors: [{ message: `TypeError: Cannot read properties of null (reading '${SESSION}')`, stack }] });
+      expect(lines).toEqual(['at e2e/lib/detectors.js:141 < scripts/deploy/retry-gate.mjs:79', 'error TypeError']);
+      expect(lines.join('\n')).not.toMatch(/SECRET|reading/);
+      expect(failureTrace({ errors: [{ message: `${SESSION} went wrong`, stack: '' }] }), 'no class, nothing printed').toEqual([]);
+    });
+
+    it('prints a field still unbound and numeric expected and received values, never text values', async () => {
+      const { failureTrace } = await import('./canary-reporter.mjs');
+      const unbound = { message: 'invariants: 1 finding(s)\n  invariant 7 [ben] 9f8e7d6c-5b4a-4321-8fed-cba987654321 body: still unbound after 15 s', stack: '' };
+      expect(failureTrace({ errors: [unbound] })).toEqual(['invariant 7 [ben] body still unbound']);
+      const principals = { message: 'invariants: 2 finding(s)\n  invariant 8 [journey] 1 distinct principal(s); a journey needs at least 2 (or actors.solo(reason))\n  invariant 8 [journey] ada@example.com is not a test principal (@example.invalid)', stack: '' };
+      expect(failureTrace({ errors: [principals] })).toEqual(['invariant 8 [journey] 1 distinct principal(s)', 'invariant 8 [journey] not a test principal']);
+      const late = { message: 'Error: within 1 s of the demotion\n\nexpect(received).toBeLessThan(expected)\n\nExpected: < 1000\nReceived:   1234', stack: '' };
+      expect(failureTrace({ errors: [late] })).toEqual(['kind expect', 'expected < 1000, received 1234']);
+      const text = { message: `expect(received).toBe(expected)\n\nExpected: "${SESSION}"\nReceived: "SYNTHETIC text"`, stack: '' };
+      expect(failureTrace({ errors: [text] })).toEqual(['kind expect']);
+      const kinds = { message: [
+        'invariants: 4 finding(s)',
+        `  invariant 1 [ada] console error: Failed to load resource: the server responded with a status of 404 () (${URL_STAGING}/api/docs/x/backlinks)`,
+        `  invariant 1 [ben] console error: WebSocket connection to '${URL_STAGING.replace('https', 'wss')}/parties/doc-d-o/x?token=SECRET' failed`,
+        `  invariant 1 [cy] console error: WebSocket connection to '${URL_STAGING.replace('https', 'wss')}/api/workspace/ws' failed: SECRET`,
+        '  invariant 3 [ben] 9f8e7d6c: 2 socket opens in one document, 1 allowed (1 errored; #1 closed after 12 ms: 1013 unvalidated SECRET, then 1006; #2 closed after 40 ms: asked 1000; #3 open)',
+        '  invariant 3 [ben] 9f8e7d6c: a socket dropped (1006) and no later socket of its document reached sync',
+        '  invariant 3 [cy] 9f8e7d6c: 1 try-again closes (1013), 0 declared',
+      ].join('\n'), stack: '' };
+      const facts = failureTrace({ errors: [kinds] });
+      expect(facts).toEqual([
+        'invariant 1 [ada] console error (load 404)',
+        'invariant 1 [ben] console error (websocket: doc)',
+        'invariant 1 [cy] console error (websocket: workspace)',
+        'invariant 3 [ben] 2 socket opens, 1 allowed (1 errored; 12 ms (1013 then 1006), 40 ms (asked 1000), open)',
+        'invariant 3 [ben] a 1006 drop never recovered to sync',
+        'invariant 3 [cy] 1 try-again closes (1013), 0 declared',
+      ]);
+      expect(facts.join('\n')).not.toMatch(/SECRET|workers\.dev|backlinks/);
+    });
+
+    it("prints a failed wake proof's induction problems as fixed facts, never the instance ids", async () => {
+      const { failureTrace } = await import('./canary-reporter.mjs');
+      const esc = String.fromCharCode(27);
+      const message = [
+        'Error: the revocation met a woken DO',
+        '',
+        `${esc}[2mexpect(${esc}[22m${esc}[31mreceived${esc}[39m${esc}[2m).${esc}[22mtoEqual${esc}[2m(${esc}[22m${esc}[32mexpected${esc}[39m${esc}[2m)${esc}[22m`,
+        '+ Array [',
+        `+   "instance 9f8e7d6c-SYNTHETIC still serves the doc",`,
+        '+   "instance constructed at 1760000000000, not after the baseline\'s 1760000000000",',
+        '+   "instance constructed 31234 ms before the decisive action, so something else woke it",',
+        '+   "instance constructed 4321 ms after the decisive action ended, so something else woke it",',
+        '+ ]',
+      ].join('\n');
+      const lines = failureTrace({ errors: [{ message, stack: '' }] });
+      expect(lines).toEqual([
+        'kind expect',
+        'induction: the same instance serves the doc',
+        'induction: not constructed after the baseline',
+        'induction: constructed 31234 ms before the decisive action',
+        'induction: constructed 4321 ms after the decisive action ended',
+      ]);
+      expect(lines.join('\n')).not.toMatch(/SYNTHETIC|9f8e7d6c|1760000000000/);
+      const induced = { message: 'Error: hibernation not induced (idle): instance abc still serves the doc', stack: '' };
+      expect(failureTrace({ errors: [induced] })).toEqual(['induction: the same instance serves the doc']);
+    });
+
+    it("prints a refused sign-in's status and a failed request's method and route, never the address, body or cookie", async () => {
+      const { failureTrace } = await import('./canary-reporter.mjs');
+      const signUp = { message: 'Error: sign-up for mm-SYNTHETIC-ada-1@example.invalid: 503 {"message":"SECRET"}', stack: '' };
+      expect(failureTrace({ errors: [signUp] })).toEqual(['kind auth', 'auth: sign-up answered 503']);
+      const timedOut = { message: [
+        'apiRequestContext.post: Timeout 30000ms exceeded.',
+        'Call log:',
+        `  - → POST ${URL_STAGING}/api/docs/9f8e7d6c-5b4a-4321-8fed-cba987654321/links?share=SECRET`,
+        '  - cookie: better-auth.session_token=SECRET',
+      ].join('\n'), stack: '' };
+      const lines = failureTrace({ errors: [timedOut] });
+      expect(lines).toEqual(['kind timeout, request', 'request: POST /api/docs/:id/links']);
+      expect([...lines, ...failureTrace({ errors: [signUp] })].join('\n')).not.toMatch(/SECRET|SYNTHETIC|workers\.dev|9f8e7d6c/);
+    });
+
     it('withholds a run-level error and test output off loopback', async () => {
       const { default: CanaryReporter } = await import('./canary-reporter.mjs');
       const lines = [];
@@ -530,6 +789,23 @@ describe('canary recording', () => {
     expect(summary).toEqual({ tests: [{ title: 'journeys/j00-shell.spec.ts › j00 shell › signs in', status: 'failed', duration: 1234 }] });
     expect(JSON.stringify(summary)).not.toMatch(/SECRET|trace\.zip|Cookie/);
   });
+
+  it("keeps a leg's measure annotation as numbers only: the SP9 near-cap upload's bytes and client time", () => {
+    const passed = { status: 'passed', duration: 23_539 };
+    const annotations = [
+      { type: 'sp9-near-cap', description: JSON.stringify({ bytes: 99_614_720, uploadMs: 21_004, url: 'https://x.workers.dev/?token=SECRET' }) },
+      { type: 'note', description: 'SECRET free text' },
+    ];
+    const results = { suites: [{ title: 'j11.spec.ts', specs: [{ title: 'probe', tests: [{ status: 'expected', annotations, results: [passed] }] }] }] };
+    const summary = canarySummary(results);
+    expect(summary).toEqual({ tests: [{ title: 'j11.spec.ts › probe', status: 'passed', duration: 23_539, measures: { 'sp9-near-cap': { bytes: 99_614_720, uploadMs: 21_004 } } }] });
+    expect(JSON.stringify(summary)).not.toMatch(/SECRET|workers\.dev/);
+  });
+
+  it('names a leg that passed only on its retry flaky', () => {
+    const results = { suites: [{ title: 'j01.spec.ts', specs: [{ title: 'leg', tests: [{ status: 'flaky', results: [{ status: 'failed', duration: 5 }, { status: 'passed', duration: 7 }] }] }] }] };
+    expect(canarySummary(results)).toEqual({ tests: [{ title: 'j01.spec.ts › leg', status: 'flaky', duration: 7, retry: 'not infrastructure' }] });
+  });
 });
 
 describe('the canary state', () => {
@@ -542,6 +818,12 @@ describe('the canary state', () => {
       expected: base.expected,
       canary: { budget: 2000, idleMs: 20_000, poolSecretEnv: 'CANARY_POOL_SECRET', budgetPath: '/tmp/canary/requests.json' },
     });
+  });
+
+  it('signs in the fixed pool by default, and per-run principals for the full suite', () => {
+    expect(canaryState({ ...base, budget: 2000, idleMs: 20_000 }).canary.principals).toBe('pool');
+    expect(canaryState({ ...base, budget: 5000, idleMs: 20_000, principals: 'per-run' }).canary.principals).toBe('per-run');
+    expect(() => canaryState({ ...base, budget: 2000, idleMs: 20_000, principals: 'mine' })).toThrow(/principals/);
   });
 
   it('refuses an idle under 15 s (SP14) and a missing budget', () => {
@@ -629,5 +911,276 @@ describe('the deployed-build assertion', () => {
     } finally {
       options.hooks = false;
     }
+  });
+});
+
+describe('staging growth (A§21) @p:R15', () => {
+  // `wrangler d1 execute --json` for the count query deploy-staging.yml runs before a full suite.
+  const counted = (docs, users, bytes) => JSON.stringify([{ results: [{ docs, users, suiteDocs: docs - 2, suiteUsers: users - 3 }], success: true, meta: { size_after: bytes } }]);
+
+  it('reads the counts and the database size', () => {
+    expect(readGrowth(counted(4252, 6958, 18_710_528))).toEqual({ docs: 4252, users: 6958, suiteDocs: 4250, suiteUsers: 6955, d1Bytes: 18_710_528 });
+    expect(() => readGrowth('[]')).toThrow(/count/);
+    expect(() => readGrowth(counted('x', 1, 1))).toThrow(/count/);
+  });
+
+  it('refuses a full suite that would carry staging past its cap, and says what the owner decides', () => {
+    expect(growthProblems({ suiteDocs: 4252, suiteUsers: 6958, d1Bytes: 18_710_528 })).toEqual([]);
+    const near = growthProblems({ suiteDocs: GROWTH_CAP.suiteDocs - PER_FULL_RUN.suiteDocs + 1, suiteUsers: 0, d1Bytes: 0 });
+    expect(near).toHaveLength(1);
+    expect(near[0]).toMatch(/suiteDocs/);
+    expect(near[0]).toMatch(/owner/);
+    expect(growthProblems({ suiteDocs: 0, suiteUsers: GROWTH_CAP.suiteUsers, d1Bytes: GROWTH_CAP.d1Bytes })).toHaveLength(2);
+  });
+
+  it("counts the Worker's Durable Objects with stored data, which the prune never resets: DocDOs are capped, PrincipalDOs reported", async () => {
+    const zero = { docs: 0, users: 0, suiteDocs: 0, suiteUsers: 0, d1Bytes: 0, docObjects: 0, principalObjects: 0 };
+    expect(growthProblems(zero)).toEqual([]);
+    const docs = growthProblems({ ...zero, docObjects: GROWTH_CAP.docObjects - PER_FULL_RUN.docObjects + 1 });
+    expect(docs).toHaveLength(1);
+    expect(docs[0]).toMatch(/docObjects/);
+    // Every sign-in can add a PrincipalDO, so outsiders can grow them: reported past a ceiling, never refused.
+    expect(growthProblems({ ...zero, principalObjects: growth.GROWTH_CEILING.principalObjects + 1 })).toEqual([]);
+    expect(growth.growthNotices({ ...zero, principalObjects: growth.GROWTH_CEILING.principalObjects + 1 })).toHaveLength(1);
+    // Cloudflare's object list for each namespace of the staging Worker, paged by cursor.
+    const calls = [];
+    const fetcher = async (url) => {
+      calls.push(String(url));
+      const { pathname, searchParams } = new URL(url);
+      if (pathname.endsWith('/namespaces')) {
+        return Response.json({ success: true, result: [
+          { id: 'n1', script: 'moss-multi-staging', class: 'DocDO' }, { id: 'n2', script: 'moss-multi-staging', class: 'PrincipalDO' },
+          { id: 'n3', script: 'moss-collab-staging', class: 'DocDO' },
+        ] });
+      }
+      if (pathname.includes('/n1/')) {
+        return Response.json(searchParams.get('cursor') === 'p2'
+          ? { success: true, result: [{ id: 'c', hasStoredData: true }], result_info: { cursor: '' } }
+          : { success: true, result: [{ id: 'a', hasStoredData: true }, { id: 'b', hasStoredData: false }], result_info: { cursor: 'p2' } });
+      }
+      if (pathname.includes('/n2/')) return Response.json({ success: true, result: [{ id: 'd', hasStoredData: true }], result_info: {} });
+      throw new Error(`unexpected ${pathname}`);
+    };
+    expect(typeof growth.countObjects).toBe('function');
+    await expect(growth.countObjects({ accountId: 'acc', token: 't', fetch: fetcher })).resolves.toEqual({ docObjects: 2, principalObjects: 1 });
+    expect(calls.some((url) => url.includes('/n3/'))).toBe(false);
+    const refused = async () => Response.json({ success: false, errors: [{ code: 10000 }] }, { status: 403 });
+    await expect(growth.countObjects({ accountId: 'acc', token: 't', fetch: refused })).rejects.toThrow(/403/);
+  });
+
+  it('checks the cap before a full-suite deploy, and never for the canary', () => {
+    const steps = WORKFLOW.jobs.deploy.steps;
+    const check = steps.findIndex((step) => /growth\.mjs/.test(step.run ?? ''));
+    expect(check, 'a growth check step').toBeGreaterThan(-1);
+    expect(steps[check].if).toMatch(/inputs\.suite == 'full'/);
+    expect(check).toBeLessThan(steps.findIndex((step) => /WRANGLER" deploy/.test(step.run ?? '')));
+    // The count reads docs and user, which a first deploy's fresh D1 has only once the migrations ran.
+    expect(check, 'after the D1 migrations').toBeGreaterThan(steps.findIndex((step) => /d1 migrations apply/.test(step.run ?? '')));
+    expect(steps[check].run).toMatch(/d1 execute moss-multi-staging --remote --json/);
+    expect(steps[check].run).toMatch(/growth\.mjs objects "\$RUNNER_TEMP\/objects\.json"/);
+    expect(steps[check].run).toMatch(/growth\.mjs check "\$RUNNER_TEMP\/growth\.json" "\$RUNNER_TEMP\/objects\.json"/);
+  });
+});
+
+describe('the staging retry gate (T8.2)', () => {
+  const failed = (message) => [{ message, stack: '' }];
+
+  it('names only an explicitly matched infrastructure failure, on its first line', () => {
+    expect(retryClass(failed('InfraBlocked: sign-in: a Cloudflare error page'))).toBe('cloudflare error page');
+    expect(retryClass(failed('InfraBlocked: POST /api/docs: D1 7429 (overloaded)'))).toBe('d1 overloaded');
+    expect(retryClass(failed('InfraBlocked: GET /api/docs: the stack is unreachable'))).toBe('stack unreachable');
+    expect(retryClass(failed(`InfraBlocked: /api/version unreachable at ${URL_STAGING}: fetch failed (ECONNRESET)\nlog tail`))).toBe('stack unreachable');
+    expect(retryClass(failed(`page.goto: net::ERR_CONNECTION_RESET at ${URL_STAGING}/d/x`))).toBe('connection reset');
+    expect(retryClass(failed('apiRequestContext.post: socket hang up'))).toBe('connection reset');
+    expect(retryClass(failed('page.reload: net::ERR_NETWORK_CHANGED'))).toBe('network changed');
+    // Product assertions, invariants and timeouts are never infrastructure, whatever their call log mentions.
+    expect(retryClass(failed('Error: expect(locator).toHaveCount(expected) failed\n\nExpected: 0\nReceived: 1'))).toBeNull();
+    expect(retryClass(failed('invariants: 1 finding(s)\n  invariant 3 [ben] d: 3 socket opens in one document, 2 allowed'))).toBeNull();
+    expect(retryClass(failed('Test timeout of 240000ms exceeded.'))).toBeNull();
+    expect(retryClass(failed('Error: expect(received).toBe(expected)\nCall log:\n  - socket hang up net::ERR_CONNECTION_RESET'))).toBeNull();
+    expect(retryClass([])).toBeNull();
+    expect(retryClass(undefined)).toBeNull();
+  });
+
+  it('never retries a Worker exception, a wrong build or a malformed /api/version, though each is an InfraBlocked', async () => {
+    // Cloudflare 1101 and 1102 are the Worker's own JavaScript throwing or passing its limits: a product failure.
+    expect(retryClass(failed('InfraBlocked: POST /api/docs: Worker 1101'))).toBeNull();
+    expect(retryClass(failed('InfraBlocked: POST /api/docs: Worker 1102'))).toBeNull();
+    // assertProvenance (e2e/lib/stack.ts) runs in the stack fixture, before the actors fixture's gate.
+    const wrongBuild = failed('InfraBlocked: /api/version commit is 0123abc, the stack was started on 4567def');
+    expect(retryClass(wrongBuild)).toBeNull();
+    expect(retryClass(failed('InfraBlocked: /api/version answered malformed JSON: Unexpected token < in JSON'))).toBeNull();
+    expect(retryClass(failed(`InfraBlocked: /api/version unreachable at ${URL_STAGING}: The operation was aborted due to timeout`))).toBeNull();
+    expect(retryClass(failed('InfraBlocked: the suite password MOSS_SUITE_PASSWORD is not set'))).toBeNull();
+    const outputDir = mkdtempSync(join(os.tmpdir(), 'retry-gate-'));
+    try {
+      // A provenance mismatch on the first attempt fails the run even if the retry would pass.
+      expect(recordVerdict(outputDir, 'wrong-build', 0, wrongBuild)).toBeNull();
+      await expect(gateRetry({ testId: 'wrong-build', retry: 1, project: { outputDir } }, 50)).rejects.toThrow(/retry refused/);
+      expect(recordVerdict(outputDir, 'worker-1101', 0, failed('InfraBlocked: GET /api/docs/x/content: Worker 1101'))).toBeNull();
+      await expect(gateRetry({ testId: 'worker-1101', retry: 1, project: { outputDir } }, 50)).rejects.toThrow(/retry refused/);
+    } finally {
+      rmSync(outputDir, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses a retry when any of the attempt\'s errors is not infrastructure, whichever came first', async () => {
+    // The actors fixture checks the invariants after the body, so their error follows the body's.
+    const invariantAfterReset = [
+      { message: 'apiRequestContext.post: socket hang up' },
+      { message: 'invariants: 1 finding(s)\n  invariant 7 [ada] d: lost text' },
+    ];
+    expect(retryClass(invariantAfterReset)).toBeNull();
+    expect(retryClass([{ message: 'Error: expect(received).toBe(expected)' }, { message: 'page.goto: net::ERR_CONNECTION_RESET' }])).toBeNull();
+    expect(retryClass([{ message: 'page.goto: net::ERR_CONNECTION_RESET' }, { message: 'apiRequestContext.post: socket hang up' }])).toBe('connection reset');
+    const outputDir = mkdtempSync(join(os.tmpdir(), 'retry-gate-'));
+    try {
+      expect(recordVerdict(outputDir, 'mixed', 0, invariantAfterReset)).toBeNull();
+      await expect(gateRetry({ testId: 'mixed', retry: 1, project: { outputDir } }, 50)).rejects.toThrow(/retry refused/);
+    } finally {
+      rmSync(outputDir, { recursive: true, force: true });
+    }
+  });
+
+  it('lets a retry run only after its failed attempt was recorded as infrastructure', async () => {
+    const outputDir = mkdtempSync(join(os.tmpdir(), 'retry-gate-'));
+    try {
+      const info = (testId, retry) => ({ testId, retry, project: { outputDir } });
+      expect(await gateRetry(info('first', 0), 50)).toBeNull();
+      expect(recordVerdict(outputDir, 'product', 0, failed('Error: expect(locator).toHaveCount(expected) failed'))).toBeNull();
+      await expect(gateRetry(info('product', 1), 50)).rejects.toThrow(/retry refused.*product/);
+      expect(recordVerdict(outputDir, 'net', 0, failed('page.goto: net::ERR_CONNECTION_CLOSED'))).toBe('connection reset');
+      expect(await gateRetry(info('net', 1), 50)).toBe('connection reset');
+      await expect(gateRetry(info('unrecorded', 1), 50)).rejects.toThrow(/retry refused/);
+    } finally {
+      rmSync(outputDir, { recursive: true, force: true });
+    }
+  });
+
+  it('prints every retry and why, and that a product failure is not retried', async () => {
+    const { default: CanaryReporter } = await import('./canary-reporter.mjs');
+    const lines = [];
+    const log = vi.spyOn(console, 'log').mockImplementation((...args) => lines.push(args.join(' ')));
+    try {
+      const reporter = new CanaryReporter();
+      const test = (title) => ({ retries: 1, titlePath: () => ['', 'staging-webkit', 'j01.spec.ts', title] });
+      reporter.onTestEnd(test('product'), { status: 'failed', duration: 5, retry: 0, errors: failed('Error: expect(locator).toHaveCount(expected) failed') });
+      reporter.onTestEnd(test('network'), { status: 'failed', duration: 5, retry: 0, errors: failed('page.goto: net::ERR_CONNECTION_RESET') });
+      reporter.onTestEnd(test('network'), { status: 'passed', duration: 6, retry: 1, errors: [] });
+      reporter.onEnd({ status: 'failed', duration: 20 });
+    } finally {
+      log.mockRestore();
+    }
+    const text = lines.join('\n');
+    expect(text).toMatch(/no retry: not infrastructure/);
+    expect(text).toMatch(/retry: attempt 1 failed on infrastructure \(connection reset\)/);
+    expect(text).toMatch(/1 retry on infrastructure\n {2}j01\.spec\.ts › network: connection reset/);
+  });
+
+  const resend = (kind, cause, count) => ({ type: 'setup-resend', description: JSON.stringify({ kind, cause, count }) });
+
+  it('prints and counts every setup resend after a 429 or a lost forward, and no text of a malformed one', async () => {
+    const { default: CanaryReporter } = await import('./canary-reporter.mjs');
+    const lines = [];
+    const log = vi.spyOn(console, 'log').mockImplementation((...args) => lines.push(args.join(' ')));
+    try {
+      const reporter = new CanaryReporter();
+      const test = (title) => ({ retries: 0, titlePath: () => ['', 'staging-webkit', 'j01.spec.ts', title] });
+      const annotations = [resend('sign-in', '429', 2), resend('sign-up', 'lost forward', 1), { type: 'setup-resend', description: 'secret@example.invalid' }];
+      reporter.onTestEnd(test('a'), { status: 'passed', duration: 5, retry: 0, errors: [], annotations });
+      reporter.onTestEnd(test('b'), { status: 'passed', duration: 5, retry: 0, errors: [], annotations: [] });
+      reporter.onEnd({ status: 'passed', duration: 20 });
+    } finally {
+      log.mockRestore();
+    }
+    const text = lines.join('\n');
+    expect(text).toMatch(/ {6}setup resends: sign-in after a 429 x2, sign-up after a lost forward x1\n/);
+    expect(text).toMatch(/3 setup resends\n {2}j01\.spec\.ts › a: sign-in after a 429 x2, sign-up after a lost forward x1/);
+    expect(text).not.toContain('secret');
+  });
+
+  it("counts a leg's setup resends in the summary, every attempt's", () => {
+    const results = { suites: [{ title: 'j01.spec.ts', specs: [{ title: 'leg', tests: [{ status: 'expected', results: [
+      { status: 'passed', duration: 7, annotations: [resend('sign-in', '429', 1), resend('sign-in', '429', 2), { type: 'setup-resend', description: '{"kind":"x"}' }] },
+    ] }] }] }] };
+    expect(canarySummary(results)).toEqual({ tests: [{ title: 'j01.spec.ts › leg', status: 'passed', duration: 7, resends: { 'sign-in after a 429': 3 } }] });
+  });
+
+  it("names a flaky leg's infrastructure class in the summary", () => {
+    const results = { suites: [{ title: 'j01.spec.ts', specs: [{ title: 'leg', tests: [{ status: 'flaky', results: [
+      { status: 'failed', duration: 5, errors: failed('page.goto: net::ERR_CONNECTION_RESET') }, { status: 'passed', duration: 7 },
+    ] }] }] }] };
+    expect(canarySummary(results)).toEqual({ tests: [{ title: 'j01.spec.ts › leg', status: 'flaky', duration: 7, retry: 'connection reset' }] });
+  });
+});
+
+describe('the staging prune (A§21, T8.2) @p:R15', () => {
+  const NOW = Date.UTC(2026, 9, 14, 12);
+  const selected = (rows) => JSON.stringify([{ results: rows, success: true, meta: {} }]);
+  const counted = (users, docs) => JSON.stringify([{ results: [{ users, docs }], success: true, meta: {} }]);
+  const row = (n, email = `mm-staging-1-1-chromium-3-w0-ada-${n}@example.invalid`) => ({ id: `u${n}`, email });
+
+  it('selects only per-run principals older than the cutoff, by their run provenance, never the canary pool or the demo accounts', () => {
+    const { count, select } = pruneSql(NOW);
+    for (const sql of [count, select]) {
+      // A staging run's token (`staging-<run id>`, the suite and canary RUN_ID) or this run's seed token, never a bare
+      // `mm-`, by the exact predicate the plan applies (staging-guards.test.mjs runs both on SQLite).
+      expect(sql).toContain("GLOB 'mm-staging-[0-9]*'");
+      expect(sql).toContain("GLOB 'mm-s[0-9]*'");
+      expect(sql).not.toMatch(/LIKE/);
+      expect(sql).toContain(`created_at < ${NOW - 2 * 60 * 60 * 1000}`);
+    }
+    expect(select).toMatch(new RegExp(`ORDER BY created_at, id LIMIT ${PRUNE_CAP + 1}$`));
+  });
+
+  it("counts first, deletes at most the cap, and deletes each principal's grants, links, invites and user row (its docs cascade)", () => {
+    const many = Array.from({ length: PRUNE_CAP + 1 }, (_, n) => row(n));
+    const plan = prunePlan(counted(PRUNE_CAP + 500, 900), selected(many));
+    expect(plan.summary).toMatch(new RegExp(`${PRUNE_CAP + 500} selected principals.*900 docs.*deletes ${PRUNE_CAP}`));
+    expect(plan.ids).toHaveLength(PRUNE_CAP);
+    const sql = plan.sql;
+    expect(sql).toMatch(/DELETE FROM doc_members WHERE principal_id IN/);
+    expect(sql).toMatch(/DELETE FROM folder_members WHERE principal_id IN/);
+    expect(sql).toMatch(/DELETE FROM share_links WHERE created_by IN/);
+    expect(sql).toMatch(/DELETE FROM invites WHERE invited_by IN/);
+    expect(sql).toMatch(/DELETE FROM user WHERE id IN/);
+    expect(sql).toMatch(/DELETE FROM access_epochs WHERE owner_user_id IN/);
+    expect(sql.match(/DELETE FROM user WHERE/g)).toHaveLength(Math.ceil(PRUNE_CAP / 100));
+    expect(prunePlan(counted(0, 0), selected([]))).toMatchObject({ ids: [], sql: '' });
+  });
+
+  it('skips, never deletes nor throws on, a row outside the selection or an id that is not a plain id', () => {
+    for (const email of [
+      'canary-ada@example.invalid', 'demo-ada@example.invalid', 'mm-x-ada-1@example.com', 'owner@gmail.com',
+      // An `mm-` account without a staging run's provenance: a demo or diagnostic account, never selected.
+      'mm-x-ada-1@example.invalid', 'mm-demo-ada@example.invalid',
+    ]) {
+      expect(prunePlan(counted(1, 0), selected([row(1, email)])), email).toMatchObject({ ids: [], sql: '' });
+    }
+    expect(prunePlan(counted(1, 0), selected([{ id: "u1') OR 1=1 --", email: 'mm-staging-1-w0-ada-1@example.invalid' }]))).toMatchObject({ ids: [], sql: '' });
+    // The canary job's own minted principals (RUN_ID staging-<run id>) and a suite shard's are per-run.
+    const plan = prunePlan(counted(2, 0), selected([row(1, 'mm-staging-38656278214-w0-ada-1@example.invalid'), row(2)]));
+    expect(plan.ids).toEqual(['u1', 'u2']);
+  });
+
+  it('skips, never deletes, a selected row that is not a per-run principal, so one stray sign-up never blocks a deploy', () => {
+    // Sign-up is open on staging: an `mm-s` address the selection's GLOBs may take that is not a run's provenance.
+    const strays = ['mm-staging-1-a.b@example.invalid', 'mm-staging-1-x@y@example.invalid', 'mm-s1-1-c1-1x@example.invalid',
+      'mm-stagingx-1-ada-1@example.invalid', 'mm-s1-1-z9-1@example.invalid'];
+    const plan = prunePlan(counted(4, 0), selected([...strays.map((email, n) => row(n + 10, email)), row(1)]));
+    expect(plan.ids).toEqual(['u1']);
+    expect(plan.summary).toMatch(/skips 5/);
+    expect(plan.sql).not.toMatch(/'u1[0-4]'/);
+  });
+
+  it('prunes after the migrations and before the growth check of a full-suite deploy, its plan before any delete', () => {
+    const steps = WORKFLOW.jobs.deploy.steps;
+    const prune = steps.findIndex((step) => /prune\.mjs plan/.test(step.run ?? ''));
+    expect(prune, 'a prune step').toBeGreaterThan(-1);
+    expect(steps[prune].if).toMatch(/inputs\.suite == 'full'/);
+    expect(prune).toBeGreaterThan(steps.findIndex((step) => /d1 migrations apply/.test(step.run ?? '')));
+    expect(prune).toBeLessThan(steps.findIndex((step) => /growth\.mjs/.test(step.run ?? '')));
+    const run = steps[prune].run;
+    expect(run.indexOf('prune.mjs plan')).toBeLessThan(run.indexOf('--file'));
   });
 });

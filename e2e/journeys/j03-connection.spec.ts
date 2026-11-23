@@ -199,7 +199,8 @@ const OPENING_2 = 'Typed before the stack stopped';
 const PAUSED_A = ' and Ada kept typing through the stall';
 const PAUSED_B = ' and her other window did too';
 
-test('j03-connection: with the stack stopped every window shows the banner within 14 s on its own 4408, before any close frame, and resumes losing nothing @p:col-4', async ({ actors, stack, measure }) => {
+// local-only: SIGSTOPs and resumes the whole stack.
+test('j03-connection: with the stack stopped every window shows the banner within 14 s on its own 4408, before any close frame, and resumes losing nothing @local-only @p:col-4', async ({ actors, stack, measure }) => {
   test.setTimeout(180_000);
   const shared = await sharedNote(actors, OPENING_2);
   const { ada, docId } = shared;

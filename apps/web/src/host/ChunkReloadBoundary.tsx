@@ -1,6 +1,7 @@
 // Initial-shell chunk recovery. Optional surfaces use recoverableLazy so their failures never unmount an editor.
 import { Component, type ReactNode } from 'react';
 import { hasDocSessions, hasUnacked } from './collab/unacked.ts';
+import { currentLeave, heldRead } from './leave.ts';
 import { refuseInput } from './refusal.ts';
 import { reloadDocument } from './navigation.ts';
 
@@ -34,16 +35,33 @@ function safeSession(): Storage | null {
   }
 }
 
-/** A failed fetch is not proof of a stale chunk. A live editor never reloads automatically. */
+/**
+ * The page started to leave (leave.ts): WebKit stops its loads as a navigation starts, before the page unloads, so an
+ * import or fetch pending then fails as a stale chunk or an outage would. Such a failure is the leave's, not one.
+ */
+const leaving = (): boolean => currentLeave()?.signal.aborted === true;
+
+/** A lazily loaded part's failure, logged unless the page is leaving (then a later use loads it again if it stays). */
+export function reportChunkFailure(message: string, error: unknown): void {
+  if (!leaving()) console.error(message, error);
+}
+
+/** The root's `onCaughtError`: React's own log of an error a boundary caught, without a chunk the page's leave cut off. */
+export function logCaughtError(error: unknown): void {
+  if (!(leaving() && isChunkLoadError(error))) console.error(error);
+}
+
+/** A failed fetch is not proof of a stale chunk. A live editor never reloads automatically, nor a page that is leaving. */
 export async function recoverChunk(): Promise<boolean> {
+  if (leaving()) return false;
   if (hasDocSessions() || hasUnacked()) {
     refuseInput('A part of the app could not load. Your edits are kept here; try the action again when connected.');
     return false;
   }
   try {
-    const response = await fetch('/api/version', { cache: 'no-store', signal: AbortSignal.timeout(5_000) });
-    if (!response.ok) return false;
-    return reloadOnce();
+    // Held if the page starts to leave meanwhile, so WebKit never cancels it (and logs that) as the page goes.
+    const ok = await heldRead((signal) => fetch('/api/version', { cache: 'no-store', ...(signal ? { signal } : {}) }), async (response) => response.ok, { timeoutMs: 5_000 });
+    return ok && reloadOnce();
   } catch {
     return false;
   }

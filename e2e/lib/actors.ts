@@ -2,15 +2,16 @@
 // actor of a test and checks the 9 invariants on all of them at the end.
 import { randomBytes } from 'node:crypto';
 import { basename } from 'node:path';
-import type { Browser, BrowserContext, Page, TestInfo } from '@playwright/test';
-import { recordingFor } from '../../scripts/deploy/canary-artifacts.mjs';
+import type { APIRequestContext, Browser, BrowserContext, Page, TestInfo } from '@playwright/test';
+import { isLoopback, recordingFor } from '../../scripts/deploy/canary-artifacts.mjs';
 import { APP_STATE_ATTR, NAMES } from './contract.ts';
-import { observeEditor } from './detectors.js';
+import { authKind, recordAuth } from './auth-pace.ts';
+import { observeEditor, paneExport } from './detectors.js';
 import { assertNotInfra, closeEachConnection, InfraBlocked } from './infra.ts';
 import {
-  actorFindings, domFindings, principalFindings, typedFindings, type ActorView, type DeclaredHttp, type Finding,
+  actorFindings, awaitingRecovery, domFindings, networkDrops, principalFindings, resyncedDocs, typedFindings, type ActorView, type DeclaredHttp, type Finding,
 } from './invariants.ts';
-import { mintPrincipal, newPrincipal, poolPrincipal, signIn, type Principal } from './principals.ts';
+import { mintPrincipal, newPrincipal, poolPrincipal, seededPrincipal, signIn, type Principal } from './principals.ts';
 import { makeSeverable, type Sever } from './sever.ts';
 import type { Provenance, Stack } from './stack.ts';
 import { Telemetry } from './telemetry.ts';
@@ -31,6 +32,7 @@ export interface Viewport { width: number; height: number; mobile?: boolean }
 export class Actor implements ActorView {
   readonly declaredHttp: DeclaredHttp[] = [];
   readonly reconnects = new Map<string, number>();
+  readonly tryAgain = new Map<string, number>();
   readonly observations = new Map<string, { mark: string; generation: string }>();
 
   constructor(
@@ -51,6 +53,11 @@ export class Actor implements ActorView {
   /** Declares `n` extra doc-socket opens for `docId` (or every doc) in one document (invariant 3). */
   expectReconnects(n: number, docId = '*'): void {
     this.reconnects.set(docId, (this.reconnects.get(docId) ?? 0) + n);
+  }
+
+  /** Declares `n` try-again (1013) closes for `docId` (or every doc), which off loopback are otherwise findings (invariant 3). */
+  expectTryAgain(n: number, docId = '*'): void {
+    this.tryAgain.set(docId, (this.tryAgain.get(docId) ?? 0) + n);
   }
 
   /** Starts remount detection on the doc's body root (invariant 4); call again after a declared remount. */
@@ -78,8 +85,41 @@ export class Actor implements ActorView {
   }
 }
 
+/** Screenshots are taken against a loopback stack or a fixture page only: off loopback nothing is recorded (T8.Ds). */
+export function recordsScreens(stack: Pick<Stack, 'baseUrl'> | null): boolean {
+  return !stack || isLoopback(stack.baseUrl);
+}
+
 // Per worker process, so every principal minted in a run has its own email.
 let minted = 0;
+/** How long, off loopback, a dropped doc socket's replacement may take to reach sync once the leg ends. */
+const RECOVERY_MS = 15_000;
+/** How long a resynced replica and a fresh load of its doc may take to show the same text. */
+const EXPORT_MS = 15_000;
+
+type ExportVerdict = 'same' | 'different' | 'closed';
+type Shown = { mode: string | null; title: string; body: string } | null;
+
+/**
+ * Whether a resynced replica shows what the server serves: its pane against the same person's fresh load of the doc.
+ * Both modes equal, title and body must match; an editor who chose Suggest or Review sees a private composite the
+ * fresh load (Edit) does not, so then only the title is compared.
+ */
+export function sameExport(replica: Shown, fresh: Shown): boolean {
+  if (!replica || !fresh) return false;
+  return replica.title === fresh.title && (replica.mode !== fresh.mode || replica.body === fresh.body);
+}
+
+/**
+ * A declared-setup API request opens its own connection: a pooled keep-alive connection the server side closed while
+ * idle fails the next request with "socket hang up", which the latency rehearsal hit on GETs and POSTs alike and the
+ * hook stack hit in j18 (T8.2).
+ */
+function freshConnections(request: APIRequestContext): void {
+  const send = request.fetch.bind(request);
+  request.fetch = ((input: Parameters<APIRequestContext['fetch']>[0], options: Parameters<APIRequestContext['fetch']>[1] = {}) =>
+    send(input, { ...options, headers: { connection: 'close', ...options.headers } })) as APIRequestContext['fetch'];
+}
 
 export class Actors {
   readonly list: Actor[] = [];
@@ -108,16 +148,23 @@ export class Actors {
    */
   async principal(label: string): Promise<Principal> {
     const canary = this.options.stack?.canary;
-    if (canary) {
+    if (canary && (canary.principals ?? 'pool') === 'pool') {
       const secret = process.env[canary.poolSecretEnv];
       if (!secret) throw new InfraBlocked(`the canary pool secret ${canary.poolSecretEnv} is not set`);
-      this.stack.budget?.charge(`${this.stack.baseUrl}/api/auth/sign-in/email`);
       const principal = await poolPrincipal(this.stack.baseUrl, secret, label);
       this.principals.push(principal);
       return principal;
     }
     minted += 1;
-    const principal = await mintPrincipal(this.stack.baseUrl, this.options.runToken, label, minted);
+    const seed = canary?.principals === 'seeded' ? canary.seed : undefined;
+    let principal: Principal;
+    if (seed) {
+      const password = process.env[seed.passwordEnv];
+      if (!password) throw new InfraBlocked(`the suite password ${seed.passwordEnv} is not set`);
+      principal = await seededPrincipal(this.stack.baseUrl, seed, password, this.options.runToken, label, minted);
+    } else {
+      principal = await mintPrincipal(this.stack.baseUrl, this.options.runToken, label, minted);
+    }
     this.principals.push(principal);
     return principal;
   }
@@ -148,6 +195,12 @@ export class Actors {
         })
       : null;
     this.options.stack?.budget?.watch(context);
+    freshConnections(context.request);
+    // The card's own sign-ins and sign-ups count against the auth limit setup paces under (auth-pace.ts).
+    context.on('response', (response) => {
+      const kind = authKind(response.url(), response.request().method());
+      if (kind && response.status() !== 429) recordAuth(kind);
+    });
     const page = await context.newPage();
     telemetry = Telemetry.install(page, { routed: !!sever });
     await telemetry.ready;
@@ -241,17 +294,85 @@ export class Actors {
   /** Every invariant finding across every actor. */
   async findings(): Promise<Finding[]> {
     const findings: Finding[] = [];
-    for (const actor of this.list) findings.push(...(await actorFindings(actor, this.journey, await this.versionFor(actor))));
+    const offLoopback = this.options.stack !== null && !isLoopback(this.options.stack.baseUrl);
+    for (const actor of this.list) {
+      const diverged = new Set([...(this.exports.get(actor) ?? new Map())].filter(([, verdict]) => verdict === 'different').map(([docId]) => docId));
+      findings.push(...(await actorFindings(actor, this.journey, await this.versionFor(actor), { offLoopback, diverged })));
+    }
     findings.push(...(await typedFindings(this.list, this.typed)));
     findings.push(...principalFindings(this.principals, this.soloReason));
     return findings;
   }
 
+  /** Per actor, each resynced drop's doc and what its export comparison found (compareExports). */
+  private readonly exports = new Map<Actor, Map<string, ExportVerdict>>();
+
   async assertInvariants(): Promise<void> {
+    await this.awaitRecoveries();
+    await this.compareExports();
+    this.noteDrops();
     const findings = await this.findings();
     this.testInfo.annotations.push({ type: 'invariants', description: JSON.stringify({ findings: findings.length }) });
     if (findings.length > 0) await this.fail(findings, 'invariants');
     this.options.stack?.budget?.assert(this.journey);
+  }
+
+  /**
+   * Off loopback, every network drop this leg's actors heard, for the run's credential-free summary: doc id, actor label,
+   * when it dropped and how long its document took to resync (scripts/deploy/network-drops.mjs judges the run).
+   */
+  private noteDrops(): void {
+    if (!this.options.stack || isLoopback(this.options.stack.baseUrl)) return;
+    const drops = this.list.flatMap((actor) => networkDrops(actor.telemetry.sockets, this.exports.get(actor)).map(({ docId, at, recovered, recoveryMs, export: found }) =>
+      ({ doc: docId, actor: actor.label, at, recovered, recoveryMs, ...(found ? { export: found } : {}) })));
+    if (drops.length > 0) this.testInfo.annotations.push({ type: 'network-drops', description: JSON.stringify(drops) });
+  }
+
+  /**
+   * Off loopback, a doc socket the network dropped near the end of a leg may still be reconnecting, or waiting out its
+   * reconnect delay: its replacement gets up to RECOVERY_MS to reach sync before invariant 3 judges the drop. Nothing
+   * is waited for on loopback.
+   */
+  private async awaitRecoveries(): Promise<void> {
+    if (!this.options.stack || isLoopback(this.options.stack.baseUrl)) return;
+    const deadline = Date.now() + RECOVERY_MS;
+    const pending = () => this.list.some((actor) => !actor.page.isClosed() && awaitingRecovery(actor.telemetry.sockets));
+    while (pending() && Date.now() < deadline) await new Promise((done) => setTimeout(done, 250));
+  }
+
+  /**
+   * Off loopback, a drop recovers only to an identical export (T8.F): each doc whose dropped socket resynced, while its
+   * pane is still open, must show what a fresh load of the doc in the same person's context shows, within EXPORT_MS.
+   * A doc no pane shows any more has no replica left to compare (`closed`).
+   */
+  private async compareExports(): Promise<void> {
+    if (!this.options.stack || isLoopback(this.options.stack.baseUrl)) return;
+    for (const actor of this.list) {
+      const docs = resyncedDocs(actor.telemetry.sockets);
+      if (docs.length === 0) continue;
+      const verdicts = new Map<string, ExportVerdict>();
+      this.exports.set(actor, verdicts);
+      for (const docId of docs) verdicts.set(docId, await this.compareExport(actor, docId));
+    }
+  }
+
+  private async compareExport(actor: Actor, docId: string): Promise<ExportVerdict> {
+    const read = (page: Page): Promise<Shown> => page.evaluate(paneExport, { names: NAMES, docId }).catch(() => null);
+    if (actor.page.isClosed() || (await read(actor.page)) === null) return 'closed';
+    const fresh = await actor.context.newPage();
+    try {
+      await fresh.goto(`/d/${docId}`).catch(() => undefined);
+      const deadline = Date.now() + EXPORT_MS;
+      for (;;) {
+        const [replica, loaded] = [await read(actor.page), await read(fresh)];
+        if (replica === null) return 'closed';
+        if (sameExport(replica, loaded)) return 'same';
+        if (Date.now() >= deadline) return 'different';
+        await new Promise((done) => setTimeout(done, 500));
+      }
+    } finally {
+      await fresh.close().catch(() => undefined);
+    }
   }
 
   /** Attaches the census and, where recording is allowed, a 2x PNG of each offending actor, then fails the test. */
@@ -260,7 +381,7 @@ export class Actors {
     await this.testInfo.attach(`${where}-census.json`, { body: JSON.stringify({ findings, census }, null, 2), contentType: 'application/json' });
     for (const label of this.mayCapture ? new Set(findings.map((f) => f.actor)) : []) {
       const actor = this.list.find((a) => a.label === label);
-      if (actor && !actor.page.isClosed()) {
+      if (actor && !actor.page.isClosed() && recordsScreens(this.options.stack)) {
         // Evidence only: a capture Chromium refuses ("Unable to capture screenshot") must not replace the findings.
         const shot = await actor.page.screenshot().catch(() => null);
         if (shot) await this.testInfo.attach(`${where}-${label}.png`, { body: shot, contentType: 'image/png' });

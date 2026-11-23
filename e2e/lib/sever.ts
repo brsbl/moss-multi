@@ -8,14 +8,14 @@ interface Conn {
   page: WebSocketRoute;
   server: WebSocketRoute | null;
   closed: boolean;
-  census: { closed(): void } | null;
+  census: ReturnType<SocketCensus> | null;
   lost: boolean;
   /** Frames the page sent while its doc was held, in order, not yet delivered. */
   held: (string | Buffer)[] | null;
 }
 
 /** Reports each page socket the proxy sees, so telemetry counts the page's sockets rather than the proxy's legs. */
-export type SocketCensus = (url: string) => { closed(): void };
+export type SocketCensus = (url: string) => { closed(code?: number, reason?: string): void; received?(message: string | Buffer): void };
 
 export interface Sever {
   /**
@@ -46,8 +46,11 @@ export interface Sever {
   dropHeld(): void;
   /** Queues every payload frame the DocDO sends (a block's text still in flight) until `releasePayloads`. */
   holdPayloads(): void;
+  /** Queues every frame the DocDO sends, not only payloads, until `releasePayloads`: an edit waits at the page's door. */
+  holdIncoming(): void;
   releasePayloads(): void;
-  census(): { connections: number; dropped: { out: number; in: number }; acksLost: number; held: number };
+  /** `heldUpdates`: the queued frames that are document updates (y-protocols message 0, 2). */
+  census(): { connections: number; dropped: { out: number; in: number }; acksLost: number; held: number; heldUpdates: number };
   /** Sends a raw frame to the server on the page's open doc socket, as a client that ignores its binding would. */
   inject(frame: Buffer): void;
 }
@@ -71,8 +74,8 @@ const DOC_SOCKET = new RegExp(DOC_SOCKET_PATH.replace(/\//g, '\\/'));
 export async function makeSeverable(context: BrowserContext, census?: SocketCensus): Promise<Sever> {
   const ctl = {
     mode: 'up' as 'up' | 'blackhole', swallowCloses: false, conns: [] as Conn[], dropped: { out: 0, in: 0 }, losingAcks: false, acksLost: 0,
-    holding: null as string | null, payloads: null as [Conn, Buffer][] | null,
-    writesOnly: false, holdOnRefusal: null as string | null,
+    holding: null as string | null, payloads: null as [Conn, string | Buffer][] | null,
+    writesOnly: false, holdOnRefusal: null as string | null, holdAll: false,
   };
   const heldDoc = (conn: Conn) => {
     const path = new URL(conn.page.url()).pathname;
@@ -89,8 +92,11 @@ export async function makeSeverable(context: BrowserContext, census?: SocketCens
     server.onMessage((message) => {
       if (ctl.mode !== 'up') ctl.dropped.in++;
       else if (ctl.losingAcks && isAck(message)) ctl.acksLost += 1;
-      else if (ctl.payloads && isPayload(message)) ctl.payloads.push([conn, message as Buffer]);
-      else conn.page.send(message);
+      else if (ctl.payloads && (ctl.holdAll || isPayload(message))) ctl.payloads.push([conn, message]);
+      else {
+        conn.page.send(message);
+        conn.census?.received?.(message);
+      }
     });
     server.onClose((code, reason) => {
       if (code === CLOSE.writeRefused && ctl.holdOnRefusal !== null) {
@@ -104,7 +110,7 @@ export async function makeSeverable(context: BrowserContext, census?: SocketCens
       }
       conn.closed = true;
       conn.held = null;
-      conn.census?.closed();
+      conn.census?.closed(code, reason);
       conn.page.close({ code, reason });
     });
   };
@@ -187,14 +193,24 @@ export async function makeSeverable(context: BrowserContext, census?: SocketCens
     holdPayloads() {
       ctl.payloads ??= [];
     },
+    holdIncoming() {
+      ctl.payloads ??= [];
+      ctl.holdAll = true;
+    },
     releasePayloads() {
       const held = ctl.payloads ?? [];
       ctl.payloads = null;
-      for (const [conn, message] of held) if (!conn.closed) conn.page.send(message);
+      ctl.holdAll = false;
+      for (const [conn, message] of held) {
+        if (conn.closed) continue;
+        conn.page.send(message);
+        conn.census?.received?.(message);
+      }
     },
     census: () => ({
       connections: ctl.conns.length, dropped: { ...ctl.dropped }, acksLost: ctl.acksLost,
       held: ctl.conns.reduce((n, c) => n + (c.held?.length ?? 0), 0),
+      heldUpdates: (ctl.payloads ?? []).filter(([, message]) => typeof message !== 'string' && message[0] === 0 && message[1] === 2).length,
     }),
     inject(frame) {
       const conn = ctl.conns.filter((c) => !c.closed && c.server).at(-1);

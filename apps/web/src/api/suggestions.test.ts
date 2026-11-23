@@ -11,12 +11,17 @@ import { notifySuggestion } from './suggestions.ts';
 
 const calls: { op: string; docId: string; input: unknown }[] = [];
 let verdict: Record<string, unknown> = { ok: true };
+/** Errors the next DocDO calls throw, one per call, as the platform throws them when it resets the object. */
+const failures: Error[] = [];
+const platformError = (message: string, flags: { retryable?: boolean; overloaded?: boolean }) => Object.assign(new Error(message), flags);
 
 const DocDO = {
   idFromName: (name: string) => ({ name, toString: () => name }),
   get: (id: { name: string }) => {
     const record = (op: string) => async (input: unknown) => {
       calls.push({ op, docId: id.name, input });
+      const failure = failures.shift();
+      if (failure) throw failure;
       return op === 'preview' && verdict.ok ? { ok: true, hunks: [], hash: 'h', digest: 'd' } : verdict;
     };
     return {
@@ -93,6 +98,7 @@ beforeEach(() => {
   previewsTaken.clear();
   docBound = true;
   verdict = { ok: true };
+  failures.length = 0;
 });
 
 const send = (method: string, cookie: string | null, path: string, body?: unknown) =>
@@ -166,6 +172,24 @@ describe('suggestion review routes @p:mean-2 @p:R17', () => {
     expect(await response.json()).toEqual({ error: 'doc-cap', limit: 'structure', message: DOC_LIMIT_NOTICE.structure });
     verdict = { ok: false, status: 409, reason: 'doc-cap' };
     expect(await (await send('POST', ada.cookie, path('accept'), { previewHash: 'h', digest: 'd' })).json(), 'the bytes cap names none').toEqual({ error: 'doc-cap' });
+  });
+
+  it('a review the platform reset mid-call is sent once more, marked retried; a second reset or an overload answers 503, never 500', async () => {
+    failures.push(platformError('Durable Object reset because its code was updated.', { retryable: true }));
+    const accepted = await send('POST', ada.cookie, path('accept'), { previewHash: 'h', digest: 'd' });
+    expect(accepted.status).toBe(200);
+    expect(calls.map(({ op, input }) => [op, (input as { retried?: boolean }).retried ?? false])).toEqual([['accept', false], ['accept', true]]);
+    calls.length = 0;
+    failures.push(platformError('Network connection lost.', { retryable: true }), platformError('Network connection lost.', { retryable: true }));
+    const twice = await send('POST', eve.cookie, path('reject'));
+    expect(twice.status).toBe(503);
+    expect(twice.headers.get('retry-after')).toBeTruthy();
+    expect(await twice.json()).toEqual({ error: 'unavailable' });
+    expect(calls).toHaveLength(2);
+    calls.length = 0;
+    failures.push(platformError('Durable Object is overloaded.', { retryable: true, overloaded: true }));
+    expect((await send('POST', ben.cookie, path('withdraw'))).status).toBe(503);
+    expect(calls, 'an overloaded object is not called again').toHaveLength(1);
   });
 
   it('GET content?view=working exports the composite; the default export stays the clean body', async () => {

@@ -628,11 +628,16 @@ test('j15-comments: Cmd+Shift+A on a selected code block opens a block composer 
   const code = ui.body(ada, id).locator(`[data-block-decorator-key="${key}"]`).first();
   await code.scrollIntoViewIfNeeded();
   // A click beside the code (its line numbers) selects the block itself; the code's own textarea keeps Cmd+A.
-  await code.locator('.moss-codeblock-gutter').first().click();
-  modes.POST = 'fail';
-  await ada.page.keyboard.press(COMMENT_KEY);
+  // The first comment's composer hands its text selection back to the editor as it closes, and a gutter click that
+  // lands first is undone by it: Cmd+Shift+A then opens nothing. Click and press again until the composer opens; the
+  // stored anchor below still proves it opened on the block.
   const composer = ada.page.getByRole('dialog', { name: 'Add comment' });
-  await expect(composer.getByRole('textbox').first()).toBeFocused();
+  modes.POST = 'fail';
+  await expect(async () => {
+    await code.locator('.moss-codeblock-gutter').first().click();
+    await ada.page.keyboard.press(COMMENT_KEY);
+    await expect(composer.getByRole('textbox').first()).toBeFocused({ timeout: 2_000 });
+  }, 'Cmd+Shift+A on the selected code block opens the composer').toPass({ timeout: PEER_TIMEOUT });
   await ada.page.keyboard.type('On the code');
   await ada.page.keyboard.press(SUBMIT);
   await expect(ada.page.getByText(/couldn't be saved/).first(), 'the failure is announced').toBeVisible({ timeout: PEER_TIMEOUT });

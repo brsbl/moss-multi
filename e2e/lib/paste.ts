@@ -229,18 +229,19 @@ export const longestStall = (actor: Actor): Promise<{ ms: number; at: number; du
   });
 
 /**
- * With `severablePeer`, Ben's doc sockets run through a sever proxy, so a test can hold his edits in flight. `prepare`
+ * With `severablePeer`, Ben's doc sockets run through a sever proxy, so a test can hold his edits in flight; with
+ * `severableOwner`, Ada's do, so a test can hold what reaches her. `prepare`
  * runs once the note exists, before Ada or Ben open it. `references` are normalized (imported and exported) before
  * either opens it too: a large import holds the local stack's one workerd thread for seconds, and an open note's
  * socket, unanswered that long, closed on its 12 s heartbeat (j01-paste-list, CI).
  */
 export async function setup<R extends Record<string, string> = Record<never, string>>(
   actors: Actors, stack: Stack, markdown?: string,
-  { elsewhere = false, severablePeer = false, prepare, references }: {
-    elsewhere?: boolean; severablePeer?: boolean; prepare?: (ada: Actor, docId: string) => Promise<void>; references?: R;
+  { elsewhere = false, severablePeer = false, severableOwner = false, prepare, references }: {
+    elsewhere?: boolean; severablePeer?: boolean; severableOwner?: boolean; prepare?: (ada: Actor, docId: string) => Promise<void>; references?: R;
   } = {},
 ) {
-  const ada = await actors.session(await actors.principal('ada'));
+  const ada = await actors.session(await actors.principal('ada'), { severable: severableOwner });
   const normal = {} as Record<string, string>;
   for (const [name, reference] of Object.entries(references ?? {})) normal[name] = await normalized(ada, stack, reference);
   const docId = await importNote(ada, stack, 'Paste target', markdown);
@@ -345,6 +346,8 @@ export const STRUCTURE_NOTICE = 'This note is too big to add to: it has too many
 export const BYTES_NOTICE = 'This note is at its size limit, so your last change was not saved.';
 /** A large paste cut short by a limit is rolled back (T3.B32). */
 export const PASTE_ROLLED_BACK_NOTICE = "The paste didn't fit, so nothing was pasted.";
+/** A rollback that kept the pasted blocks another writer had edited. */
+export const PASTE_PARTLY_KEPT_NOTICE = "The paste didn't fit. It was removed, except for what someone else had already edited.";
 
 /**
  * A paste's admission figures (the `moss-paste-admission` mark): what it adds (bytes, characters, structs), what the
