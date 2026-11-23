@@ -137,20 +137,29 @@ it('asks again at once when a peer update arrives with an earlier one lost, in t
   expect(payloadStep1s(), 'and so does the payload').toBe(payloads + 1);
   expect(socket.closes).toEqual([]);
 });
-it('asks for each held payload on its 4 s step 1 though an unacked frame keeps the outbox busy (its ack lost)', async () => {
+it('while an unacked frame keeps the outbox busy (its ack lost), a payload missing an update still asks, and only it', async () => {
   const socket = latest(); socket.open();
   answer(socket, new Y.Doc());
   // The server's step 1: the session answers with a step 2 only an ack takes out of the outbox, and that ack is lost.
   serverStep1(socket, Y.encodeStateVector(new Y.Doc()));
-  session.payloads.hold('code');
-  const asked = () => socket.sent.filter((frame) => {
+  // A large paste's blocks: payloads this tab holds with nothing missing, which must not ask on every step 1.
+  for (let i = 0; i < 50; i += 1) session.payloads.hold(`pasted-${i}`);
+  const asked = (id: string) => socket.sent.filter((frame) => {
     const payload = frame instanceof Uint8Array ? decodePayloadFrame(frame) : null;
-    return payload?.id === 'code' && payload.step === PAYLOAD_STEP1;
+    return payload?.id === id && payload.step === PAYLOAD_STEP1;
   }).length;
-  const before = asked();
   await vi.advanceTimersByTimeAsync(5_000);
   expect(step1Count(socket), 'the 4 s step 1').toBeGreaterThanOrEqual(2);
-  expect(asked(), 'and the payload asks with it, not only once the outbox stalls 10 s later').toBe(before + 1);
+  expect(asked('pasted-0'), 'a held payload with nothing missing waits for the outbox').toBe(0);
+  // A peer's code update arrives with the one before it lost.
+  const code = new Y.Doc();
+  const writes: Uint8Array[] = [];
+  code.on('update', (update: Uint8Array) => writes.push(update));
+  for (const c of 'xyz') code.getText('payload').insert(code.getText('payload').length, c);
+  socket.dispatchEvent(new MessageEvent('message', { data: encodePayloadFrame('code', PAYLOAD_UPDATE, writes[0]).slice().buffer }));
+  socket.dispatchEvent(new MessageEvent('message', { data: encodePayloadFrame('code', PAYLOAD_UPDATE, writes[2]).slice().buffer }));
+  expect(asked('code'), 'the payload missing an update asks at once, not only once the outbox stalls 10 s later').toBe(1);
+  expect(asked('pasted-0'), 'and only it').toBe(0);
 });
 it.each([[4402, 'session-ended'], [4404, 'unavailable'], [4410, 'deleted'], [4426, 'outdated'], [4429, 'conn-limit']] as const)(
   'stops reconnecting synchronously on %s', async (code, reason) => {
