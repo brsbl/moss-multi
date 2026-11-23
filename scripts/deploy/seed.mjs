@@ -7,6 +7,7 @@
 //   node scripts/deploy/seed.mjs sql OUT.sql --token TOKEN        (CANARY_POOL_SECRET in the environment)
 //   node scripts/deploy/seed.mjs password --token TOKEN           (prints the password, for ::add-mask:: first)
 //   node scripts/deploy/seed.mjs token RUN_ID RUN_ATTEMPT
+//   node scripts/deploy/seed.mjs rerun --token TOKEN --run-id ID --attempt N --claims DIR   (a failed-only re-run's first slots)
 import { createHmac, randomBytes } from 'node:crypto';
 import { mkdirSync, openSync, closeSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
@@ -116,6 +117,25 @@ export function claimSlot(dir, count) {
   return null;
 }
 
+/**
+ * How many of a shard's first slots a re-run attempt claims before it signs in: none on the attempt that seeded, half
+ * the slots on one failed-only re-run (a shard signs in to about a third), so it never reuses an account the first
+ * attempt left notes in. A later attempt, or a token from another run, is refused.
+ * @param {string} token
+ * @param {string} runId
+ * @param {string} attempt
+ */
+export function rerunClaims(token, runId, attempt) {
+  const match = /^s(\d+)-(\d+)$/.exec(token);
+  if (!match || match[1] !== runId) throw new Error(`the seed token ${token} is not this run's (${runId})`);
+  const seeded = Number(match[2]);
+  const now = Number(attempt);
+  if (!Number.isInteger(now) || now < seeded) throw new Error(`attempt ${attempt} is before the seeding attempt ${seeded}`);
+  if (now === seeded) return 0;
+  if (now === seeded + 1) return SEED_PER_SHARD / 2;
+  throw new Error(`the seeded principals allow one failed-only re-run; attempt ${attempt} needs a re-run of all jobs`);
+}
+
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const args = process.argv.slice(2);
   /** @param {string} name */
@@ -127,6 +147,11 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     const [mode, out] = args;
     if (mode === 'token') {
       console.log(seedToken(args[1], args[2]));
+    } else if (mode === 'rerun') {
+      const claims = flag('--claims') ?? '';
+      const count = rerunClaims(flag('--token') ?? '', flag('--run-id') ?? '', flag('--attempt') ?? '');
+      for (let k = 0; k < count; k += 1) claimSlot(claims, count);
+      if (count > 0) console.log(`seed: a re-run attempt; slots 0 to ${count - 1} are the first attempt's`);
     } else if (mode === 'password') {
       process.stdout.write(suitePassword(process.env.CANARY_POOL_SECRET ?? '', flag('--token') ?? ''));
     } else if (mode === 'sql' && out) {
@@ -135,7 +160,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       writeFileSync(out, seedSql({ token, slots: SEED_SLOTS, perShard: SEED_PER_SHARD, hash, now: Date.now() }), { mode: 0o600 });
       console.log(`seed: ${SEED_SLOTS.length * SEED_PER_SHARD} suite principals for ${token} (${SEED_PER_SHARD} per shard)`);
     } else {
-      throw new Error('usage: seed.mjs sql OUT.sql --token TOKEN | password --token TOKEN | token RUN_ID RUN_ATTEMPT');
+      throw new Error('usage: seed.mjs sql OUT.sql --token TOKEN | password --token TOKEN | token RUN_ID RUN_ATTEMPT | rerun --token TOKEN --run-id ID --attempt N --claims DIR');
     }
   } catch (error) {
     console.error(`::error::${error instanceof Error ? error.message : String(error)}`);

@@ -536,15 +536,13 @@ jobs:
             --run-id "$RUN_ID" --principals seeded --seed-token "$SEED_TOKEN" --seed-slots "${BROWSER:0:1}$SHARD"
           echo "STACK_STATE=$RUNNER_TEMP/canary/state.json" >> "$GITHUB_ENV"
       # The seeded accounts' password, masked before it reaches the environment; the pool secret stays in this step.
-      # A re-run of only the failed shards would sign in to slots its first attempt used: re-run every job instead.
+      # One re-run of only the failed shards claims the slots its first attempt could have used, and signs in past them.
       - name: Suite password
         env:
           CANARY_POOL_SECRET: ${{ secrets.CANARY_POOL_SECRET }}
           SEED_TOKEN: ${{ needs.deploy.outputs.seedToken }}
         run: |
-          if [ "$SEED_TOKEN" != "s${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" ]; then
-            echo "::error::the seeded principals are attempt ${SEED_TOKEN##*-}'s; re-run all jobs, not only the failed ones"; exit 1
-          fi
+          node scripts/deploy/seed.mjs rerun --token "$SEED_TOKEN" --run-id "$GITHUB_RUN_ID" --attempt "$GITHUB_RUN_ATTEMPT" --claims "$RUNNER_TEMP/canary/seed-claims"
           password=$(node scripts/deploy/seed.mjs password --token "$SEED_TOKEN")
           echo "::add-mask::$password"
           echo "MOSS_SUITE_PASSWORD=$password" >> "$GITHUB_ENV"
