@@ -74,8 +74,8 @@ function measuresOf(annotations) {
   return Object.keys(measures).length ? measures : null;
 }
 
-const RESEND_KINDS = new Set(['sign-in', 'sign-up']);
-const RESEND_CAUSES = { 429: 'a 429', 'lost forward': 'a lost forward' };
+const RESEND_KINDS = new Set(['sign-in', 'sign-up', 'setup']);
+const RESEND_CAUSES = { 429: 'a 429', 'lost forward': 'a lost forward', 'stale connection': 'a stale connection' };
 
 /**
  * Setup's auth resends (`setup-resend` annotations, e2e/lib/principals.ts) by fixed label, e.g. `sign-in after a 429`,

@@ -61,13 +61,16 @@ export function newPrincipal(runToken: string, label: string, n: number): Princi
 /** Signs up `mm-<runToken>-<label>-<n>@example.invalid` with a same-origin Origin (better-auth 403s without it). */
 export async function mintPrincipal(baseUrl: string, runToken: string, label: string, n: number): Promise<Principal> {
   const { email, name, password } = newPrincipal(runToken, label, n);
-  const post = () => fetch(`${baseUrl}/api/auth/sign-up/email`, {
+  let stale = false;
+  const post = () => setupFetch('sign-up', `${baseUrl}/api/auth/sign-up/email`, {
     method: 'POST',
     headers: { 'content-type': 'application/json', origin: baseUrl },
     body: JSON.stringify({ email, password, name }),
     signal: AbortSignal.timeout(15_000),
-  });
-  const { response, lost } = await pastAuthLimit('sign-up', post);
+  }, () => { stale = true; });
+  const passed = await pastAuthLimit('sign-up', post);
+  const { response } = passed;
+  const lost = passed.lost || stale;
   const text = await response.text();
   // A sign-up lost after the Worker stored it is answered "already exists" on the resend: sign in for its id.
   if (lost && !response.ok && /already exists/i.test(text)) {
@@ -79,6 +82,28 @@ export async function mintPrincipal(baseUrl: string, runToken: string, label: st
   if (!response.ok) throw new Error(`sign-up for ${email}: ${response.status} ${text.slice(0, 200)}`);
   const id = (JSON.parse(text) as { user?: { id?: string } }).user?.id ?? null;
   return { label, name, email, password, id };
+}
+
+/** Codes of a pooled connection the far end closed before any answer: undici's "other side closed", or a reset. */
+const STALE_CONNECTION = new Set(['UND_ERR_SOCKET', 'UND_ERR_CLOSED', 'ECONNRESET', 'EPIPE']);
+
+/**
+ * Node's fetch for setup requests off the browser. Its keep-alive pool can send a request on a connection the far end
+ * is closing (Cloudflare's edge, like the dev proxy closeEachConnection guards against): "fetch failed" before any
+ * answer. Such a request is sent once more on a new connection, and the resend recorded; any other failure, or a
+ * second close, is thrown. `resent` hears the resend, for a caller whose first request may have been applied.
+ */
+export async function setupFetch(kind: AuthKind | 'setup', url: string, init: RequestInit, resent?: () => void): Promise<Response> {
+  try {
+    return await fetch(url, init);
+  } catch (error) {
+    const code = (error as { cause?: { code?: unknown } }).cause?.code;
+    if (!(error instanceof TypeError) || typeof code !== 'string' || !STALE_CONNECTION.has(code)) throw error;
+    noteResend(kind, 'stale connection', 1);
+    resent?.();
+    const timeout = init.signal ? AbortSignal.timeout(15_000) : undefined;
+    return fetch(url, { ...init, ...(timeout ? { signal: timeout } : {}) });
+  }
 }
 
 const LOST_FORWARD = 'Your worker restarted mid-request';
@@ -104,14 +129,14 @@ export async function seededPrincipal(baseUrl: string, seed: NonNullable<CanaryS
   principal.id = (JSON.parse(text) as { user?: { id?: string } }).user?.id ?? null;
   const cookies = sessionCookies(response, baseUrl, principal.email);
   const cookie = cookies.map((c) => `${c.name}=${c.value}`).join('; ');
-  const named = await fetch(`${baseUrl}/api/auth/update-user`, {
+  const named = await setupFetch('setup', `${baseUrl}/api/auth/update-user`, {
     method: 'POST',
     headers: { 'content-type': 'application/json', origin: baseUrl, cookie },
     body: JSON.stringify({ name }),
     signal: AbortSignal.timeout(15_000),
   });
   if (!named.ok) throw new Error(`naming seeded ${principal.email}: ${named.status}`);
-  const workspace = await fetch(`${baseUrl}/api/workspace`, { headers: { cookie }, signal: AbortSignal.timeout(15_000) });
+  const workspace = await setupFetch('setup', `${baseUrl}/api/workspace`, { headers: { cookie }, signal: AbortSignal.timeout(15_000) });
   if (!workspace.ok) throw new Error(`the workspace of seeded ${principal.email}: ${workspace.status}`);
   await workspace.arrayBuffer();
   seededSessions.set(`${baseUrl} ${principal.email}`, cookies);
@@ -152,7 +177,7 @@ async function pastAuthLimit(kind: AuthKind, post: () => Promise<Response>): Pro
  * Records `count` resends of a setup `kind` request on the running test, for the run's credential-free summary
  * (scripts/deploy/canary-artifacts.mjs resendsOf); a no-op outside a test.
  */
-function noteResend(kind: AuthKind, cause: '429' | 'lost forward', count: number): void {
+function noteResend(kind: AuthKind | 'setup', cause: '429' | 'lost forward' | 'stale connection', count: number): void {
   if (count === 0) return;
   try {
     test.info().annotations.push({ type: 'setup-resend', description: JSON.stringify({ kind, cause, count }) });
@@ -180,7 +205,7 @@ export function parseSetCookie(header: string, url: string): SessionCookie {
 }
 
 async function postSignIn(baseUrl: string, principal: Principal): Promise<Response> {
-  return fetch(`${baseUrl}/api/auth/sign-in/email`, {
+  return setupFetch('sign-in', `${baseUrl}/api/auth/sign-in/email`, {
     method: 'POST',
     headers: { 'content-type': 'application/json', origin: baseUrl },
     body: JSON.stringify({ email: principal.email, password: principal.password }),
