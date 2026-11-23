@@ -10,7 +10,7 @@ import { describe, expect, it } from 'vitest';
 import { canaryState } from './canary-state.mjs';
 import { PER_FULL_RUN } from './growth.mjs';
 import { prunePlan, PRUNE_CAP } from './prune.mjs';
-import { claimSlot, SEED_PER_SHARD, SEED_SLOTS, seedEmail, seedHash, seedSql, seedToken, suitePassword } from './seed.mjs';
+import { claimSlot, rerunClaims, SEED_PER_SHARD, SEED_SLOTS, seedEmail, seedHash, seedSql, seedToken, suitePassword } from './seed.mjs';
 
 const WORKFLOW = yaml.load(readFileSync(new URL('../../.github/workflows/deploy-staging.yml', import.meta.url), 'utf8'));
 const SECRET = 'k'.repeat(64);
@@ -81,6 +81,26 @@ describe('the staging suite seed (T8.2) @p:R15', () => {
     expect(state.canary.principals).toBe('seeded');
     expect(state.canary.seed).toEqual({ token: 's9-1', slots: 'w4', count: SEED_PER_SHARD, passwordEnv: 'MOSS_SUITE_PASSWORD', claimDir: '/tmp/s/seed-claims' });
     expect(() => canaryState({ ...state, baseUrl: 'https://x.example', budget: 10, idleMs: 20_000, principals: 'seeded', seed: { token: 's9-1', slots: 'z9' } })).toThrow(/slots/);
+  });
+
+  it("lets a re-run of only the failed shards sign in to slots its first attempt never used, once", () => {
+    // A shard signs in to at most about a third of its slots (SEED_PER_SHARD), so a second attempt starts at the half.
+    expect(rerunClaims('s5-1', '5', '1')).toBe(0);
+    expect(rerunClaims('s5-1', '5', '2')).toBe(SEED_PER_SHARD / 2);
+    expect(() => rerunClaims('s5-1', '5', '3')).toThrow(/once/);
+    expect(() => rerunClaims('s5-1', '6', '2')).toThrow(/run/);
+    expect(() => rerunClaims('s5-2', '5', '1')).toThrow(/attempt/);
+    const dir = mkdtempSync(join(os.tmpdir(), 'seed-rerun-'));
+    try {
+      for (let k = 0; k < rerunClaims('s5-1', '5', '2'); k += 1) claimSlot(dir, k + 1);
+      expect(claimSlot(dir, SEED_PER_SHARD)).toBe(SEED_PER_SHARD / 2);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+    // The suite's password step claims those slots instead of refusing a failed-only re-run.
+    const password = WORKFLOW.jobs.suite.steps.find((step) => /seed\.mjs password/.test(step.run ?? ''));
+    expect(password.run).toMatch(/seed\.mjs rerun --token "\$SEED_TOKEN" --run-id "\$GITHUB_RUN_ID" --attempt "\$GITHUB_RUN_ATTEMPT" --claims "\$RUNNER_TEMP\/canary\/seed-claims"/);
+    expect(password.run).not.toMatch(/re-run all jobs/);
   });
 
   it('fits a full suite under the growth cap once the prune ran', () => {
