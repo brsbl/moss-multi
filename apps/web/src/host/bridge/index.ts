@@ -317,9 +317,13 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
   let lastLive: string | null = null;
   let popped: string | null = null;
   const live = (noteId: string) => known.get(noteId)?.trashedAt == null;
-  /** The address names the last live note focused again, when the address names another. */
+  /**
+   * The address names the last live note focused again, when the address names another; once that note left the panes
+   * (a split pane went on to a trashed note), it names a live note still showing instead (T9.46).
+   */
   const addressFocused = () => {
-    const id = lastLive;
+    const showing = lastLive !== null && shownNotes.length > 0 && !shownNotes.includes(lastLive) ? shownNotes.find(live) : undefined;
+    const id = showing ?? lastLive;
     if (id && live(id) && docIdFromPath(pathname()) !== id) browser.replacePath(withShare(`/d/${encodeURIComponent(id)}`));
   };
 
@@ -1124,7 +1128,8 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
         // A trashed note has no address: a fresh load of it is the one 404 (A§8). Back or Forward may have reached it.
         if (!id || !live(id)) {
           if (id && popped === id) popped = null;
-          if (id && address === id) addressFocused();
+          // Also when the note the address names has just left the panes.
+          if (id && (address === id || (address !== null && shownNotes.length > 0 && !shownNotes.includes(address)))) addressFocused();
           return;
         }
         lastLive = id;

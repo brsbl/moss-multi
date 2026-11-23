@@ -153,17 +153,25 @@ export function LoginCard({ next, providers, minPasswordLength = null }: LoginCa
           {signingUp && (
             <Field label="Name" invalid={false} type="text" autoComplete="name" value={name} onChange={(e) => setName(e.target.value)} ref={nameRef} {...fieldProps} />
           )}
-          <Field
-            label="Email"
-            invalid={invalid === 'email'}
-            aria-describedby={invalid === 'email' ? describedBy : undefined}
-            type="email"
-            autoComplete="email"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            ref={emailRef}
-            {...fieldProps}
-          />
+          <div className="relative">
+            <Field
+              label="Email"
+              invalid={invalid === 'email'}
+              aria-describedby={invalid === 'email' ? describedBy : undefined}
+              type="email"
+              autoComplete="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              ref={emailRef}
+              {...fieldProps}
+            />
+            {/* An error about the email sits under it, in the gap above Password, so the form never moves. */}
+            {error !== null && invalid === 'email' && (
+              <p id={errorId} role="alert" className="absolute left-0 top-full m-0 mt-px text-caption leading-[14px] text-accent-terracotta">
+                {error}
+              </p>
+            )}
+          </div>
           <div>
             <Field
               label="Password"
@@ -177,7 +185,7 @@ export function LoginCard({ next, providers, minPasswordLength = null }: LoginCa
               {...fieldProps}
             />
             <div className="mt-1.5 min-h-[17px]">
-              {error !== null && (
+              {error !== null && invalid !== 'email' && (
                 <p id={errorId} role="alert" className="m-0 text-caption text-accent-terracotta">
                   {error}
                 </p>

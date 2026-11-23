@@ -91,8 +91,10 @@ export function RoleBand({ docId }: { docId: string }): ReactNode {
   ) : null;
   const help = (role ? REFUSED[role] : undefined) ?? lead;
   if (reviewing) {
+    // The access words explain themselves here too, as outside Review (T9.35).
+    const text = <>Reviewing suggestions · <Access lead={lead} help={help} describedBy={id} /></>;
     return (
-      <ReviewRow docId={docId} role={role} reader text={`Reviewing suggestions · ${lead}`} attrs={{ [ROLE_BAND_ATTR]: '', [REVIEW_BAND_ATTR]: '' }}>
+      <ReviewRow docId={docId} role={role} reader text={text} attrs={{ [ROLE_BAND_ATTR]: '', [REVIEW_BAND_ATTR]: '' }} outside={<span id={id} hidden>{help}</span>}>
         {signIn}
       </ReviewRow>
     );

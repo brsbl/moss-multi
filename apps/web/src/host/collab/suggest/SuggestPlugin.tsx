@@ -15,6 +15,7 @@ import { ReviewMount, SuggestMount } from './mounts.ts';
 import { clearPaint, drawGhosts, drawMarks, editMarks, ghostsOf, paintBound, paintRanges, partTargets, struckByRecord } from './paint.ts';
 import type { PasteStack } from './paste.ts';
 import { registerSuggestRouting } from './routing.ts';
+import { subscribeTerminal, terminalOf } from '../terminal.ts';
 import { openSuggestion } from './SuggestionsPanel.tsx';
 
 /**
@@ -93,7 +94,11 @@ export function SuggestPlugin({ pane }: { pane: SuggestPane }): null {
         const caret = pane.takeCaret();
         if (caret && !focusOverNote(document) && !restoreCaret(editor, caret)) pane.keepCaret(caret);
       }
-      if (mount instanceof SuggestMount) {
+      if (terminalOf(pane.docId) === 'deleted') {
+        // A note in Trash shows no proposal: nothing on it can be decided any more (T9.46).
+        clearPaint(owner);
+        overlay?.replaceChildren();
+      } else if (mount instanceof SuggestMount) {
         paintBound(owner, editor, binding, mount.fork.ownClients(), mount.fork.strikes(), body);
         if (overlay) drawGhosts(editor, overlay, ghostsOf(mount.fork, binding));
       } else if (mount instanceof ReviewMount) {
@@ -113,6 +118,7 @@ export function SuggestPlugin({ pane }: { pane: SuggestPane }): null {
     stops.push(editor.registerUpdateListener(repaint));
     stops.push(editor.registerEditableListener(repaint));
     stops.push(pane.subscribeMount(repaint));
+    stops.push(subscribeTerminal(repaint));
     window.addEventListener('resize', repaint);
     stops.push(() => window.removeEventListener('resize', repaint));
     // The column can reflow without a window resize (a docked Suggestions panel narrows it): the marks follow its text.

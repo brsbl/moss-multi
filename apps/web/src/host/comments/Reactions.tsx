@@ -40,7 +40,8 @@ export function CommentReactions({ noteId, comment }: { noteId: string; comment:
             className={[
               'inline-flex h-6 items-center gap-1 rounded-md px-1.5 text-caption leading-none tabular-nums transition-colors',
               'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ink-default/15 disabled:cursor-default',
-              mine ? 'bg-surface-panel text-ink-muted' : 'text-ink-faint enabled:hover:bg-surface-panel enabled:hover:text-ink-muted',
+              // Your own is pressed by a faint fill alone; its count keeps Moss's faint comment-count ink.
+              mine ? 'bg-surface-panel text-ink-faint' : 'text-ink-faint enabled:hover:bg-surface-panel enabled:hover:text-ink-muted',
             ].join(' ')}
           >
             <span aria-hidden>{emoji}</span>

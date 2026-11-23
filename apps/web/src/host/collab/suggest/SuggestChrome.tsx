@@ -78,8 +78,10 @@ const READER_DONE_HELP = 'Return to the plain note; your access stays the same';
  * A Review row in the pane's bottom slot: what Review pauses, and Done with Moss's tooltip saying where it goes. The
  * description sits outside the row, so the row reads as its words and Done.
  */
-export function ReviewRow({ docId, role, text, reader = false, attrs, children = null }: {
-  docId: string; role: Role | null; text: string; reader?: boolean; attrs: Record<string, string>; children?: ReactNode;
+export function ReviewRow({ docId, role, text, reader = false, attrs, children = null, outside = null }: {
+  docId: string; role: Role | null; text: ReactNode; reader?: boolean; attrs: Record<string, string>; children?: ReactNode;
+  /** Descriptions the row's own controls point at, kept out of its words. */
+  outside?: ReactNode;
 }): ReactNode {
   const help = reader ? READER_DONE_HELP : DONE_HELP;
   const id = useId();
@@ -100,6 +102,7 @@ export function ReviewRow({ docId, role, text, reader = false, attrs, children =
         {children}
       </div>
       <span id={id} hidden>{help}</span>
+      {outside}
     </div>
   );
 }
