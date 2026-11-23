@@ -7,6 +7,9 @@ import { createBridge, inertBrowser } from './bridge/index.ts';
 import { openDoc } from './navigation.ts';
 import { openNotice, type Notice } from './notifications.ts';
 
+// jsdom has no CSS.escape; these ids need no escaping.
+if (typeof globalThis.CSS === 'undefined') Object.assign(globalThis, { CSS: { escape: (value: string) => value } });
+
 const docs = ['a', 'b', 'c'].map((id) => ({ id, title: id.toUpperCase(), createdAt: 1, updatedAt: 1, trashedAt: null }));
 
 /** A bridge whose `GET /api/docs/:id` answers only when the test says so. */
@@ -94,8 +97,8 @@ describe('a notice opening its note (T9.46)', () => {
     pane.setAttribute(DOC_STATE_ATTR, 'live');
     const body = document.createElement('div');
     body.setAttribute(BODY_BINDING_ATTR, 'live');
-    pane.append(body);
-    document.body.append(pane);
+    pane.appendChild(body);
+    document.body.appendChild(pane);
     const markRead = vi.fn();
     const unreachable = vi.fn();
     const opening = openNotice(notice('a'), { open: (n) => openDoc(n.target.id), markRead, unreachable });
