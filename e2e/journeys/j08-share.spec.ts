@@ -1033,6 +1033,15 @@ async function nameStaysWhileScrolling(dialog: Locator, line: string): Promise<v
   }), { message: `${line} stays visible while the list scrolls` }).toBe(true);
 }
 
+/** The named line sits in the dialog's fixed header, outside anything that scrolls. */
+async function nameOutsideScroll(dialog: Locator, line: string): Promise<void> {
+  const name = dialog.locator('p:not(.sr-only)').filter({ hasText: line }).first();
+  expect(await name.evaluate((el) => {
+    for (let at = el.parentElement; at; at = at.parentElement) if (/(auto|scroll)/.test(getComputedStyle(at).overflowY)) return false;
+    return true;
+  }), `${line} is in the fixed header`).toBe(true);
+}
+
 test('j08 compact: Share names the note, folder or vault in its first visible line, kept while the list scrolls, and every role reads the product\'s role words (T9.46) @p:ppl-2@2', async ({ actors, stack }) => {
   const ada = await openShell(actors, 'ada');
   const headers = { origin: stack.baseUrl };
@@ -1081,7 +1090,7 @@ test('j08 compact: Share names the note, folder or vault in its first visible li
   const folderDialog = ada.page.getByRole('dialog', { name: 'Share folder' });
   await expect(folderDialog).toBeVisible();
   await expect.poll(() => firstVisibleLine(folderDialog), { message: 'the first visible line names the folder' }).toBe(`Folder “${folderName}”`);
-  await nameStaysWhileScrolling(folderDialog, folderName);
+  await nameOutsideScroll(folderDialog, folderName);
   await ada.page.keyboard.press('Escape');
   await expect(folderDialog).toBeHidden();
 
@@ -1089,6 +1098,6 @@ test('j08 compact: Share names the note, folder or vault in its first visible li
   const vaultDialog = ada.page.getByRole('dialog', { name: 'Share vault' });
   await expect(vaultDialog).toBeVisible();
   await expect.poll(() => firstVisibleLine(vaultDialog), { message: 'the first visible line names the vault' }).toBe('Vault “Home”');
-  await nameStaysWhileScrolling(vaultDialog, 'Home');
+  await nameOutsideScroll(vaultDialog, 'Home');
   await ada.page.keyboard.press('Escape');
 });
