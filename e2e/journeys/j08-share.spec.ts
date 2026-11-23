@@ -1025,7 +1025,7 @@ async function nameStaysWhileScrolling(dialog: Locator, line: string): Promise<v
     return true;
   });
   expect(scrolled, 'declared setup: the list is long enough to scroll').toBe(true);
-  const name = dialog.locator('p').filter({ hasText: line }).first();
+  const name = dialog.locator('p:not(.sr-only)').filter({ hasText: line }).first();
   await expect.poll(() => name.evaluate((el) => {
     const box = el.getBoundingClientRect();
     const hit = document.elementFromPoint(box.left + Math.min(box.width / 2, 20), box.top + box.height / 2);

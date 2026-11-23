@@ -150,6 +150,8 @@ test('j15-social: reactions toggle per principal, live for both people, your own
   for (const theme of ['light', 'dark'] as const) {
     await ada.page.emulateMedia({ colorScheme: theme });
     await expect(ada.page.locator('html')).toHaveAttribute('data-theme', theme);
+    // The chip's colours transition with the theme; read them once they settle.
+    await ada.page.waitForTimeout(400);
     const ink = await message(ada, 'React to me').getByRole('button', { name: '👍 1' }).evaluate((chip) => {
       const probe = document.createElement('span');
       probe.className = 'text-ink-faint';

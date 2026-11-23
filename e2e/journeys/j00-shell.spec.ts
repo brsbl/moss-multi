@@ -554,6 +554,8 @@ test('split view: Forward to a note trashed while it showed in the other pane le
   const row = (docId: string) => page.locator(`[${SIDEBAR_ROW_ATTR}][${DOC_ID_ATTR}="${docId}"]`);
   ada.expectReconnects(2, a);
   ada.expectReconnects(1, b);
+  // Moss's switch back to the pane beside a trashed note binds C once more.
+  ada.expectReconnects(1, c);
   // C on the left; on the right A, then B (a visit), then Back to A.
   await row(a).click({ button: 'right' });
   await page.getByRole('menuitem', { name: 'Open in Split Tab', exact: true }).click();

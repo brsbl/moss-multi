@@ -258,6 +258,8 @@ test('j13-vault-nav: a switch that fails after New vault says so where she is, w
   const error = settings.getByRole('alert').filter({ hasText: 'Could not switch vaults. Please try again.' });
   await expect(error, 'the failed switch is said in Settings, still open').toBeVisible({ timeout: BIND_TIMEOUT });
   await expect(settings.getByRole('button', { name: 'Manage vaults', exact: true }), 'on Vaults, disclosed').toHaveAttribute('aria-expanded', 'true');
+  await page.keyboard.press('Escape');
+  await expect(settings).toHaveCount(0);
   await ui.expectVault(page, 'Home');
   await page.unroute(/\/api\/workspace\?/);
 });
