@@ -302,6 +302,21 @@ A task counts only after an independent checker passes it on green CI. Each mile
 
 Parked from the M0 checker and critic passes, each with the task that owns it.
 
+### From T8.F's staging runs (2026-11-22 to 23)
+
+No leg was re-run inside a deploy. Failures in the two full-suite deploys after the resume, per leg:
+
+| Deploy | Leg | Engine | What failed | Class |
+|---|---|---|---|---|
+| 45083542524 | j16-suggest routed deletes: past an inline link | Chromium | an undeclared try-again close (1013) about 6 s after open | D1 access check past its deadline (staging timing) |
+| 45083542524 | j16-suggest Edit-mode marks: a code block | WebKit | a setup request failed before the second principal existed | test setup on a closed keep-alive connection (fixed by `setupFetch`) |
+| 45083542524 | j16-census-blocks: heading before the boundary | WebKit | HTTP 500 on suggestion accept, as the doc's Durable Object reset (both peers dropped 1006 at once) | product: a DocDO reset mid-accept answers 500 |
+| 45083542524 | run total | both | 9 recovered drops, 2 allowed; 6 were three DocDO resets during j16-census-blocks legs | platform resets |
+| 45101189479 | j01-registers: three legs (warm-stack code block, read-only code field, formula popover move) | Chromium | a setup request failed (`kind request`) | test setup on a closed keep-alive connection (fixed by `setupFetch`) |
+| 45101189479 | j16-census-edges: leading heading after the boundary | WebKit | a page error and console error on Ben's page | product, undiagnosed (text withheld off loopback) |
+| 45101189479 | j16-paste: a large paste on an open suggestion past the cap | WebKit | an assertion of an unnamed kind | undiagnosed |
+| 45101189479 | run total | both | 4 recovered drops, 2 allowed | network |
+
 ### From T8.V's checker (8902dc4, 2026-11-21)
 
 - T8.V Red-first run demonstrates only the socket leg, not the REST leg: the red run on 99d74a45 stopped at the protocol-1 socket assertion (e2e/lib/doc-client.ts:169, socket not closed within 15 s), so the 426 REST assertion and the route.test.ts unit assertions were never shown red; an evidence gap only, the final test asserts 4426, 426, an unchanged body and title, and a headerless push landing.

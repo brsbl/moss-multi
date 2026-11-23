@@ -151,13 +151,13 @@ done
 
 Each note lands as `<title>.md`, and its media next to it. After that, `moss-multi sync ~/moss-pilot-backup` refreshes every pulled note. Run the loop again to pick up notes created since. Syncing also pushes any edit made to a backup file, so leave the backup unedited. `moss-multi history <doc>` lists a note's versions. For the account data, `wrangler d1 export moss-multi-pilot --remote --output pilot.sql` dumps the D1 database (it needs the token).
 
-## Staging status (2026-11-22)
+## Staging status (2026-11-23)
 
-Three `suite=full` deploys of the T8.F candidate on the note size limits (deploys 45000865414, 45017504593 and 45033676436): the deploy, `/api/version` equal to the tested bytes, the test-hook 404s, the canary, SP9, the security sweep (52 of 52) and a demo re-run that added nothing all pass.
+Six `suite=full` deploys of the T8.F candidate on the note size limits (deploys 45000865414, 45017504593, 45033676436, 45052709323, 45083542524 and 45101189479): the deploy, `/api/version` equal to the tested bytes, the test-hook 404s, the canary, SP9, the security sweep (52 of 52) and a demo re-run that added nothing all pass.
 
-- **Large notes fit.** The j01 legs at the text limit pass in both engines on every run: 1,019,000 characters pasted lands whole, and 1,021,000 is refused whole with the text notice. In the last run every other j01 large-note leg passed in both engines too, except j01-paste-tail's second leg in WebKit. The tail saw no isolate pass its memory or CPU limit (`limitMinutes` empty) in any of the three runs.
-- **The full suite is not yet green in one run.** Each run failed 2 to 5 of about 420 legs per engine, mostly a different set each time. The legs that raced the round trip (a peer's edit timed against a paste's check, a composition ended before the peer's text arrived, typing into a new note before its title took focus, a trash during a note's load, a paste-tail fill sized from an admission count that runs high) are fixed in T8.F; the paste-tail fill fix came after the last run. Still open, each seen once in the last run: j01-registers' formula catch-up after a black hole and j17-history's failed versions fetch.
-- **Network drops.** j01-autolink's 100,000-character note drops its doc socket once (a recovered 1006) in every run, so it uses one of the run's 2 allowed drops; the third run had 3 and failed on the allowance.
+- **Large notes fit.** The j01 legs at the text limit pass in both engines on every run: 1,019,000 characters pasted lands whole, and 1,021,000 is refused whole with the text notice. The tail saw no isolate pass its memory or CPU limit (`limitMinutes` empty) in any run.
+- **The full suite is not yet green in one run.** Each run failed 1 to 5 of about 420 legs per engine, mostly a different set each time. The last two runs failed on: setup requests sent on a keep-alive connection the edge had closed (now resent once and counted as a setup resend), an access check past its D1 deadline (an undeclared 1013), a Durable Object reset during a suggestion accept that answered 500, and two WebKit j16 legs (census-edges, paste past the cap) not yet diagnosed. PROGRESS.md lists them.
+- **Network drops.** Recovered 1006 drops in the last five runs were 2, 3, 0, 9 and 4. Six of the nine were Durable Object resets: both peers of one doc dropped at the same moment, three legs in a row. A run over the allowance of 2 fails.
 - **The canary's requests grow.** The canary's Worker requests rose from 1,608 (2026-10-19) to 2,072 a run, past the default `request_budget` of 2000; the later runs used 3000. A likely cause, not yet confirmed: the canary pool's accounts keep the notes each run makes, and the prune never touches them.
 
 ## Demo content
