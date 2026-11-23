@@ -304,6 +304,23 @@ Parked from the M0 checker and critic passes, each with the task that owns it.
 
 ### From T8.F's staging runs (2026-11-22 to 23)
 
+**Where the launch check stands.** It closes on commit `7b55f7a`, the build that passed on staging: deploy 45135817095 ran the whole suite in one attempt (823 legs, 1 recovered drop whose reloaded copy matched the server), the security sweep passed 52 of 52, and its full lane 45132454263 is green. The branch head is that build plus documents. A later client change (the app asks again at once after a lost sync message) moved to its own task, T8.G, on branch `t/T8.G`; its two staging runs failed broadly on an afternoon when the CI runners' requests reached the platform by an unusual route, so they show nothing about it either way, and a change to sync code does not ship on reasoning alone.
+
+Recorded limits (accepted, not open findings):
+
+- After a lost sync message whose acknowledgement is also lost, a second person's code, HTML or formula block catches up 10 to 14 s late. Nothing is lost. The j01-registers black-hole check keeps the 40 s bound this build ran with until T8.G restores 10 s.
+- The connection-drop gate compares text only, and counts a closed pane as recovered.
+- Re-running only the failed jobs of a suite shard is a named human decision and is not gated by earlier verdicts.
+- The demo screenshots are from the first demo run; nothing visible changed since.
+- The j15 comment-composer leg repeats its gesture until the composer opens.
+
+Open:
+
+- Staging is at its growth cap: 29,360 note objects against 30,000, and a full suite needs 1,200. No further full-suite deploy can start until staging is pruned or the cap is changed.
+- On 2026-11-23, between about 14:00 and 22:00 UTC, requests from the CI runners entered the platform through unusual sites. Full-suite runs in that window (45189582791, 45245524556) are not evidence about the product.
+- 13 Worker exceptions within one minute (21:40 UTC, deploy 45245524556: HTTP 500 on comments, access, backlinks and content) have no known cause.
+- Whether a suggester's text typed around a connection drop survives the 60 s suggestion cooldown (close code 4429) is being checked separately.
+
 Deploy 45135817095 of `7b55f7a` passed the full suite in one attempt, both engines, with no leg re-run, 1 recovered drop (export `same`) and no infrastructure retry; the sweep on that build passed 52 of 52. Each earlier failure below is fixed at its cause: the setup resend (`setupFetch`), the review retry after a Durable Object reset (`retryingReset`, `retriedReview`), and the leave-aware chunk logging and recovery (WebKit stops a page's loads as a navigation starts; red in rehearsal 45121810915, 6 of 6, green in 45132450810, 12 of 12). The j16-paste leg past the cap passed 6 of 6 in that rehearsal and in the deploy; the staging log now names a failure with no kind by its error class.
 
 Failures in the two full-suite deploys before those fixes, per leg:

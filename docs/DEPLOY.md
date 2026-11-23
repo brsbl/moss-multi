@@ -153,7 +153,13 @@ Each note lands as `<title>.md`, and its media next to it. After that, `moss-mul
 
 ## Staging status (2026-11-23)
 
-The `suite=full` deploy of the T8.F head `7b55f7a` (deploy 45135817095, from full lane 45132454263) passed every job in one attempt, with no leg re-run: the deploy, `/api/version` equal to the tested bytes, the test-hook 404s, the canary (1,833 requests, under the default 2000), SP9, all 16 suite shards (both engines, about 400 legs each, no infrastructure retry and no setup resend) and the network drops job. The security sweep against that build passed 52 of 52.
+Staging runs `7b55f7a`, the build the launch check stands on. Its `suite=full` deploy (45135817095, from full lane 45132454263) is the last green one, and no full-suite deploy can start until staging is pruned or its growth cap is changed.
+
+- **Later red runs.** Two full-suite deploys of a later client change (45189582791 and 45245524556, now task T8.G) failed broadly, with 39 and 68 recovered drops. Between about 14:00 and 22:00 UTC that day the CI runners' requests entered the platform through unusual sites, so those runs say nothing about either build. Thirteen Worker exceptions within one minute of 45245524556 (21:40 UTC, HTTP 500 on comments, access, backlinks and content) have no known cause.
+- **Growth cap.** Staging holds 29,360 note objects against its cap of 30,000, and a full suite needs 1,200. Prune staging or change the cap before the next full suite.
+- **Pre-flight.** Before any full suite, run a canary-only deploy (the default `suite=canary`) and check that its requests entered through a single site (the site code at the end of each response's `cf-ray` header). If they did not, the route into the platform is unsettled; wait rather than run the suite.
+
+The green deploy passed every job in one attempt, with no leg re-run (823 legs): the deploy, `/api/version` equal to the tested bytes, the test-hook 404s, the canary (1,833 requests, under the default 2000), SP9, all 16 suite shards (both engines, about 400 legs each, no infrastructure retry and no setup resend) and the network drops job. The security sweep against that build passed 52 of 52.
 
 - **Large notes fit.** The legs sized to the note limits pass in both engines: 1,019,000 characters pasted lands whole and 1,021,000 is refused whole with the text notice; 23,500 short paragraphs land and 23,600 are refused; a push and a pull at the text limit work. The tail saw no isolate pass its memory or CPU limit (`limitMinutes` empty, no overload).
 - **Network drops.** One recovered drop in the run (j01-autolink, recovered in under 5 s, export `same`), against the allowance of 2.
