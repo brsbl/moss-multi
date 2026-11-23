@@ -7,7 +7,7 @@
 // exactly as one shared with an account, and nobody but the owner sees an email.
 import { createHash, randomBytes } from 'node:crypto';
 import { readFileSync } from 'node:fs';
-import type { Route } from '@playwright/test';
+import type { Locator, Route } from '@playwright/test';
 import type { Actor, Actors } from '../lib/actors.ts';
 import {
   ACTION_FEEDBACK_ATTR, APP_STATE_ATTR, BODY_BINDING_ATTR, DOC_SOCKET_PATH, DOC_STATE_ATTR, EDIT_MODE_ATTR, EDITOR_PANE_ATTR,
@@ -1001,4 +1001,94 @@ test('j08 raise: Cy at view is raised to comment, then to suggest, and the open 
   await cy.page.keyboard.type(' proposed');
   await expect.poll(() => ui.pane(cy, docId).getAttribute(SUGGEST_SENT_ATTR), { message: 'a suggestion is sent', timeout: LIVE_TIMEOUT }).not.toBe('0');
   expect(await ui.fieldText(ada, docId, 'body'), "the owner's text is unchanged").toBe(TEXT);
+});
+
+/** The topmost line of text the person sees in `dialog`, read from its block. */
+const firstVisibleLine = (dialog: Locator): Promise<string> => dialog.evaluate((root) => {
+  const shown = (el: Element) => {
+    const box = el.getBoundingClientRect();
+    const style = getComputedStyle(el);
+    return box.width > 2 && box.height > 2 && style.visibility !== 'hidden' && style.clip !== 'rect(0px, 0px, 0px, 0px)' && !el.closest('.sr-only');
+  };
+  const texts = [...root.querySelectorAll('*')].filter((el) => [...el.childNodes].some((n) => n.nodeType === Node.TEXT_NODE && (n.textContent ?? '').trim()) && shown(el));
+  texts.sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top || a.getBoundingClientRect().left - b.getBoundingClientRect().left);
+  const top = texts[0];
+  return (top?.closest('p, h1, h2, h3') ?? top)?.textContent?.replace(/\s+/g, ' ').trim() ?? '';
+});
+
+/** The named line stays on screen inside the dialog with its list scrolled to the end. */
+async function nameStaysWhileScrolling(dialog: Locator, line: string): Promise<void> {
+  const scrolled = await dialog.evaluate((root) => {
+    const scroller = [...root.querySelectorAll<HTMLElement>('*')].find((el) => el.scrollHeight > el.clientHeight + 4 && /(auto|scroll)/.test(getComputedStyle(el).overflowY));
+    if (!scroller) return false;
+    scroller.scrollTop = scroller.scrollHeight;
+    return true;
+  });
+  expect(scrolled, 'declared setup: the list is long enough to scroll').toBe(true);
+  const name = dialog.locator('p').filter({ hasText: line }).first();
+  await expect.poll(() => name.evaluate((el) => {
+    const box = el.getBoundingClientRect();
+    const hit = document.elementFromPoint(box.left + Math.min(box.width / 2, 20), box.top + box.height / 2);
+    return hit !== null && el.contains(hit);
+  }), { message: `${line} stays visible while the list scrolls` }).toBe(true);
+}
+
+test('j08 compact: Share names the note, folder or vault in its first visible line, kept while the list scrolls, and every role reads the product\'s role words (T9.46) @p:ppl-2@2', async ({ actors, stack }) => {
+  const ada = await openShell(actors, 'ada');
+  const headers = { origin: stack.baseUrl };
+  const { vault } = (await (await ada.context.request.get('/api/workspace')).json()) as { vault: { id: string } };
+  const folderName = `Trip docs ${randomBytes(2).toString('hex')}`;
+  const made = await ada.context.request.post('/api/folders', { headers, data: { name: folderName, parentId: vault.id } });
+  expect(made.status(), 'declared setup: a folder').toBe(201);
+  const folderId = ((await made.json()) as { folder: { id: string } }).folder.id;
+  const note = await ada.context.request.post('/api/docs', { headers, data: { folderId, title: 'Packing list' } });
+  expect(note.status(), 'declared setup: a note in it').toBe(201);
+  const docId = ((await note.json()) as { doc: { id: string } }).doc.id;
+  // Declared setup: enough pending invites on each place that the list scrolls.
+  for (const path of [`/api/docs/${docId}`, `/api/folders/${folderId}`, `/api/folders/${vault.id}`]) {
+    for (let i = 0; i < 12; i += 1) {
+      const invited = await ada.context.request.post(`${path}/members`, { headers: { ...headers, 'content-type': 'application/json' }, data: { email: `guest${i}-${randomBytes(2).toString('hex')}@example.invalid`, role: 'viewer' } });
+      expect(invited.ok(), 'declared setup: an invite').toBe(true);
+    }
+  }
+  await ada.page.setViewportSize({ width: 1440, height: 700 });
+  await ada.page.reload();
+  await ada.page.locator(`html[${APP_STATE_ATTR}="ready"]`).waitFor({ state: 'attached', timeout: 30_000 });
+
+  // The product's decided role words (T9.46): Notion's quiet "Can …" set, since a suggester has no plain noun.
+  const WORDS = ['Can view', 'Can comment', 'Can suggest', 'Can edit', 'Owner'];
+  const rolesRead = async (dialog: Locator) => {
+    const triggers = dialog.getByRole('button', { name: /^(Access|Link access|Access for .+)$/ });
+    for (const text of await triggers.allInnerTexts()) expect(WORDS, `a role trigger reads "${text.trim()}"`).toContain(text.trim());
+    await triggers.first().click();
+    const menu = ui.openRoleMenu(dialog);
+    for (const text of await menu.getByRole('menuitemradio').allInnerTexts()) expect(WORDS, `a role menu row reads "${text.trim()}"`).toContain(text.trim());
+    await ada.page.keyboard.press('Escape');
+    await expect(menu).toHaveCount(0);
+  };
+
+  await ada.goto(`/d/${docId}`);
+  await ui.waitOpen(ada, docId, 'live');
+  const noteDialog = await ui.openShare(ada, docId);
+  await expect.poll(() => firstVisibleLine(noteDialog), { message: 'the first visible line names the note' }).toBe('Note “Packing list”');
+  await rolesRead(noteDialog);
+  await nameStaysWhileScrolling(noteDialog, 'Packing list');
+  await ada.page.keyboard.press('Escape');
+  await expect(noteDialog).toBeHidden();
+
+  await ui.folderRow(ada, folderName).click({ button: 'right' });
+  await ada.page.getByRole('menuitem', { name: 'Share…', exact: true }).click();
+  const folderDialog = ada.page.getByRole('dialog', { name: 'Share folder' });
+  await expect(folderDialog).toBeVisible();
+  await expect.poll(() => firstVisibleLine(folderDialog), { message: 'the first visible line names the folder' }).toBe(`Folder “${folderName}”`);
+  await nameStaysWhileScrolling(folderDialog, folderName);
+  await ada.page.keyboard.press('Escape');
+  await expect(folderDialog).toBeHidden();
+
+  await (await ui.openVaultSettings(ada.page)).getByRole('button', { name: 'Share vault…', exact: true }).click();
+  const vaultDialog = ada.page.getByRole('dialog', { name: 'Share vault' });
+  await expect(vaultDialog).toBeVisible();
+  await expect.poll(() => firstVisibleLine(vaultDialog), { message: 'the first visible line names the vault' }).toBe('Vault “Home”');
+  await nameStaysWhileScrolling(vaultDialog, 'Home');
+  await ada.page.keyboard.press('Escape');
 });

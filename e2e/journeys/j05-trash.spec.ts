@@ -10,7 +10,7 @@ import type { Locator } from '@playwright/test';
 import type { Actor, Actors } from '../lib/actors.ts';
 import {
   APP_STATE_ATTR, BODY_BINDING_ATTR, CONNECTION_BANNER_ATTR, DOC_STATE_ATTR, EDITOR_PANE_ATTR, INPUT_REFUSAL_ATTR, NAMES, SIDEBAR_ROW_ATTR,
-  MODE_ROW_ATTR, REMOTE_CARET_ATTR, REVIEW_BAND_ATTR, ROLE_BAND_ATTR, SUGGESTIONS_BUTTON_ATTR, SYNC_UNACKED_ATTR, TERMINAL_REASON_ATTR,
+  MODE_ROW_ATTR, REMOTE_CARET_ATTR, REVIEW_BAND_ATTR, ROLE_BAND_ATTR, SUGGEST_MARK_ATTR, SUGGESTIONS_BUTTON_ATTR, SYNC_UNACKED_ATTR, TERMINAL_REASON_ATTR,
   TITLE_BINDING_ATTR, TRASH_ROW_ATTR, paneSelector,
 } from '../lib/contract.ts';
 import { grant, grantDoc } from '../lib/grants.ts';
@@ -367,7 +367,7 @@ test('j05-trash: a note trashed while open and then restored comes back live in 
   await actors.checkpoint('restored-in-place');
 });
 
-test('j05-trash: a note trashed under open windows says so once: the owner’s other window offers Restore, a suggester’s does not, and neither keeps suggestion or presence chrome @p:note-5', async ({ actors }) => {
+test('j05-trash: a note trashed under open windows says so once: the owner’s other window offers Restore, a suggester’s does not, and neither keeps suggestion or presence chrome; presence returns with the restore (T9.46) @p:note-5', async ({ actors }) => {
   const benPrincipal = await actors.principal('ben');
   const ada = await openShell(actors, 'ada');
   const docId = await ui.createNote(ada);
@@ -388,6 +388,10 @@ test('j05-trash: a note trashed under open windows says so once: the owner’s o
   await ben.page.keyboard.type(' and a suggestion');
   await expect(other.page.locator(`[${SUGGESTIONS_BUTTON_ATTR}]`), 'the open suggestion is counted').toHaveCount(1, { timeout: PEER_MS });
   await expect(ui.pane(other, docId).locator(`[${REMOTE_CARET_ATTR}]`), 'Ben’s caret shows').not.toHaveCount(0, { timeout: PEER_MS });
+  const marks = (actor: Actor) => actor.page.locator(`[${SUGGEST_MARK_ATTR}]`);
+  const paint = (actor: Actor) => actor.page.evaluate(() => ['suggest-insert', 'suggest-delete']
+    .flatMap((name) => [...((CSS as unknown as { highlights?: Map<string, Set<Range>> }).highlights?.get(name) ?? [])].map((range) => range.toString())));
+  await expect(marks(other), 'the positive control: Edit mode marks Ben’s pending insertion').not.toHaveCount(0, { timeout: PEER_MS });
 
   await trashFromSidebar(ada, docId, ben, other);
   const notices = (actor: Actor) => actor.page.locator(`[${NAMES.retentionNotice}], [${CONNECTION_BANNER_ATTR}]`);
@@ -403,6 +407,23 @@ test('j05-trash: a note trashed under open windows says so once: the owner’s o
   await expect(ownNotice).toContainText(TRASH_COPY.trashedNote);
   await expect(notices(ben)).toHaveText(TRASH_COPY.peerTrashed);
   await expect(ben.page.getByRole('button', { name: 'Restore', exact: true }), 'no Restore for a suggester').toHaveCount(0);
+  // T9.46: no pending-suggestion mark is left on a note in Trash in the owner's other window.
+  for (const actor of [other]) {
+    await expect(marks(actor), `${actor.label}: no suggestion mark on a note in Trash`).toHaveCount(0);
+    await expect.poll(() => paint(actor), { message: `${actor.label}: no suggestion paint` }).toEqual([]);
+  }
+  // T9.46: the collaborator's card stands where the owner's Moss Trash notice does, with Moss's 14 px warning icon.
+  for (const size of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) {
+    for (const actor of [other, ben]) await actor.page.setViewportSize(size);
+    const place = async (notice: Locator) => notice.evaluate((el) => {
+      const icon = el.querySelector('svg')!.getBoundingClientRect();
+      return { top: Math.round(el.getBoundingClientRect().top), icon: Math.round(icon.width) };
+    });
+    await expect.poll(async () => [await place(notices(ben)), await place(ownNotice)], { message: `${size.width}: Ben's card matches the owner's Trash notice` })
+      .toEqual([await place(ownNotice), await place(ownNotice)]);
+    expect((await place(ownNotice)).icon, `${size.width}: Moss's 14 px icon`).toBe(14);
+  }
+  for (const actor of [other, ben]) await actor.page.setViewportSize({ width: 1440, height: 1000 });
 
   // The restore brings the note back live in every window that had it: each opens one more socket, and Ada's first
   // window, which Moss moved off the note she trashed, mounts it again.
@@ -412,6 +433,12 @@ test('j05-trash: a note trashed under open windows says so once: the owner’s o
   await expect(ui.pane(other, docId), 'Restore brings the note back live in place').toHaveAttribute(DOC_STATE_ATTR, 'live', { timeout: BIND_TIMEOUT });
   await expect(notices(other), 'and its notice goes').toHaveCount(0);
   await expect(noteRow(ada, docId), 'back in Ada’s notes').toBeVisible({ timeout: PEER_MS });
+  // T9.46: presence comes back with the note: Ben types again and the owner's other window shows his one caret.
+  await expect(ui.body(ben, docId), 'Ben’s note is live again').toHaveAttribute(BODY_BINDING_ATTR, 'live', { timeout: BIND_TIMEOUT });
+  await ui.body(ben, docId).click();
+  await ben.page.keyboard.press(toEnd);
+  await ben.page.keyboard.type(' again');
+  await expect(ui.pane(other, docId).locator(`[${REMOTE_CARET_ATTR}]`), 'one remote caret, Ben’s').toHaveCount(1, { timeout: PEER_MS });
 });
 
 test('j05-trash: a restore the server refuses shows the server’s sentence, and the note stays in Trash @p:note-5', async ({ actors }) => {

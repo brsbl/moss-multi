@@ -103,7 +103,7 @@ async function reply(actor: Actor, text: string, mention?: string): Promise<void
   await expect(thread(actor).getByText(text), 'the reply joins the thread').toBeVisible();
 }
 
-test('j15-social: reactions toggle per principal, live for both people @p:mean-1 @evidence', async ({ actors, stack }) => {
+test('j15-social: reactions toggle per principal, live for both people, your own count in Moss\'s faint ink (T9.46) @p:mean-1 @evidence', async ({ actors, stack }) => {
   const note = await sharedNote(actors, stack.baseUrl);
   const { ada, id } = note;
   const { actor: ben } = await peer(actors, note, 'ben', 'commenter');
@@ -146,6 +146,23 @@ test('j15-social: reactions toggle per principal, live for both people @p:mean-1
   await expect(message(ada, 'React to me').getByRole('button', { name: '👍 1' }), "Ada's stays hers").toHaveAttribute('aria-pressed', 'true');
   await expect(message(ben, 'React to me').getByRole('button', { name: '👍 1' })).toHaveAttribute('aria-pressed', 'false');
   await expect(message(ada, 'React to me').getByRole('button', { name: '👍 1' }), 'a chip has no outline').toHaveCSS('border-top-width', '0px');
+  // T9.46: your own chip's count keeps Moss's faint comment-count ink (text-ink-faint), pressed only by its faint fill.
+  for (const theme of ['light', 'dark'] as const) {
+    await ada.page.emulateMedia({ colorScheme: theme });
+    await expect(ada.page.locator('html')).toHaveAttribute('data-theme', theme);
+    const ink = await message(ada, 'React to me').getByRole('button', { name: '👍 1' }).evaluate((chip) => {
+      const probe = document.createElement('span');
+      probe.className = 'text-ink-faint';
+      chip.parentElement!.appendChild(probe);
+      const faint = getComputedStyle(probe).color;
+      probe.remove();
+      const count = chip.querySelectorAll('span')[1];
+      return { count: getComputedStyle(count).color, faint, fill: getComputedStyle(chip).backgroundColor };
+    });
+    expect(ink.count, `${theme}: your own count is Moss's faint count ink`).toBe(ink.faint);
+    expect(ink.fill, `${theme}: pressed by a faint fill`).not.toBe('rgba(0, 0, 0, 0)');
+  }
+  await ada.page.emulateMedia({ colorScheme: 'light' });
 
   // The keyboard: arrows, Home and End move among the choices, Escape returns to Add reaction, Enter chooses.
   await add.focus();
