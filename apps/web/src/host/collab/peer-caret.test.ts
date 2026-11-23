@@ -662,6 +662,13 @@ describe('controls: what the module leaves as today @p:col-1', () => {
       md: PLAIN, ben: [LINE, MID],
       ada: [() => { const line = $line(LINE); line.insertAfter($createParagraphNode().append($createTextNode('Another paragraph that waits.'))); line.remove(); }],
     }],
+    ...([['mid-line', MID, 'Ben waits.'], ['at the end of the line', LINE.length, '.']] as const).map(([name, at, added]): [string, Scenario] => [
+      `C1 one update: the paragraph above that reads as Ben's deleted, his converted, and one that ends like his line added below, Ben ${name}`,
+      {
+        md: ['Alpha line.', '', LINE, '', LINE, '', 'Bravo line.'].join('\n'), ben: [LINE, at], nth: 1,
+        ada: [() => { $line(LINE, 0).remove(); heading()(); $line(LINE).insertAfter($createParagraphNode().append($createTextNode(added))); }],
+      },
+    ]),
     ...(['Alpha line.', LINE, 'Charlie line.'] as const).map((at): [string, Scenario] => [
       `C2 [A, L, C] to [C, A, L], Ben in ${at}`,
       { md: ['Alpha line.', '', LINE, '', 'Charlie line.'].join('\n'), ben: [at, 3], ada: [() => { $line('Alpha line.').insertBefore($line('Charlie line.')); }] },
