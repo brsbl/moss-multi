@@ -1126,10 +1126,11 @@ export class DocSession {
       const awareness = this.provider.awareness;
       const state = awareness.getLocalState();
       if (state !== null && !this.#ended && !this.#lingering) awareness.setLocalState(state);
-      // Writes still queued in the outbox are on their way; resending them would only queue them twice. Each held
-      // payload still asks: a lost ack keeps the outbox busy until it stalls (10 s), and a payload's lost frames with it.
+      // Writes still queued in the outbox are on their way; resending them would only queue them twice. A payload
+      // missing an update still asks: a lost ack keeps the outbox busy until it stalls (10 s). Only those: a large
+      // paste keeps the outbox busy with thousands of payloads held.
       if ((ws as DocSocket).outbox?.busy) {
-        this.#payloadSync.ask();
+        this.#payloadSync.ask([...this.#gaps.keys()].filter((id) => id !== ''));
         return;
       }
       // Unacked writes go again under the frame discipline (comments.md §6), unless a replay is already sending them.

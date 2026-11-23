@@ -361,10 +361,13 @@ export class PayloadSync {
     }
   }
 
-  /** A step 1 per held payload, without resending its unacked writes. */
-  ask(): void {
+  /** A step 1 for each of `ids` this client holds, without resending its unacked writes. */
+  ask(ids: Iterable<string>): void {
     if (!this.options.open()) return;
-    for (const [id, doc] of this.host.docs) this.options.send(encodePayloadFrame(id, PAYLOAD_STEP1, Y.encodeStateVector(doc)));
+    for (const id of ids) {
+      const doc = this.host.docs.get(id);
+      if (doc) this.options.send(encodePayloadFrame(id, PAYLOAD_STEP1, Y.encodeStateVector(doc)));
+    }
   }
 
   /** Re-delivers a payload's unacked writes. */
