@@ -406,9 +406,7 @@ const CONVERSIONS: { name: string; md: string; ada: () => void; type: string }[]
   { name: 'bullet as a new list', md: PLAIN, ada: list('bullet'), type: 'listitem' },
   { name: 'bullet joining the list above', md: ['- one', '- two', '', LINE, '', NEXT].join('\n'), ada: list('bullet'), type: 'listitem' },
   { name: 'bullet joining the list below', md: [PREV, '', LINE, '', '- one', '- two'].join('\n'), ada: list('bullet'), type: 'listitem' },
-  { name: 'bullet between two lists', md: ['- one', '', LINE, '', '- two'].join('\n'), ada: list('bullet'), type: 'listitem' },
   { name: 'checkbox', md: PLAIN, ada: list('check'), type: 'listitem' },
-  { name: 'bullet to numbered, Ben in item 2 of 3', md: ['- First item', `- ${LINE}`, '- Last item'].join('\n'), ada: list('number'), type: 'listitem' },
   {
     name: 'indent of Ben\'s item', md: ['- First item', `- ${LINE}`, '- Last item'].join('\n'), type: 'listitem',
     ada: () => { const item = $line(LINE); $select(item, 0); if ($isListItemNode(item)) item.setIndent(1); },
@@ -669,6 +667,23 @@ describe('controls: what the module leaves as today @p:col-1', () => {
         ada: [() => { $line(LINE, 0).remove(); heading()(); $line(LINE).insertAfter($createParagraphNode().append($createTextNode(added))); }],
       },
     ]),
+    // The same, with Ben's line edited in the same update so that it reads as the deleted line above it.
+    ...([['mid-line', MID + 1, 'Ben waits.'], ['at the end of the line', LINE.length + 1, '.']] as const).map(([name, at, added]): [string, Scenario] => [
+      `C1 one update: the paragraph above deleted, the leading x of Ben's line removed so it reads as the deleted one, his converted, and one that ends like his line added below, Ben ${name}`,
+      {
+        md: ['Alpha line.', '', LINE, '', `x${LINE}`, '', 'Bravo line.'].join('\n'), ben: [`x${LINE}`, at],
+        ada: [() => { $line(LINE, 0).remove(); ($line(`x${LINE}`).getFirstChild() as TextNode).spliceText(0, 1, ''); heading()(); $line(LINE).insertAfter($createParagraphNode().append($createTextNode(added))); }],
+      },
+    ]),
+    // A conversion that re-creates the lines around Ben's in the same update: R1 only takes a line replaced on its own.
+    ...OFFSETS.map((at): [string, Scenario] => [
+      `C2 a whole list changed bullet to numbered, Ben in item 2 of 3 at ${at}`,
+      { md: ['- First item', `- ${LINE}`, '- Last item'].join('\n'), ben: [LINE, at], ada: [list('number')] },
+    ]),
+    ...OFFSETS.map((at): [string, Scenario] => [
+      `C2 a bullet joining the lists above and below into one, Ben at ${at}`,
+      { md: ['- one', '', LINE, '', '- two'].join('\n'), ben: [LINE, at], ada: [list('bullet')] },
+    ]),
     ...(['Alpha line.', LINE, 'Charlie line.'] as const).map((at): [string, Scenario] => [
       `C2 [A, L, C] to [C, A, L], Ben in ${at}`,
       { md: ['Alpha line.', '', LINE, '', 'Charlie line.'].join('\n'), ben: [at, 3], ada: [() => { $line('Alpha line.').insertBefore($line('Charlie line.')); }] },
@@ -788,7 +803,7 @@ describe('cost: a peer\'s keystroke never places the caret, and a placement is l
     expect(where(ben)?.right).toBe(RIGHT);
   }, 60_000);
 
-  it('S1 a 5,000-item and a 20,000-item list changed bullet to numbered, Ben in item 2: node visits grow linearly', async () => {
+  it('S1 a 5,000-item and a 20,000-item list changed bullet to numbered, Ben in item 2: node visits grow linearly, and nothing is restored', async () => {
     const visits: number[] = [];
     for (const size of [5_000, 20_000]) {
       const md = Array.from({ length: size }, (_, i) => `- Item ${i + 1}`).join('\n');
@@ -798,7 +813,8 @@ describe('cost: a peer\'s keystroke never places the caret, and a placement is l
       ada.edit(list('number', 'Item 1'));
       await deliver(ada, ben);
       visits.push(peerCaretWork.visits - from);
-      expect(where(ben)).toMatchObject(caret('listitem', 'Item 2', 3));
+      // Every item is re-created, so nothing is restored: the binding's caret stands, as today.
+      expect(ben.commits.filter(commit => commit.tags.has(PEER_CARET_TAG)).length, 'no restore').toBe(0);
       while (opened.length > 0) opened.pop()!.dispose();
     }
     expect(visits[0]!, 'the placement walked the list').toBeGreaterThan(0);
