@@ -11,8 +11,10 @@ import { retryClass } from './retry-gate.mjs';
 /** @param {number} ms */
 const seconds = (ms) => `${(ms / 1000).toFixed(1)} s`;
 
-// A stack frame in the suite's own source: `e2e/<dir>/<file>.ts:<line>`, nothing else of the frame.
-const FRAME = /\/(e2e\/(?:journeys|lib)\/[\w.-]+\.ts):(\d+):\d+\)?$/;
+// A stack frame in the suite's own source (`e2e/<dir>/<file>.<ts|js|mjs>:<line>`) or a deploy script, nothing else of it.
+const FRAME = /\/(e2e\/(?:journeys|lib)\/[\w.-]+\.(?:ts|js|mjs)|scripts\/deploy\/[\w.-]+\.mjs):(\d+):\d+\)?$/;
+// An error's class at the start of its message or stack (`TypeError: ...`): a fixed identifier, never the text after it.
+const CLASS = /^([A-Z][A-Za-z]{0,40})(?::|$)/;
 
 // Fixed labels for what an error message says; only the label is printed.
 const KINDS = [
@@ -42,10 +44,11 @@ export function failureTrace(result) {
     const kinds = KINDS.filter(([, pattern]) => pattern.test(plain)).map(([kind]) => kind);
     if (kinds.length > 0) lines.push(`kind ${kinds.join(', ')}`);
     const values = numericValues(error.message ?? '');
-    if (values) lines.push(values);
-    lines.push(...findingFacts(error.message ?? ''));
-    lines.push(...inductionFacts(error.message ?? ''));
-    lines.push(...requestFacts(plain));
+    const facts = [...(values ? [values] : []), ...findingFacts(error.message ?? ''), ...inductionFacts(error.message ?? ''), ...requestFacts(plain)];
+    lines.push(...facts);
+    // Nothing else to go on: the error's class, so a failure is never unnamed.
+    const name = CLASS.exec(plain)?.[1] ?? CLASS.exec(error.stack ?? '')?.[1];
+    if (kinds.length === 0 && facts.length === 0 && name) lines.push(`error ${name}`);
   }
   return lines;
 }
