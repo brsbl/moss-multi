@@ -1,6 +1,6 @@
 # moss-multi progress
 
-**Overall: 93% done** (280 of 302 planned tasks verified)
+**Overall: 93% done** (281 of 302 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
@@ -13,7 +13,7 @@
 | M6 History | Versions, view, diff, identity-preserving restore | 20 / 20 | in progress |
 | M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 26 / 26 | in progress |
 | M8 Ship | Everything on a permanent staging URL with demo content | 17 / 17 | |
-| M9 Polish | Understand every control without help: fixes found by using the whole product | 40 / 43 | |
+| M9 Polish | Understand every control without help: fixes found by using the whole product | 41 / 43 | |
 
 A task counts only after an independent checker passes it on green CI. Each milestone also ends with the cumulative journey suite green in Chromium and WebKit and a naive-user critic pass.
 
@@ -303,6 +303,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-11-22 — T9.45 verified: Settings names who is signed in beside Sign out, and Agents is a quiet card of key rows with + New key, Copy ID and Revoke on hover or focus; a new key stays shown until Done, Copy key says Copied only when the clipboard took it, and same-name keys are told apart by their creation time.
 - 2026-11-22 — T9.43 verified: a note trashed under an open window shows one bottom notice and nothing else, Moss's Trash notice with Restore for whoever may restore it or “This note was moved to Trash.” for a collaborator, its carets clear at once, and a Trash row from the caller's own vault names that vault.
 - 2026-11-22 — T9.48g verified: a WebKit test that fails because the browser's network process crashed is now labelled BLOCKED as an engine fault instead of a product failure, and every failed WebKit test attaches the engine's process evidence before its pages close.
+- 2026-11-22 — T9.19 verified: the browser's Back and Forward move between the notes a person opened, without a page load and with folders still expanded, and a step back or forward to a note since trashed keeps the last live note in the address.
 
 ## T1.1s identity audit
 
@@ -398,6 +399,11 @@ Moss's marker patterns (`\{%c:\s*([A-Za-z0-9_,\-\s]+?)\s*%\}` and the `%%m:` for
 ## Follow-ups (P2)
 
 Parked from the M0 checker and critic passes, each with the task that owns it.
+
+### From T9.19's checker (f7d0753, 2026-11-22)
+
+- T9.19 (The browser's Back and Forward move between notes) checker P2: the implementer's proof shots are all 1440×1000 and none shows the 390×844 share-link visitor view, nor ties the rendered build to the checked head; the checker's own pass covers the head at 1440×1000 light and dark, the 390×844 visitor view is still uncaptured.
+- T9.19 (The browser's Back and Forward move between notes) checker P2: in split view, Forward to a note trashed while it showed leaves the address on the last live note that had focus, even when another live note still shows in the other pane (T9.46).
 
 ### From T9.43's checker (32fd1a2, 2026-11-22)
 
