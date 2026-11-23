@@ -361,6 +361,12 @@ export class PayloadSync {
     }
   }
 
+  /** A step 1 per held payload, without resending its unacked writes. */
+  ask(): void {
+    if (!this.options.open()) return;
+    for (const [id, doc] of this.host.docs) this.options.send(encodePayloadFrame(id, PAYLOAD_STEP1, Y.encodeStateVector(doc)));
+  }
+
   /** Re-delivers a payload's unacked writes. */
   resend(id: string, update: Uint8Array | null): void {
     if (update && this.options.open()) this.#send(id, PAYLOAD_STEP2, update);

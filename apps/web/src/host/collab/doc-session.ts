@@ -1126,8 +1126,12 @@ export class DocSession {
       const awareness = this.provider.awareness;
       const state = awareness.getLocalState();
       if (state !== null && !this.#ended && !this.#lingering) awareness.setLocalState(state);
-      // Writes still queued in the outbox are on their way; resending them would only queue them twice.
-      if ((ws as DocSocket).outbox?.busy) return;
+      // Writes still queued in the outbox are on their way; resending them would only queue them twice. Each held
+      // payload still asks: a lost ack keeps the outbox busy until it stalls (10 s), and a payload's lost frames with it.
+      if ((ws as DocSocket).outbox?.busy) {
+        this.#payloadSync.ask();
+        return;
+      }
       // Unacked writes go again under the frame discipline (comments.md §6), unless a replay is already sending them.
       // Each held payload asks again too, after the note's backlog, so one whose frames were lost catches up (A§10.10).
       this.#payloadsDue = true;
