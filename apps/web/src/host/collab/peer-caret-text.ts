@@ -13,6 +13,8 @@ export function replacedOffset(left: string, right: string, t: string): number |
     const head = t.slice(0, t.length - right.length);
     // Idle; my typed keys or Backspaces still on their way; a peer's text at my caret; a peer's "- " shortcut.
     if (head.startsWith(left) || left.startsWith(head)) return head.length;
+    // A peer removed text from the start of my line in the same commit: a Markdown shortcut consumes its marker.
+    if (left.endsWith(head)) return head.length;
   }
   // A peer's edit on my right in the same commit.
   if (left !== '' && t.startsWith(left)) return left.length;
