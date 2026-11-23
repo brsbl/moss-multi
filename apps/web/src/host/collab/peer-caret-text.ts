@@ -3,16 +3,19 @@
 // search and no tolerance: every doubt is null, and null leaves the binding's own caret.
 
 /** My line was replaced by a block with text `t`: the caret's offset in `t`, or null. */
-export function replacedOffset(_left: string, _right: string, _t: string): number | null {
+export function replacedOffset(left: string, right: string, t: string): number | null {
+  void [left, right, t];
   return null;
 }
 
 /** The words on my left moved into new blocks: the caret's offset in the last of them, or null. */
-export function splitOffset(_left: string, _right: string, _kept: string, _fresh: string[], _startOfRange: boolean): number | null {
+export function splitOffset(left: string, right: string, kept: string, fresh: string[], startOfRange: boolean): number | null {
+  void [left, right, kept, fresh, startOfRange];
   return null;
 }
 
 /** True when `left` is `kept` with `run` inserted at one place, tried at two places only. */
-export function movedOut(_left: string, _kept: string, _run: string): boolean {
+export function movedOut(left: string, kept: string, run: string): boolean {
+  void [left, kept, run];
   return false;
 }

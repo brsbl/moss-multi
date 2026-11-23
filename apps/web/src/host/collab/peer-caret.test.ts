@@ -239,6 +239,8 @@ const list = (type: ListType, text = LINE) => () => { $select($line(text), 0); $
 const enter = (text: string, offset: number) => () => { $select($line(text), offset); $range().insertParagraph(); };
 const typeAt = (text: string, offset: number, typed: string, nth = 0) => () => { $select($line(text, nth), offset); $range().insertText(typed); };
 const bold = (text: string, from: number, to: number) => () => { $select($line(text), from, to); $range().formatText('bold'); };
+/** Ben's two Backspaces, as the editor makes them: the two characters left of his caret go and the caret with them. */
+const backspaces = () => { const { anchor } = $range(); ($getNodeByKey(anchor.key) as TextNode).spliceText(anchor.offset - 2, 2, '', true); };
 /** Backspace at the start of the line: its children join the line above. */
 const mergeUp = (text: string, nth = 0) => () => {
   const line = $line(text, nth);
@@ -323,10 +325,11 @@ async function identity(md: string, change: () => void, at: [string, number] = [
   const { prev, next } = seen as { prev: EditorState; next: EditorState };
   const before = linesOf(prev);
   const after = linesOf(next);
-  const kept = before.filter(line => after.some(other => other.key === line.key));
+  // Kept lines, with their text after the commit.
+  const kept = after.filter(line => before.some(other => other.key === line.key));
   const fresh = after.filter(line => !prev._nodeMap.has(line.key));
   // The premise: the lines whose keys are in both states stand in the same order in both.
-  expect(after.filter(line => kept.some(other => other.key === line.key)).map(line => line.key), 'kept lines keep their order').toEqual(kept.map(line => line.key));
+  expect(kept.map(line => line.key), 'kept lines keep their order').toEqual(before.filter(line => kept.some(other => other.key === line.key)).map(line => line.key));
   return { before, after, kept, fresh, prev };
 }
 
@@ -488,7 +491,7 @@ describe('rules: a peer\'s block change keeps the waiting caret on its words @p:
     });
   }
   it('U4 two Backspaces in flight and a conversion: before the words on the right; the characters are back on the left', async () => {
-    const outcome = await run({ md: PLAIN, ben: [LINE, MID], flight: () => { $range().deleteCharacter(true); $range().deleteCharacter(true); }, ada: [heading()] });
+    const outcome = await run({ md: PLAIN, ben: [LINE, MID], flight: backspaces, ada: [heading()] });
     expect(outcome.where).toMatchObject(caret('heading', LINE, MID));
     expect(outcome.after?.ben).toEqual([['paragraph', PREV], ['heading', LINE], ['paragraph', NEXT]]);
     expect(outcome.after?.ada).toEqual(outcome.after?.ben);
@@ -655,7 +658,7 @@ describe('controls: what the module leaves as today @p:col-1', () => {
     ['C6 Enter exactly at Ben\'s caret', { md: PLAIN, ben: [LINE, MID], ada: [enter(LINE, MID)] }],
     ['C6 Enter after Ben\'s caret', { md: PLAIN, ben: [LINE, MID], ada: [enter(LINE, 30)] }],
     ['C6 Enter mid-line while Ben\'s abc at the end of the line is unsent', { md: PLAIN, ben: [LINE, LINE.length], flight: () => $range().insertText('abc'), ada: [enter(LINE, 6)] }],
-    ['C6 Enter before Ben\'s caret while his Backspaces are unsent', { md: PLAIN, ben: [LINE, MID], flight: () => { $range().deleteCharacter(true); $range().deleteCharacter(true); }, ada: [enter(LINE, 6)] }],
+    ['C6 Enter before Ben\'s caret while his Backspaces are unsent', { md: PLAIN, ben: [LINE, MID], flight: backspaces, ada: [enter(LINE, 6)] }],
     ['C6 Enter at offset 0 with Ben at offset 0', { md: PLAIN, ben: [LINE, 0], ada: [enter(LINE, 0)] }],
     ['C7 Ada pastes three lines before Ben\'s caret', { md: PLAIN, ben: [LINE, MID], ada: [() => { const s = $select($line(LINE), 7); s.insertText('one'); s.insertParagraph(); $range().insertText('two'); $range().insertParagraph(); $range().insertText('three '); }] }],
     ['C7 one update: Ada\'s Enter and then zz at Ben\'s place in the new block', { md: PLAIN, ben: [LINE, MID], ada: [enter(LINE, 6), typeAt(TAIL, TAIL.length - RIGHT.length, 'zz')] }],
