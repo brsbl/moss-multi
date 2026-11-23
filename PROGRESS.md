@@ -1,6 +1,6 @@
 # moss-multi progress
 
-**Overall: 94% done** (283 of 302 planned tasks verified)
+**Overall: 94% done** (284 of 302 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
@@ -13,7 +13,7 @@
 | M6 History | Versions, view, diff, identity-preserving restore | 20 / 20 | in progress |
 | M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 26 / 26 | in progress |
 | M8 Ship | Everything on a permanent staging URL with demo content | 17 / 17 | |
-| M9 Polish | Understand every control without help: fixes found by using the whole product | 43 / 43 | |
+| M9 Polish | Understand every control without help: fixes found by using the whole product | 44 / 43 | |
 
 A task counts only after an independent checker passes it on green CI. Each milestone also ends with the cumulative journey suite green in Chromium and WebKit and a naive-user critic pass.
 
@@ -306,6 +306,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-11-22 — T9.19 verified: the browser's Back and Forward move between the notes a person opened, without a page load and with folders still expanded, and a step back or forward to a note since trashed keeps the last live note in the address.
 - 2026-11-22 — T9.22 verified: the browser tab is named after the focused note (“<title> — moss”, “Untitled — moss”, or “moss” with no note open), follows a rename by anyone, and journey tests now check it.
 - 2026-11-23 — T9.46 verified: the assembled product reads like Moss at its seams: View only and Comment only explain themselves inside the Review row, the Suggestions list has one 36 px Review row, Share names the note, folder or vault in its header, a bad email's error sits under Email, a note in Trash shows no suggestion marks, and a slow notice open no longer overrides a newer focus.
+- 2026-11-23 — T9.32 verified: a person can tell who is in a note without coloured avatar discs: People here is one quiet button of neutral initials whose roster names every session, agent and window with its caret colour, choosing a row names that person at their caret, and a peer's typing name sits in the margin beside their line. The record held since 2026-11-18 is restored: the paste stall was traced to another cause (highlight rules applied to the whole page; the same check failed before T9.32 was merged) and fixed in T9.48b, and on the green full lane [run 45138603369](https://github.com/brsbl/moss-multi/actions/runs/45138603369) the collaborator's tab, where the name pass runs, was held at most 1,646 ms at a time in Chromium and 880 ms in WebKit across the 12 paste legs with a second person, under the pasting tab's own bound in every leg (1,100 ms against 2,000 in Chromium and 323 ms against 2,000 in WebKit for the 10,000-item check list).
 
 ## T1.1s identity audit
 
