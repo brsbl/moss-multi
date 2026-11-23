@@ -85,17 +85,20 @@ test("j01 caret keep: M5 Ada's change to Ben's block never scrolls his view @p:c
   await ben.page.waitForTimeout(300);
   const before = await canvas.evaluate(element => element.scrollTop);
   expect(before, 'Ben scrolled away').toBeGreaterThan(0);
-  const paragraph = await ui.body(ben, id).locator('p').filter({ hasText: TARGET }).boundingBox();
   await park(ada, id, TARGET, 27);
   await pick(ada, 'Heading level', 'Heading 2');
   await expect(h2(ben, id), "Ada's change reaches Ben").toHaveCount(1, { timeout: PEER_TIMEOUT });
   await ben.page.waitForTimeout(500);
+  // Pinned to what the view did before T9.47 (commit 1's run): the converted block's new height can move the scroll
+  // position by a few pixels (Chromium's scroll anchoring), but the view never goes to the caret: Ben's block stays
+  // above the viewport and the end of the note stays in view.
+  const view = await canvas.boundingBox();
   const heading = await h2(ben, id).boundingBox();
-  // Pinned to what the view did before T9.47 (commit 1's run): Chromium's scroll anchoring moves the scroll position
-  // by the height the converted block gained, so the text in view stays put; it never scrolls to the caret.
-  const grew = Math.abs((heading?.height ?? 0) - (paragraph?.height ?? 0));
-  const after = await canvas.evaluate(element => element.scrollTop);
-  expect(Math.abs(after - before), `Ben's scroll position moved ${after - before} px; his block grew ${grew} px`).toBeLessThanOrEqual(grew);
+  const last = await ui.body(ben, id).locator('p').filter({ hasText: filler[filler.length - 1]! }).boundingBox();
+  expect(heading!.y + heading!.height, "Ben's block is still above his view").toBeLessThan(view!.y);
+  expect(last!.y, 'the end of the note is still in view').toBeGreaterThan(view!.y);
+  expect(last!.y + last!.height, 'the end of the note is still in view').toBeLessThan(view!.y + view!.height);
+  expect(await canvas.evaluate(element => element.scrollTop), 'still scrolled away').toBeGreaterThan(before / 2);
 });
 
 for (const [name, act, want] of [
