@@ -209,6 +209,10 @@ test('sign-in on the card returns to the doc next names; a wrong password shows 
     await expect(actor.page, `${person.label}: sign-in returns to ${path}`).toHaveURL(atPath(path), { timeout: BOOT_TIMEOUT });
     await waitForShell(actor);
     expect((await me(actor, stack.baseUrl)).id, `${person.label}: signed in as themself`).toBe(person.id);
+    // A persistent cookie, not a session-only one: that a normal window reconnects after its browser's network
+    // process restarts, instead of ending the session, rests on it (T9.48g).
+    const session = (await actor.context.cookies()).find((c) => /session_token$/.test(c.name));
+    expect(session?.expires, `${person.label}: the session cookie carries Max-Age or Expires`).toBeGreaterThan(Date.now() / 1000);
   }
 });
 

@@ -1,5 +1,5 @@
 // Per-page census, installed before the first navigation (S-test §3.3): console, page errors, HTTP >= 400,
-// failed requests, doc sockets and the build stamps of every document load.
+// failed requests, doc sockets, page crashes and the build stamps of every document load.
 import type { Page } from '@playwright/test';
 import { DOC_SOCKET_PATH, NAMES } from './contract.ts';
 import { readStamps } from './detectors.js';
@@ -27,6 +27,8 @@ export class Telemetry {
   readonly failed: FailedRequest[] = [];
   readonly sockets: SocketEntry[] = [];
   readonly stamps: StampEntry[] = [];
+  /** When the page's process crashed (a page process, not the network process). */
+  readonly crashes: number[] = [];
   /** Document loads so far; sockets are counted per (doc, epoch), because a reload is a new document. */
   epoch = 0;
   /** Resolves once the page-side hooks are registered; await it before the first navigation. */
@@ -88,6 +90,7 @@ export class Telemetry {
       if (message.type() !== 'error' && message.type() !== 'warning') return;
       t.console.push({ type: message.type(), text: message.text(), url: message.location().url ?? '', at: Date.now() });
     });
+    page.on('crash', () => t.crashes.push(Date.now()));
     page.on('pageerror', (error) => t.pageErrors.push({ message: error.message, stack: error.stack ?? '', at: Date.now() }));
     page.on('response', (response) => {
       const request = response.request();

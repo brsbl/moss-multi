@@ -1,10 +1,17 @@
 // Note trash controls in moss's sidebar, note menu and footer (T2.3; A§8): only the owner trashes and restores, so a
 // control is offered only when the server would allow it. The footer's Trash button also takes a dropped note row.
 import type { DragEvent } from 'react';
+import { getBridge, WORKSPACE } from './bridge/index.ts';
 import { noteCan } from './capabilities.ts';
 
 /** Trash and Restore: the note's owner only, as the server decides. */
 export const canTrashNote = (id: string): boolean => noteCan(id, 'manage');
+
+/** A Trash row's caption: Moss's “Deleted …”, then the vault in Trash a restore brings back, when not the one on screen. */
+export function trashCaption(id: string, deleted: string): string {
+  const vault = getBridge()?.[WORKSPACE].trashedVaultName(id) ?? null;
+  return vault ? `${deleted} · ${vault}` : deleted;
+}
 
 /** A note row being dragged (moss's rows carry the note id as text; a folder carries its own type). */
 const draggingNote = (event: DragEvent) =>

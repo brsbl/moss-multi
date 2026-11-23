@@ -3,6 +3,7 @@
 import { randomBytes } from 'node:crypto';
 import { test as base } from '@playwright/test';
 import { Actors } from './actors.ts';
+import { closeBrowserTimed, watchBrowser } from './engine.ts';
 import { Measure } from './measure.ts';
 import { Stack } from './stack.ts';
 
@@ -13,6 +14,15 @@ interface TestFixtures { actors: Actors; stack: Stack; measure: Measure }
 interface WorkerFixtures { runToken: string; stackW: Stack }
 
 export const test = base.extend<TestFixtures, WorkerFixtures>({
+  // Times the browser's life and its close (engine.ts): a hung WebKit once took 30 s to close (T9.48g).
+  browser: [
+    async ({ browser }, use, workerInfo) => {
+      watchBrowser(browser);
+      await use(browser);
+      await closeBrowserTimed(browser, workerInfo.project.outputDir, workerInfo.project.name);
+    },
+    { scope: 'worker' },
+  ],
   runToken: [
     async ({}, use, workerInfo) => {
       const run = process.env.RUN_ID ?? `local-${randomBytes(3).toString('hex')}`;
@@ -35,11 +45,8 @@ export const test = base.extend<TestFixtures, WorkerFixtures>({
       testInfo.annotations.push({ type: 'browser', description: `${browser.browserType().name()} ${browser.version()}` });
       const actors = new Actors(browser, testInfo, { stack: stackW, runToken });
       await use(actors);
-      try {
-        await actors.assertInvariants();
-      } finally {
-        await actors.dispose();
-      }
+      // Every WebKit failure carries the engine evidence, so the next network-process fault can be diagnosed.
+      await actors.settle();
     },
     { auto: true },
   ],

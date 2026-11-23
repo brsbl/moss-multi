@@ -11,6 +11,9 @@ export class InfraBlocked extends Error {
 
 export const isInfraBlocked = (message: string | undefined): boolean => /\bInfraBlocked: /.test(message ?? '');
 
+/** The one engine signature a page's own console or failed-request text may carry. */
+export const NETWORK_PROCESS_CRASHED = "the browser's network process crashed";
+
 const SIGNATURES: [RegExp, string][] = [
   [/<!--\[if lt IE 7\]>[\s\S]*\bie6 oldie\b/i, 'a Cloudflare error page'],
   [/\bD1(?:_ERROR)?\b[^\n]*\b7429\b/i, 'D1 7429 (overloaded)'],
@@ -19,11 +22,19 @@ const SIGNATURES: [RegExp, string][] = [
   [/\bEADDRINUSE\b/, 'a port in use'],
   [/Executable doesn't exist|browserType\.launch: |Failed to launch/i, 'the browser failed to launch'],
   [/\*\*\* Received signal|workerd[^\n]*(?:segmentation fault|SIGSEGV|SIGABRT)/i, 'a workerd crash'],
+  // WebKit names its own network process crash. Not "WebKit encountered an internal error" (its consequence, and too
+  // broad) and not "Target crashed" (a page process, which a page that runs out of memory can cause) (T9.48g).
+  [/\bNetwork process crashed\b/, NETWORK_PROCESS_CRASHED],
 ];
 
 /** The infrastructure signature in a response body, log or error text, or null for a product outcome. */
 export function classifyInfra(text: string): string | null {
   return SIGNATURES.find(([pattern]) => pattern.test(text))?.[1] ?? null;
+}
+
+/** The network-process crash signature in any of a page's console or failed-request texts, or null. */
+export function browserCrashIn(texts: string[]): string | null {
+  return texts.some((text) => classifyInfra(text) === NETWORK_PROCESS_CRASHED) ? NETWORK_PROCESS_CRASHED : null;
 }
 
 /** Throws InfraBlocked when `text` carries an infrastructure signature. */

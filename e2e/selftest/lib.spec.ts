@@ -1,12 +1,15 @@
 // The rest of e2e/lib proven able to fail: exact-bytes helpers, the allowlist expiry, the principal guard
 // (invariant 8), the hibernation proof, infra classification, phase-clock budgets and percentiles, the shard guard,
 // the sever, the reach sweep and the UI verbs.
+import { chmodSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { request, type Page } from '@playwright/test';
+import { request, type Page, type TestInfo } from '@playwright/test';
+import { Actors } from '../lib/actors.ts';
 import { ALLOWLIST, expiredEntries, isAllowed, type AllowEntry } from '../lib/allowlist.ts';
 import { inductionProblems } from '../lib/hibernate.ts';
-import { classifyInfra, closeEachConnection, InfraBlocked, isInfraBlocked } from '../lib/infra.ts';
+import { browserLog, closeBrowserTimed } from '../lib/engine.ts';
+import { browserCrashIn, classifyInfra, closeEachConnection, InfraBlocked, isInfraBlocked } from '../lib/infra.ts';
 import { BODY_BINDING_ATTR, DOC_ID_ATTR, EDITOR_PANE_ATTR, TITLE_BINDING_ATTR } from '../lib/contract.ts';
 import { socketProblems, typedFindings, type ActorView } from '../lib/invariants.ts';
 import { budgetProblem, latencyRows, Measure, percentile } from '../lib/measure.ts';
@@ -181,6 +184,138 @@ test.describe('infrastructure classification', () => {
   test('InfraBlocked is recognizable in a reported error', () => {
     expect(isInfraBlocked(new InfraBlocked('stack died').message)).toBe(true);
     expect(isInfraBlocked('expect(received).toBe(expected)')).toBe(false);
+  });
+
+  // Run 44916988918's two forms of WebKit's own report (T9.48g), and its neighbours that must stay product verdicts.
+  const WORKSPACE_CRASH = "WebSocket connection to 'ws://127.0.0.1:8850/api/workspace/ws' failed: WebSocket network error: Network process crashed.";
+  const DOC_CRASH = "WebSocket connection to 'ws://127.0.0.1:8850/parties/doc-d-o/d6a6ed9e-56ea-409e-999f-72c8cdf79dc0?_pk=k1' failed: WebSocket network error: Network process crashed.";
+  test("WebKit's network process crash is infrastructure, on the workspace and the doc socket", () => {
+    expect(classifyInfra(WORKSPACE_CRASH)).toBe("the browser's network process crashed");
+    expect(classifyInfra(DOC_CRASH)).toBe("the browser's network process crashed");
+    expect(browserCrashIn(['an unrelated warning', DOC_CRASH])).toBe("the browser's network process crashed");
+  });
+  test('a socket failure without the crash, an internal error alone and a page crash are not', () => {
+    const plain = "WebSocket connection to 'ws://127.0.0.1:8850/api/workspace/ws' failed: There was a bad response from the server.";
+    const internal = 'Failed to load resource: WebKit encountered an internal error (http://127.0.0.1:8850/api/docs/d/backlinks)';
+    for (const text of [plain, internal, 'page.evaluate: Target crashed']) {
+      expect(classifyInfra(text), text).toBeNull();
+      expect(browserCrashIn([text]), text).toBeNull();
+    }
+  });
+  test('a journey failure whose page logged the crash is reported BLOCKED, with its census attached', async ({ actors, server }) => {
+    const actor = await actors.anonymous(`${server.url}/clean.html`, { label: 'crashed' });
+    await actor.page.evaluate((line) => console.error(line), WORKSPACE_CRASH);
+    await expect.poll(() => actor.telemetry.console.length).toBe(1);
+    const error = await actors.assertInvariants().then(() => null, (e: Error) => e);
+    expect(error?.message).toContain('invariant 1 [crashed]');
+    expect(isInfraBlocked(error?.message), 'the invariant failure is labelled infrastructure').toBe(true);
+    const census = test.info().attachments.find((a) => a.name === 'invariants-census.json');
+    expect(census, 'the census is attached as before').toBeTruthy();
+    expect(JSON.parse(String(census?.body)).census[0].console[0].text).toBe(WORKSPACE_CRASH);
+
+    const outputDir = test.info().outputPath('blocked-reporter');
+    const env = { summary: process.env.GITHUB_STEP_SUMMARY, state: process.env.STACK_STATE, group: process.env.E2E_GROUP };
+    delete process.env.GITHUB_STEP_SUMMARY;
+    delete process.env.STACK_STATE;
+    delete process.env.E2E_GROUP;
+    try {
+      const reporter = new MossReporter();
+      reporter.onBegin({ projects: [{ outputDir }], rootDir: outputDir } as never, { suites: [] } as never);
+      const testCase = { parent: { project: () => ({ name: 'webkit' }) }, titlePath: () => ['', 'webkit', 'j00-import.spec.ts', 'tabs.md'], timeout: 120_000 };
+      reporter.onTestEnd(testCase as never, { status: 'failed', duration: 34_000, annotations: [], errors: [{ message: error?.message }] } as never);
+      await reporter.onEnd({ status: 'failed' } as never);
+      const summary = readFileSync(`${outputDir}/summary.md`, 'utf8');
+      expect(summary).toContain('### e2e: BLOCKED (infra)');
+      expect(summary).toContain('| webkit | j00-import.spec.ts › tabs.md | BLOCKED |');
+      expect(existsSync(`${outputDir}/blocked.json`)).toBe(true);
+    } finally {
+      for (const [key, value] of [['GITHUB_STEP_SUMMARY', env.summary], ['STACK_STATE', env.state], ['E2E_GROUP', env.group]] as const) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
+  });
+});
+
+// What a failed WebKit test carries so the next network-process fault can be diagnosed (T9.48g). Evidence only.
+test.describe('engine evidence', () => {
+  test('a line the browser writes to stderr is kept, and the browser close is timed', async ({ playwright, browserName }) => {
+    test.skip(browserName !== 'webkit', 'the WebKit projects carry the engine evidence');
+    const browserType = playwright.webkit;
+    const marker = `selftest-stderr-${Date.now()}`;
+    const wrapper = test.info().outputPath('browser-wrapper.sh');
+    writeFileSync(wrapper, `#!/bin/sh\necho "${marker}" >&2\nexec "${browserType.executablePath()}" "$@"\n`);
+    chmodSync(wrapper, 0o755);
+    const browser = await browserType.launch({ executablePath: wrapper });
+    const outputDir = test.info().outputPath('lifecycle');
+    const closeMs = await closeBrowserTimed(browser, outputDir, 'selftest');
+    await expect.poll(() => browserLog().some((line) => line.includes('[err]') && line.includes(marker))).toBe(true);
+    const record = JSON.parse(readFileSync(`${outputDir}/engine-lifecycle.jsonl`, 'utf8').trim().split('\n').at(-1) ?? '{}');
+    expect(record).toMatchObject({ label: 'selftest', closeMs });
+  });
+
+  // The real trigger, not a direct capture call: a fixture's teardown (Actors.settle, which both fixtures run) sees
+  // the invariants fail on a live page and attaches the evidence; the same teardown on a clean page attaches none.
+  test('a forced WebKit failure attaches every item of the engine evidence', async ({ browser, server, browserName }) => {
+    test.skip(browserName !== 'webkit', 'the WebKit projects carry the engine evidence');
+    let mark = 0;
+    const engineFiles = () => test.info().attachments.slice(mark).filter((a) => a.name.startsWith('engine'));
+    const fresh = (info: TestInfo = test.info()) => {
+      const own = new Actors(browser, info, { stack: null, runToken: 'selftest' });
+      own.solo('fixture pages have no principals; the guard has its own selftest');
+      return own;
+    };
+    const clean = fresh();
+    await ui.waitLive(await clean.anonymous(`${server.url}/clean.html`, { label: 'passing' }), 'doc-a');
+    await clean.settle();
+    expect(engineFiles(), 'a passing teardown attaches no engine evidence').toEqual([]);
+
+    // A test whose body failed: the teardown reads the status the runner set (here a view of this test's info that
+    // reports the body failed) and captures without any invariant finding, as the selftest fixture's teardown does.
+    const info = test.info();
+    const bodyFailed = { file: info.file, tags: info.tags, annotations: info.annotations, status: 'failed', expectedStatus: 'passed', attach: info.attach.bind(info) } as unknown as TestInfo;
+    const failedBody = fresh(bodyFailed);
+    await ui.waitLive(await failedBody.anonymous(`${server.url}/clean.html`, { label: 'body' }), 'doc-a');
+    await failedBody.settle({ assert: false });
+    expect(engineFiles().map((a) => a.name), 'a failed body is captured').toEqual(['engine.json', 'engine-closes.json']);
+    mark = info.attachments.length;
+
+    const actors = fresh();
+    const actor = await actors.anonymous(`${server.url}/clean.html`, { label: 'failing' });
+    await ui.waitLive(actor, 'doc-a');
+    await actor.page.evaluate(() => console.error('selftest: forced failure'));
+    await expect.poll(() => actor.telemetry.console.length).toBe(1);
+    const error = await actors.settle().then(() => null, (e: Error) => e);
+    expect(error?.message, 'the teardown fails the test').toContain('invariant 1 [failing]');
+    expect(engineFiles().map((a) => a.name), 'the evidence is attached before the contexts close, their times after').toEqual(['engine.json', 'engine-closes.json']);
+    expect(JSON.parse(String(engineFiles()[1].body)).contextCloses).toEqual([{ label: 'failing', ms: expect.any(Number) }]);
+    const attachment = engineFiles().find((a) => a.name === 'engine.json');
+    expect(attachment, 'engine.json is attached').toBeTruthy();
+    const evidence = JSON.parse(String(attachment?.body));
+    expect(evidence.browserLog.some((line: string) => /<launched> pid=/.test(line)), 'the browser log').toBe(true);
+    expect(evidence.engine.browser).toBe('webkit');
+    expect(evidence.engine.launchedSecondsAgo, 'seconds since the browser launched').toBeGreaterThanOrEqual(0);
+    expect(evidence.engine.contextsCreated, 'contexts this worker created').toBeGreaterThanOrEqual(1);
+    expect(evidence.engine.disconnectedAt, 'browser disconnects').toEqual([]);
+    expect(evidence.pages).toEqual([expect.objectContaining({ label: 'failing', crashes: [] })]);
+    const probe = evidence.probe;
+    expect(probe.url).toBe(`${server.url}/api/version`);
+    expect(probe.mainThread).toEqual([expect.objectContaining({ label: 'failing', value: 1 })]);
+    expect(probe.freshPage).toEqual([expect.objectContaining({ label: 'failing', value: 200 })]);
+    expect(probe.freshContext).toMatchObject({ value: 200 });
+    expect(probe.node).toMatchObject({ value: 200 });
+    const system = evidence.system;
+    for (const key of ['ps', 'networkProcesses', 'ulimitN', 'meminfo', 'shm', 'dmesg']) expect(system, key).toHaveProperty(key);
+    if (process.platform === 'linux') {
+      expect(system.ps).toMatch(/NetworkProcess/);
+      expect(system.networkProcesses.length, 'the network process is found').toBeGreaterThan(0);
+      expect(typeof system.networkProcesses[0].fds, 'its descriptors are counted').toBe('number');
+      expect(system.networkProcesses[0].status).toMatch(/VmRSS/);
+      expect(system.networkProcesses[0].maxOpenFiles).toMatch(/Max open files/);
+      expect(system.ulimitN).toMatch(/^\d+|unlimited/);
+      expect(system.meminfo).toMatch(/MemAvailable/);
+      expect(system.shm).toMatch(/\/dev\/shm/);
+    }
   });
 });
 

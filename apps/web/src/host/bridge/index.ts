@@ -67,6 +67,8 @@ export interface ApiDoc {
   filename?: string;
   /** The owner's trashed notes only (A§11), in epoch ms. */
   trashedAt?: number | null;
+  /** A trashed note of another vault of the caller's own, which is in Trash: that vault's name (T9.43). */
+  vaultName?: string;
 }
 
 /** Host-only controller, kept outside the ElectronAPI namespace inventory. */
@@ -322,6 +324,7 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
   };
 
   // Every doc this tab has seen, from the listing or from a create; the listing promise is the boot read.
+  let vaultNames: { of: ApiDoc[] | null; names: Map<string, string> } = { of: null, names: new Map() };
   const known = new Map<string, NoteMetadata>();
   let listing: Promise<NoteMetadata[]> | null = null;
   let workspaceSnapshot: WorkspaceListing | null = null;
@@ -798,6 +801,12 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
       },
       /** The owner trashed this note, as far as this tab knows. */
       isTrashed: (id: string) => known.get(id)?.trashedAt != null,
+      /** The vault in Trash a trashed note restores into, when it is not the vault on screen (T9.43). */
+      trashedVaultName: (id: string): string | null => {
+        const docs = workspaceSnapshot?.docs ?? [];
+        if (vaultNames.of !== docs) vaultNames = { of: docs, names: new Map(docs.flatMap((doc) => (doc.vaultName ? [[doc.id, doc.vaultName]] : []))) };
+        return vaultNames.names.get(id) ?? null;
+      },
       surfacedShared: (id: string) => workspaceSnapshot?.docs.some((doc) => doc.id === id && doc.surfaced) ?? false,
       surfacedFolder: (path: string) => workspaceSnapshot?.folders?.some((folder) => folder.surfaced &&
         (path === folder.path || path.startsWith(`${folder.path}/`))) ?? false,

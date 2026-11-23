@@ -241,6 +241,8 @@ test('j13-vaults: Ada restores notes from a vault she moved to Trash: the vault 
   for (const docId of ids) ada.expectReconnects(1, docId);
   const refused = ada.page.getByText(/no longer available|vault is in Trash/);
   await ada.page.getByRole('button', { name: 'Trash', exact: true }).click();
+  // Seen from Home, each row names the trashed vault it restores into.
+  for (const docId of ids) await expect(trashRow(ada, docId), 'the row names its vault').toContainText(new RegExp(`Deleted .+ · ${TRIP}$`));
   await trashRow(ada, atTop).click({ button: 'right' });
   await ada.page.getByRole('menuitem', { name: 'Restore', exact: true }).click();
   await expect(noteRow(ada, atTop), 'the note is at the top of its vault').toBeVisible({ timeout: PEER_SIDEBAR_MS });
