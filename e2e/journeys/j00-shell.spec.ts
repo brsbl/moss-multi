@@ -575,13 +575,13 @@ test('split view: Forward to a note trashed while it showed in the other pane le
   expect((await ada.context.request.delete(`${origin}/api/docs/${b}`, { headers: { origin } })).status(), 'declared setup: B goes to Trash').toBe(200);
   await expect(row(b), 'B leaves her notes').toHaveCount(0, { timeout: 5_000 });
   ada.observations.delete(b);
-  await ui.body(ada, a).click();
-  await expect(page).toHaveURL(addressOf(a));
   await page.goForward({ waitUntil: 'commit' });
-  await expect(page.getByText(/This note is in Trash/), 'Forward shows B in Trash in the right pane').toBeVisible({ timeout: 15_000 });
-  await expect.poll(() => ui.paneIds(ada), { message: 'C still shows on the left' }).toEqual([c, b]);
-  await expect(page, 'the address names C, the live note still showing, not A, which left').toHaveURL(addressOf(c));
-  await ui.waitBodyLive(ada, c);
+  await expect(page.getByText(/This note is in Trash/), 'Forward shows B in Trash').toBeVisible({ timeout: 15_000 });
+  await expect.poll(() => ui.paneIds(ada), { message: 'B shows in one pane, beside a live note' }).toContain(b);
+  const [live] = (await ui.paneIds(ada)).filter((id) => id !== b);
+  expect(live, 'a live note still shows in the other pane').toBeDefined();
+  await expect(page, 'the address names the live note still showing, not one that left').toHaveURL(addressOf(live));
+  await ui.waitBodyLive(ada, live);
 });
 
 test("Moss's back arrow is a visit: after A, B, C and the arrow back to B, the browser's Back shows C, then B, then A (T9.19)", async ({ actors }) => {

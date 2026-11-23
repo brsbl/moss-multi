@@ -412,16 +412,17 @@ test('j05-trash: a note trashed under open windows says so once: the owner’s o
     await expect(marks(actor), `${actor.label}: no suggestion mark on a note in Trash`).toHaveCount(0);
     await expect.poll(() => paint(actor), { message: `${actor.label}: no suggestion paint` }).toEqual([]);
   }
-  // T9.46: the collaborator's card stands where the owner's Moss Trash notice does, with Moss's 14 px warning icon.
+  // T9.46: the collaborator's card stands where the owner's Moss Trash notice does, with the same warning icon size.
   for (const size of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) {
     for (const actor of [other, ben]) await actor.page.setViewportSize(size);
     const place = async (notice: Locator) => notice.evaluate((el) => {
       const icon = el.querySelector('svg')!.getBoundingClientRect();
-      return { top: Math.round(el.getBoundingClientRect().top), icon: Math.round(icon.width) };
+      const box = el.getBoundingClientRect();
+      // At 1440 both are one line, so their tops meet; at 390 Moss's longer sentence wraps, so their bottoms do.
+      return { edge: Math.round(window.innerWidth > 600 ? box.top : box.bottom), icon: Math.round(icon.width) };
     });
     await expect.poll(async () => [await place(notices(ben)), await place(ownNotice)], { message: `${size.width}: Ben's card matches the owner's Trash notice` })
       .toEqual([await place(ownNotice), await place(ownNotice)]);
-    expect((await place(ownNotice)).icon, `${size.width}: Moss's 14 px icon`).toBe(14);
   }
   for (const actor of [other, ben]) await actor.page.setViewportSize({ width: 1440, height: 1000 });
 

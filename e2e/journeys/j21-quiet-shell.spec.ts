@@ -702,7 +702,8 @@ test('j21 a notice whose note is deleted or whose access is removed before it op
     cy.expectHttp(404, new RegExp(`/api/docs/${docId}`));
     cy.expectHttp(403, new RegExp(`/api/docs/${docId}`));
   }
-  const removed = await ada.context.request.delete(`${origin}/api/docs/${kept}/members`, { headers: { origin, 'content-type': 'application/json' }, data: { email: cyPrincipal.email } });
+  const cyId = ((await (await cy.context.request.get('/api/me')).json()) as { principal: { id: string } }).principal.id;
+  const removed = await ada.context.request.delete(`${origin}/api/docs/${kept}/members`, { headers: { origin, 'content-type': 'application/json' }, data: { principalId: cyId } });
   expect(removed.ok(), 'declared setup: Cy loses the note').toBe(true);
   expect((await ada.context.request.delete(`${origin}/api/docs/${trashed}`, { headers: { origin } })).status(), 'declared setup: the other goes to Trash').toBe(200);
 

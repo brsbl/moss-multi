@@ -1044,14 +1044,14 @@ test('j08 compact: Share names the note, folder or vault in its first visible li
   const note = await ada.context.request.post('/api/docs', { headers, data: { folderId, title: 'Packing list' } });
   expect(note.status(), 'declared setup: a note in it').toBe(201);
   const docId = ((await note.json()) as { doc: { id: string } }).doc.id;
-  // Declared setup: enough pending invites on each place that the list scrolls.
+  // Declared setup: enough pending invites on each place that the list scrolls (an owner makes 20 shares an hour).
   for (const path of [`/api/docs/${docId}`, `/api/folders/${folderId}`, `/api/folders/${vault.id}`]) {
-    for (let i = 0; i < 12; i += 1) {
+    for (let i = 0; i < 6; i += 1) {
       const invited = await ada.context.request.post(`${path}/members`, { headers: { ...headers, 'content-type': 'application/json' }, data: { email: `guest${i}-${randomBytes(2).toString('hex')}@example.invalid`, role: 'viewer' } });
       expect(invited.ok(), 'declared setup: an invite').toBe(true);
     }
   }
-  await ada.page.setViewportSize({ width: 1440, height: 700 });
+  await ada.page.setViewportSize({ width: 1440, height: 480 });
   await ada.page.reload();
   await ada.page.locator(`html[${APP_STATE_ATTR}="ready"]`).waitFor({ state: 'attached', timeout: 30_000 });
 
