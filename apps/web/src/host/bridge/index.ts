@@ -989,10 +989,13 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
       },
       onExternalFileOpen: silent,
       onInternalFileOpen: (callback?: Listener<[string]>) => {
-        const open = (id: string) => {
+        // A note deleted or no longer shared since its notice was written ends here, before moss switches to it (T9.46).
+        const open = (id: string): Promise<boolean> => askDocAccess(id, fetcher).then((answer) => {
+          if (answer.kind === 'denied') return false;
           void refreshForNavigation(id);
           callback?.(id);
-        };
+          return true;
+        });
         // The browser's Back or Forward opens the note through moss's own switch, which adds no history entry. The
         // listing is read once moss has switched (setFocusedNoteId), as for any visit: read during the switch, it
         // mounted the pane twice. Until moss reaches the chosen note, the notes its switch passes are not visits, however

@@ -40,7 +40,8 @@ export async function departTo(href: string): Promise<boolean> {
   return false;
 }
 
-type DocOpener = (docId: string) => void;
+/** Opens a note through moss's switch; a promise of false says it cannot open (gone or no longer shared). */
+type DocOpener = (docId: string) => void | Promise<boolean>;
 let opener: DocOpener | null = null;
 
 /** The bridge hands moss's in-app note switch (its internal-open subscription) to navigation. */
@@ -93,7 +94,8 @@ export function openDoc(docId: string): Promise<boolean> {
   const observer = new MutationObserver(check);
   const timer = setTimeout(() => settle(null), MAX_OPENING_MS);
   observer.observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: [DOC_STATE_ATTR, DOC_ID_ATTR, BODY_BINDING_ATTR] });
-  opener(docId);
+  const asked = opener(docId);
+  if (asked instanceof Promise) void asked.then((opens) => { if (!opens) settle(null); }, () => undefined);
   check();
   return result;
 }
