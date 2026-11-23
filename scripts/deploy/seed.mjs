@@ -118,12 +118,31 @@ export function claimSlot(dir, count) {
 }
 
 /**
- * How many of a shard's first slots a re-run attempt claims before it signs in: none on the attempt that seeded, half
- * the slots on one failed-only re-run (a shard signs in to about a third), so it never reuses an account the first
- * attempt left notes in. A later attempt, or a token from another run, is refused.
+ * Claims slots `from` to `to - 1` under `dir`, so claimSlot never hands them out; one another process claimed stays its.
+ * @param {string} dir
+ * @param {number} from
+ * @param {number} to
+ */
+export function claimRange(dir, from, to) {
+  mkdirSync(dir, { recursive: true });
+  for (let k = from; k < to; k += 1) {
+    try {
+      closeSync(openSync(join(dir, String(k)), 'wx'));
+    } catch (error) {
+      if (/** @type {NodeJS.ErrnoException} */ (error).code !== 'EEXIST') throw error;
+    }
+  }
+}
+
+/**
+ * The slots an attempt holds back before it signs in, so the seeding attempt and one failed-only re-run each sign in
+ * to their own half of a shard's slots and a re-run never reuses an account the first attempt left notes in: the
+ * seeding attempt holds back the second half, the re-run the first. Past its half a shard signs up new principals. A
+ * later attempt, or a token from another run, is refused.
  * @param {string} token
  * @param {string} runId
  * @param {string} attempt
+ * @returns {{ from: number, to: number }}
  */
 export function rerunClaims(token, runId, attempt) {
   const match = /^s(\d+)-(\d+)$/.exec(token);
@@ -131,8 +150,8 @@ export function rerunClaims(token, runId, attempt) {
   const seeded = Number(match[2]);
   const now = Number(attempt);
   if (!Number.isInteger(now) || now < seeded) throw new Error(`attempt ${attempt} is before the seeding attempt ${seeded}`);
-  if (now === seeded) return 0;
-  if (now === seeded + 1) return SEED_PER_SHARD / 2;
+  if (now === seeded) return { from: SEED_PER_SHARD / 2, to: SEED_PER_SHARD };
+  if (now === seeded + 1) return { from: 0, to: SEED_PER_SHARD / 2 };
   throw new Error(`the seeded principals allow a failed-only re-run once; attempt ${attempt} needs a re-run of all jobs`);
 }
 
@@ -149,9 +168,9 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       console.log(seedToken(args[1], args[2]));
     } else if (mode === 'rerun') {
       const claims = flag('--claims') ?? '';
-      const count = rerunClaims(flag('--token') ?? '', flag('--run-id') ?? '', flag('--attempt') ?? '');
-      for (let k = 0; k < count; k += 1) claimSlot(claims, count);
-      if (count > 0) console.log(`seed: a re-run attempt; slots 0 to ${count - 1} are the first attempt's`);
+      const { from, to } = rerunClaims(flag('--token') ?? '', flag('--run-id') ?? '', flag('--attempt') ?? '');
+      claimRange(claims, from, to);
+      console.log(`seed: slots ${from} to ${to - 1} are held back for ${from === 0 ? 'the first attempt' : 'a failed-only re-run'}`);
     } else if (mode === 'password') {
       process.stdout.write(suitePassword(process.env.CANARY_POOL_SECRET ?? '', flag('--token') ?? ''));
     } else if (mode === 'sql' && out) {

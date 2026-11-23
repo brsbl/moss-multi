@@ -346,6 +346,16 @@ export function withdrawRecord(live: Y.Doc, id: string, reviewer: Reviewer, now 
   return { ok: true };
 }
 
+/**
+ * A retried review (the Worker's second call after the platform reset the object mid-call): when its first call
+ * already closed the record as this action, by this reviewer, it is done rather than refused as reviewed.
+ */
+export function retriedReview(live: Y.Doc, id: string, result: ReviewResult, status: 'accepted' | 'rejected' | 'withdrawn', reviewer: Reviewer): ReviewResult {
+  if (result.ok || result.reason !== 'not-open') return result;
+  const meta = readMeta(live, id);
+  return meta?.status === status && meta.resolvedBy === reviewer.id ? { ok: true } : result;
+}
+
 let registry: ReadonlySet<string> | null = null;
 /** Registered node types of the converter editor, the ingest's `__type` registry. */
 export function nodeRegistry(): ReadonlySet<string> {
