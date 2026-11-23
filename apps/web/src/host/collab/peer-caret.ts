@@ -313,8 +313,8 @@ function placeEnd(prev: EditorState, next: EditorState, point: Point, startOfRan
       const texts = fresh.map($lineText);
       const mine = texts[old.i]!;
       for (let j = 0; j < texts.length; j++) {
-        // Order proven: every other line reads as it did, and none reads as mine.
-        if (j !== old.i && (texts[j] !== old.run[j] || texts[j] === mine)) return null;
+        // Order proven: every other line reads as it did, and none reads as mine, before or after.
+        if (j !== old.i && (texts[j] !== old.run[j] || texts[j] === mine || old.run[j] === old.run[old.i])) return null;
       }
       const offset = replacedOffset(old.left, old.right, mine);
       return offset === null ? null : { point: $pointAt(fresh[old.i]!, offset), split: false, line: old.line };
