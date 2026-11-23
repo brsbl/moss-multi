@@ -427,8 +427,6 @@ export class DocSession {
   /** A step 1 this session sent has had no step 2 back yet, and when a sync frame last arrived (T3.S6b). */
   #resyncOwed = false;
   #syncHeard = 0;
-  /** When each doc ('' the note, else a payload id) first held a server update it could not integrate: one was lost. */
-  readonly #gaps = new Map<string, number>();
   /** Sync updates received before the first step 2, applied with it. */
   #firstSync: Uint8Array[] = [];
   #visibleSince = 0;
@@ -529,7 +527,6 @@ export class DocSession {
         this.#ledger.park(id, parked);
         if (this.#ledger.unacked !== this.#state.unacked) this.#set({ unacked: this.#ledger.unacked });
       },
-      received: (id, doc) => this.#gapCheck(id, doc),
     });
     // A step 2 from the server answers the last step 1.
     const sync = this.provider.messageHandlers[0];
@@ -562,10 +559,7 @@ export class DocSession {
           sync(encoder, decoder, provider, false, type);
         }, this.provider);
         if (emitSynced) provider.synced = true;
-      } else {
-        sync(encoder, decoder, provider, emitSynced, type);
-        this.#gapCheck('', this.doc);
-      }
+      } else sync(encoder, decoder, provider, emitSynced, type);
       if (performance.now() - started > 50) performance.measure('moss-sync-message', { start: started });
     };
     this.provider.messageHandlers[PAYLOAD_MESSAGE] = (_encoder, decoder) => {
@@ -851,7 +845,6 @@ export class DocSession {
     // The provider sends a step 1 on open; each held payload sends its own, and its unacked writes.
     this.#lastResync = Date.now();
     this.#resyncOwed = true;
-    this.#gaps.clear();
     this.#failedHandshakes = 0;
     const ws = this.provider.ws as DocSocket | null;
     if (ws) ws.hold = this.#hold;
@@ -1099,24 +1092,6 @@ export class DocSession {
     this.#update(null);
   }
 
-  /**
-   * After a server frame applied to `doc` (`target`: '' the note, else a payload id): an update it could not integrate
-   * follows one that was lost (the DocDO relays only what integrates, in order), so the session asks at once rather
-   * than at its next 4 s step 1, and once per gap: until every gap seen since is filled, later frames ask nothing.
-   */
-  #gapCheck(target: string, doc: Y.Doc): void {
-    if (doc.store.pendingStructs === null) {
-      this.#gaps.delete(target);
-      return;
-    }
-    if (!this.#state.synced || this.#ended) return;
-    for (const id of this.#gaps.keys()) if (id !== '' && !this.payloads.get(id)) this.#gaps.delete(id);
-    if (!this.#gaps.has(target)) this.#gaps.set(target, Date.now());
-    if (this.#lastResync >= Math.min(...this.#gaps.values())) return;
-    const ws = this.provider.ws;
-    if (ws?.readyState === WebSocket.OPEN) this.#resync(ws);
-  }
-
   #resync(ws: WebSocket): void {
     this.#lastResync = Date.now();
     try {
@@ -1126,13 +1101,8 @@ export class DocSession {
       const awareness = this.provider.awareness;
       const state = awareness.getLocalState();
       if (state !== null && !this.#ended && !this.#lingering) awareness.setLocalState(state);
-      // Writes still queued in the outbox are on their way; resending them would only queue them twice. A payload
-      // missing an update still asks: a lost ack keeps the outbox busy until it stalls (10 s). Only those: a large
-      // paste keeps the outbox busy with thousands of payloads held.
-      if ((ws as DocSocket).outbox?.busy) {
-        this.#payloadSync.ask([...this.#gaps.keys()].filter((id) => id !== ''));
-        return;
-      }
+      // Writes still queued in the outbox are on their way; resending them would only queue them twice.
+      if ((ws as DocSocket).outbox?.busy) return;
       // Unacked writes go again under the frame discipline (comments.md §6), unless a replay is already sending them.
       // Each held payload asks again too, after the note's backlog, so one whose frames were lost catches up (A§10.10).
       this.#payloadsDue = true;

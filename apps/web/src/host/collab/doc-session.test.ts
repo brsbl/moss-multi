@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import * as Y from 'yjs';
-import { decodePayloadFrame, encodePayloadFrame, encodeSyncFrame, PAYLOAD_STEP1, PAYLOAD_UPDATE } from '@moss-multi/protocol/sync';
+import { decodePayloadFrame, encodeSyncFrame, PAYLOAD_STEP1 } from '@moss-multi/protocol/sync';
 
 const sockets: FakeSocket[] = [];
 class FakeSocket extends EventTarget {
@@ -98,71 +98,6 @@ it('sends no step 1 while the last is unanswered and frames still arrive, and ke
   await vi.advanceTimersByTimeAsync(9_000);
   expect(step1s(), 'nothing arriving: the step 1 keeps frames flowing').toBeGreaterThanOrEqual(3);
   expect(socket.closes).toEqual([]);
-});
-it('asks again at once when a peer update arrives with an earlier one lost, in the note or a payload, once per gap', async () => {
-  const socket = latest(); socket.open();
-  answer(socket, new Y.Doc());
-  await vi.advanceTimersByTimeAsync(1_500);
-  const payloadStep1s = () => socket.sent.filter((frame) => frame instanceof Uint8Array && decodePayloadFrame(frame)?.step === PAYLOAD_STEP1).length;
-  const receive = (frame: Uint8Array) => {
-    socket.dispatchEvent(new MessageEvent('message', { data: frame.slice().buffer }));
-    session.provider.wsLastMessageReceived = Date.now();
-  };
-  // A peer types four characters into the note; the second update is lost on the way.
-  const peer = new Y.Doc();
-  const updates: Uint8Array[] = [];
-  peer.on('update', (update: Uint8Array) => updates.push(update));
-  for (const c of 'abcd') peer.getText('peer').insert(peer.getText('peer').length, c);
-  receive(encodeSyncFrame(2, updates[0]));
-  const before = step1Count(socket);
-  receive(encodeSyncFrame(2, updates[2]));
-  expect(step1Count(socket), 'a lost update: a step 1 at once, not at the next 4 s one').toBe(before + 1);
-  receive(encodeSyncFrame(2, updates[3]));
-  expect(step1Count(socket), 'the same gap asks once').toBe(before + 1);
-  // The answer fills the gap, then the next update integrates.
-  receive(encodeSyncFrame(1, Y.encodeStateAsUpdate(peer, Y.encodeStateVector(session.doc))));
-  expect(session.doc.getText('peer').toString()).toBe('abcd');
-  await vi.advanceTimersByTimeAsync(1_500);
-  // A code block's text: the same in its payload doc, which asks with its own step 1.
-  session.payloads.hold('code');
-  const code = new Y.Doc();
-  const writes: Uint8Array[] = [];
-  code.on('update', (update: Uint8Array) => writes.push(update));
-  for (const c of 'xyz') code.getText('payload').insert(code.getText('payload').length, c);
-  receive(encodePayloadFrame('code', PAYLOAD_UPDATE, writes[0]));
-  const notes = step1Count(socket);
-  const payloads = payloadStep1s();
-  receive(encodePayloadFrame('code', PAYLOAD_UPDATE, writes[2]));
-  expect(step1Count(socket), 'a lost payload update: the note asks at once').toBe(notes + 1);
-  expect(payloadStep1s(), 'and so does the payload').toBe(payloads + 1);
-  expect(socket.closes).toEqual([]);
-});
-it('while an unacked frame keeps the outbox busy (its ack lost), a payload missing an update still asks, and only it', async () => {
-  const socket = latest(); socket.open();
-  answer(socket, new Y.Doc());
-  // The server's step 1: the session answers with a step 2 only an ack takes out of the outbox, and that ack is lost.
-  serverStep1(socket, Y.encodeStateVector(new Y.Doc()));
-  // A large paste's blocks: payloads this tab holds with nothing missing, which must not ask on every step 1.
-  for (let i = 0; i < 50; i += 1) session.payloads.hold(`pasted-${i}`);
-  const asked = (id: string) => socket.sent.filter((frame) => {
-    const payload = frame instanceof Uint8Array ? decodePayloadFrame(frame) : null;
-    return payload?.id === id && payload.step === PAYLOAD_STEP1;
-  }).length;
-  // Each asked once as it was held.
-  const held = asked('pasted-0');
-  await vi.advanceTimersByTimeAsync(5_000);
-  expect(step1Count(socket), 'the 4 s step 1').toBeGreaterThanOrEqual(2);
-  expect(asked('pasted-0'), 'a held payload with nothing missing waits for the outbox').toBe(held);
-  // A peer's code update arrives with the one before it lost.
-  const code = new Y.Doc();
-  const writes: Uint8Array[] = [];
-  code.on('update', (update: Uint8Array) => writes.push(update));
-  for (const c of 'xyz') code.getText('payload').insert(code.getText('payload').length, c);
-  socket.dispatchEvent(new MessageEvent('message', { data: encodePayloadFrame('code', PAYLOAD_UPDATE, writes[0]).slice().buffer }));
-  const before = asked('code');
-  socket.dispatchEvent(new MessageEvent('message', { data: encodePayloadFrame('code', PAYLOAD_UPDATE, writes[2]).slice().buffer }));
-  expect(asked('code'), 'the payload missing an update asks at once, not only once the outbox stalls 10 s later').toBe(before + 1);
-  expect(asked('pasted-0'), 'and only it').toBe(held);
 });
 it.each([[4402, 'session-ended'], [4404, 'unavailable'], [4410, 'deleted'], [4426, 'outdated'], [4429, 'conn-limit']] as const)(
   'stops reconnecting synchronously on %s', async (code, reason) => {

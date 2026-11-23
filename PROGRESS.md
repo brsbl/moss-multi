@@ -306,19 +306,6 @@ Parked from the M0 checker and critic passes, each with the task that owns it.
 
 Deploy 45135817095 of `7b55f7a` passed the full suite in one attempt, both engines, with no leg re-run, 1 recovered drop (export `same`) and no infrastructure retry; the sweep on that build passed 52 of 52. Each earlier failure below is fixed at its cause: the setup resend (`setupFetch`), the review retry after a Durable Object reset (`retryingReset`, `retriedReview`), and the leave-aware chunk logging and recovery (WebKit stops a page's loads as a navigation starts; red in rehearsal 45121810915, 6 of 6, green in 45132450810, 12 of 12). The j16-paste leg past the cap passed 6 of 6 in that rehearsal and in the deploy; the staging log now names a failure with no kind by its error class.
 
-The black-hole catch-up (checker P1 on `bbe57b0b`): a frame whose ack was lost kept the client's outbox busy until it stalled 10 s later, and every resync until then skipped the payload step 1s, so a code, HTML or formula block whose update was lost caught up 10-14 s late (13.4 s on a local stack; 50 ms after the fix). The session also waited for its next 4 s step 1 after a lost frame (3.9 s in rehearsal at 40 ms latency, 0.4 s after). Both are fixed (`#gapCheck`, the busy-outbox ask) and the check is back to 10 s; it passed in every black-hole leg of both later deploys that got past setup.
-
-Later deploys of the head on 2026-11-23, both red across legs the change does not touch (no leg re-run: the drops gate had already failed each):
-
-| Deploy | Engine | What failed | Class |
-|---|---|---|---|
-| 45189582791 | both | 25 legs; 39 network drops (35 recovered, 3 never), clustered 15:00-15:22 UTC across shards; workspace sockets failing to connect (invariant 1); setup requests reset | staging network and platform |
-| 45189582791 | Chromium | j01-undo interleaved typing: the pane did not bind after a reload (`waitLive` timeout) | undiagnosed, passed in 14 earlier deploys |
-| 45189582791 | WebKit | j18-agents size: a push at the text limit exited 1 | undiagnosed (REST; no client code involved) |
-| 45245524556 | both | 60 legs; 68 network drops; sign-ins, `/api/me` and members requests timing out (invariant 8, setup); the tail logged Worker exceptions on `/api/docs`, `/api/auth` and the doc socket | staging platform |
-| 45245524556 | both | j01-registers black-hole legs: formula (Chromium) failed in setup (`POST /api/docs`); HTML (WebKit) caught up, then failed invariant 3 on two drops of Ada's socket | setup request; platform drops |
-| both | both | after a recovered drop, the pane differed from a fresh load (`resynced to a different export`) in j15-comments-drafts, j01-editing, j01-undo, j10-stranger-phone, j16-suggest | undiagnosed: product or the comparison's 15 s window |
-
 Failures in the two full-suite deploys before those fixes, per leg:
 
 | Deploy | Leg | Engine | What failed | Class |

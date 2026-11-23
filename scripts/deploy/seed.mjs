@@ -7,7 +7,7 @@
 //   node scripts/deploy/seed.mjs sql OUT.sql --token TOKEN        (CANARY_POOL_SECRET in the environment)
 //   node scripts/deploy/seed.mjs password --token TOKEN           (prints the password, for ::add-mask:: first)
 //   node scripts/deploy/seed.mjs token RUN_ID RUN_ATTEMPT
-//   node scripts/deploy/seed.mjs rerun --token TOKEN --run-id ID --attempt N --claims DIR [--slots SLOTS]   (the slots an attempt holds back)
+//   node scripts/deploy/seed.mjs rerun --token TOKEN --run-id ID --attempt N --claims DIR   (a failed-only re-run's first slots)
 import { createHmac, randomBytes } from 'node:crypto';
 import { mkdirSync, openSync, closeSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
@@ -155,20 +155,6 @@ export function rerunClaims(token, runId, attempt) {
   throw new Error(`the seeded principals allow a failed-only re-run once; attempt ${attempt} needs a re-run of all jobs`);
 }
 
-/** The SP9 probe signs in to the probe shard's slots from PROBE_FROM up, after claiming those below. */
-export const PROBE_SLOTS = 'c6';
-export const PROBE_FROM = 280;
-
-/**
- * The slots the SP9 probe used, which every attempt of the probe's shard holds back too: its re-run half would reach
- * them past 130 claims.
- * @param {string} slots
- * @returns {{ from: number, to: number } | null}
- */
-export function probeHeld(slots) {
-  return slots === PROBE_SLOTS ? { from: PROBE_FROM, to: SEED_PER_SHARD } : null;
-}
-
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const args = process.argv.slice(2);
   /** @param {string} name */
@@ -185,11 +171,6 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       const { from, to } = rerunClaims(flag('--token') ?? '', flag('--run-id') ?? '', flag('--attempt') ?? '');
       claimRange(claims, from, to);
       console.log(`seed: slots ${from} to ${to - 1} are held back for ${from === 0 ? 'the first attempt' : 'a failed-only re-run'}`);
-      const probe = probeHeld(flag('--slots') ?? '');
-      if (probe) {
-        claimRange(claims, probe.from, probe.to);
-        console.log(`seed: slots ${probe.from} to ${probe.to - 1} are held back for the SP9 probe`);
-      }
     } else if (mode === 'password') {
       process.stdout.write(suitePassword(process.env.CANARY_POOL_SECRET ?? '', flag('--token') ?? ''));
     } else if (mode === 'sql' && out) {
@@ -198,7 +179,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       writeFileSync(out, seedSql({ token, slots: SEED_SLOTS, perShard: SEED_PER_SHARD, hash, now: Date.now() }), { mode: 0o600 });
       console.log(`seed: ${SEED_SLOTS.length * SEED_PER_SHARD} suite principals for ${token} (${SEED_PER_SHARD} per shard)`);
     } else {
-      throw new Error('usage: seed.mjs sql OUT.sql --token TOKEN | password --token TOKEN | token RUN_ID RUN_ATTEMPT | rerun --token TOKEN --run-id ID --attempt N --claims DIR [--slots SLOTS]');
+      throw new Error('usage: seed.mjs sql OUT.sql --token TOKEN | password --token TOKEN | token RUN_ID RUN_ATTEMPT | rerun --token TOKEN --run-id ID --attempt N --claims DIR');
     }
   } catch (error) {
     console.error(`::error::${error instanceof Error ? error.message : String(error)}`);

@@ -10,7 +10,7 @@ import { describe, expect, it } from 'vitest';
 import { canaryState } from './canary-state.mjs';
 import { PER_FULL_RUN } from './growth.mjs';
 import { prunePlan, PRUNE_CAP } from './prune.mjs';
-import { claimRange, claimSlot, PROBE_FROM, probeHeld, rerunClaims, SEED_PER_SHARD, SEED_SLOTS, seedEmail, seedHash, seedSql, seedToken, suitePassword } from './seed.mjs';
+import { claimRange, claimSlot, rerunClaims, SEED_PER_SHARD, SEED_SLOTS, seedEmail, seedHash, seedSql, seedToken, suitePassword } from './seed.mjs';
 
 const WORKFLOW = yaml.load(readFileSync(new URL('../../.github/workflows/deploy-staging.yml', import.meta.url), 'utf8'));
 const SECRET = 'k'.repeat(64);
@@ -108,29 +108,6 @@ describe('the staging suite seed (T8.2) @p:R15', () => {
     const password = WORKFLOW.jobs.suite.steps.find((step) => /seed\.mjs password/.test(step.run ?? ''));
     expect(password.run).toMatch(/seed\.mjs rerun --token "\$SEED_TOKEN" --run-id "\$GITHUB_RUN_ID" --attempt "\$GITHUB_RUN_ATTEMPT" --claims "\$RUNNER_TEMP\/canary\/seed-claims"/);
     expect(password.run).not.toMatch(/re-run all jobs/);
-  });
-
-  it("keeps a re-run of the probe's shard off the slots the SP9 probe signed in to", () => {
-    // SP9 signs in to c6's last slots; c6's re-run half reaches them past 130 claims, so it holds them back as well.
-    expect(probeHeld('c6')).toEqual({ from: PROBE_FROM, to: SEED_PER_SHARD });
-    expect(probeHeld('c5')).toBeNull();
-    expect(probeHeld('w6')).toBeNull();
-    const dir = mkdtempSync(join(os.tmpdir(), 'seed-probe-'));
-    try {
-      const { from, to } = rerunClaims('s5-1', '5', '2');
-      claimRange(dir, from, to);
-      const held = probeHeld('c6');
-      claimRange(dir, held.from, held.to);
-      const used = [];
-      for (let slot = claimSlot(dir, SEED_PER_SHARD); slot !== null; slot = claimSlot(dir, SEED_PER_SHARD)) used.push(slot);
-      expect([used[0], used.at(-1)]).toEqual([SEED_PER_SHARD / 2, PROBE_FROM - 1]);
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-    const password = WORKFLOW.jobs.suite.steps.find((step) => /seed\.mjs password/.test(step.run ?? ''));
-    expect(password.run).toMatch(/seed\.mjs rerun [^\n]*--slots "\$\{BROWSER:0:1\}\$SHARD"/);
-    const probe = Object.values(WORKFLOW.jobs).flatMap((job) => job.steps ?? []).find((step) => /--seed-slots c6/.test(step.run ?? ''));
-    expect(probe.run).toContain(`seq 0 ${PROBE_FROM - 1}`);
   });
 
   it('fits a full suite under the growth cap once the prune ran', () => {
