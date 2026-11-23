@@ -1,6 +1,6 @@
 # moss-multi progress
 
-**Overall: 94% done** (284 of 302 planned tasks verified)
+**Overall: 94% done** (285 of 302 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
@@ -13,7 +13,7 @@
 | M6 History | Versions, view, diff, identity-preserving restore | 20 / 20 | in progress |
 | M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 26 / 26 | in progress |
 | M8 Ship | Everything on a permanent staging URL with demo content | 17 / 17 | |
-| M9 Polish | Understand every control without help: fixes found by using the whole product | 44 / 43 | |
+| M9 Polish | Understand every control without help: fixes found by using the whole product | 45 / 43 | |
 
 A task counts only after an independent checker passes it on green CI. Each milestone also ends with the cumulative journey suite green in Chromium and WebKit and a naive-user critic pass.
 
@@ -307,6 +307,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-11-22 — T9.22 verified: the browser tab is named after the focused note (“<title> — moss”, “Untitled — moss”, or “moss” with no note open), follows a rename by anyone, and journey tests now check it.
 - 2026-11-23 — T9.46 verified: the assembled product reads like Moss at its seams: View only and Comment only explain themselves inside the Review row, the Suggestions list has one 36 px Review row, Share names the note, folder or vault in its header, a bad email's error sits under Email, a note in Trash shows no suggestion marks, and a slow notice open no longer overrides a newer focus.
 - 2026-11-23 — T9.32 verified: a person can tell who is in a note without coloured avatar discs: People here is one quiet button of neutral initials whose roster names every session, agent and window with its caret colour, choosing a row names that person at their caret, and a peer's typing name sits in the margin beside their line. The record held since 2026-11-18 is restored: the paste stall was traced to another cause (highlight rules applied to the whole page; the same check failed before T9.32 was merged) and fixed in T9.48b, and on the green full lane [run 45138603369](https://github.com/brsbl/moss-multi/actions/runs/45138603369) the collaborator's tab, where the name pass runs, was held at most 1,646 ms at a time in Chromium and 880 ms in WebKit across the 12 paste legs with a second person, under the pasting tab's own bound in every leg (1,100 ms against 2,000 in Chromium and 323 ms against 2,000 in WebKit for the 10,000-item check list).
+- 2026-11-23 — T9.47 verified: when a co-editor presses Enter before your caret or turns your line into a heading, list item, check item or quote, your caret stays on your words and your next key lands beside them in Chromium and WebKit; the cases it leaves as before are listed under T9.47 below.
 
 ## T1.1s identity audit
 
@@ -416,10 +417,21 @@ Each is the behaviour before T9.47 unless it says otherwise, and each has a test
 11. A conversion larger than 256 KiB arrives in pieces with its deletes last, so the delete and the insert land in different commits and nothing is restored.
 12. A local Lexical update still pending when the peer's change arrives shares its commit; not shown reachable from the socket path, and not handled.
 13. Accepted by design: when your line is replaced on its own, the one new line in its place takes your caret whenever its text begins or ends like your line, even if a co-editor deleted your paragraph and wrote that line fresh.
+14. When several of a co-editor's edits reach you in one update (after a reconnect, or a resend of their merged edits) and the lines next to yours read alike, your caret can land in their new line instead of on your words: for example, with two lines that both read "T" and your caret in the second, their deletion that joins the two lines plus an Enter at the end puts your caret in the new empty line below.
 
 ## Follow-ups (P2)
 
 Parked from the M0 checker and critic passes, each with the task that owns it.
+
+### From T9.47's checker (dd9c090, 2026-11-23)
+
+- T9.47 (A co-editor's Enter or block change keeps your caret where it was) checker P2: several of a co-editor's edits delivered in one update can put the caret in their new line when adjacent lines read alike (limit 14 above).
+- T9.47 (A co-editor's Enter or block change keeps your caret where it was) checker P2: a co-editor's conversion plus Enter delivered in one update puts a caret that was at the end of the line at the start of the new empty line, where before it went to the end of the line above; neither is on the caret's words.
+- T9.47 (A co-editor's Enter or block change keeps your caret where it was) checker P2: the last narrowing of rule R1 (a pure subtraction, checked narrowly against its twins on a green full lane) has not had a second full independent review.
+- T9.47 (A co-editor's Enter or block change keeps your caret where it was) checker P2: a conversion that re-creates the lines around the caret (a whole list changed between bullets and numbers, a bullet placed between two lists that then merge, several edits delivered together) leaves the caret as before the fix.
+- T9.47 (A co-editor's Enter or block change keeps your caret where it was) checker P2: dead code after the narrowing in peer-caret.ts: `Before.run` is built and never read, `texts`, `mine` and `fresh[old.i]` remain with `old.i` always 0, and the old-run walk still reads every item's text on a 20,000-item list; tidy without changing behaviour.
+- T9.47 (A co-editor's Enter or block change keeps your caret where it was) checker P2: limit 9 above points at controls C2-C7 while the reconnect controls are named C1, and does not name indent or outdent; wording only.
+- T9.47 (A co-editor's Enter or block change keeps your caret where it was) checker P2: flake candidate apps/web/src/api/assets.test.ts 'stores a video of several segments in one put (T3.B30)' runs within 4 s of its 60 s limit (timed out once on run 45235664018 attempt 1, 55,969 ms in run 45236011085); the memory job's 'structure ceiling: the largest table' failed once in the same attempt with 'create: fetch failed'.
 
 ### From T9.46's checker (b136fc2, 2026-11-23)
 
