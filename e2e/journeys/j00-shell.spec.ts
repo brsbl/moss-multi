@@ -583,12 +583,15 @@ const escapeRe = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/g, '
 const tabOf = (name: string): RegExp => new RegExp(`^${escapeRe(name)} — (?:[^—]+ — )?Moss$`);
 const RENAME_TAB_MS = 1_000;
 
-test('the tab is named after the focused note: "moss" with none open, Untitled for an empty title, a rename within a second, the focused split pane (T9.22)', async ({ actors }) => {
+test('the tab is named after the focused note: "moss" with none open, Untitled for an empty title, a rename within a second, the focused split pane (T9.22)', async ({ actors, stack }) => {
   const ada = await openShell(actors, await actors.principal('ada'));
   actors.solo('one person names her own notes');
   const { page } = ada;
-  await expect(page.locator(`[${EDITOR_PANE_ATTR}]`), 'no note is open yet').toHaveCount(0);
-  expect(await page.title(), 'the empty canvas keeps the page title').toBe('moss');
+  // A canary pool principal reopens on its last-viewed note (A§4.2); a fresh one starts on the empty canvas.
+  if (!stack.canary) {
+    await expect(page.locator(`[${EDITOR_PANE_ATTR}]`), 'no note is open yet').toHaveCount(0);
+    expect(await page.title(), 'the empty canvas keeps the page title').toBe('moss');
+  }
 
   const tok = randomBytes(2).toString('hex');
   const names = { a: `Apples ${tok}`, b: `Pears ${tok}` };
