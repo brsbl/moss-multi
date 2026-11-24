@@ -38,7 +38,7 @@ test('block click: what pristine moss does with a click on a code block\'s line 
     await page.clock.setFixedTime(new Date(STORY_NOW));
     await page.route(/^https:\/\/(?!127\.0\.0\.1)/, (route) => route.fulfill({ status: 404, body: '' }));
     await page.goto(`${oracle.url}/?story=${STORY}&mode=preview`);
-    const body = page.locator('[data-lexical-editor="true"]').filter({ has: page.locator('.moss-codeblock-gutter') });
+    const body = page.locator('[data-moss-note-editor-root="true"]').filter({ has: page.locator('.moss-codeblock-gutter') });
     await body.locator('.moss-codeblock-gutter').waitFor({ timeout: 30_000 });
     const key = await body.evaluate((element) => {
       const editor = (element as HTMLElement & { __lexicalEditor: LexicalEditor }).__lexicalEditor;
