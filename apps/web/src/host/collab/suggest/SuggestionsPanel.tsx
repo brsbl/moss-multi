@@ -411,6 +411,7 @@ function placeAt(docId: string, mark: DOMRect | null, height: number, asPanel: b
 
 /** Moss's danger confirmation for a pending Reject or Withdraw on `docId`, focused on Cancel. */
 export function CloseConfirmation({ docId }: { docId: string }): ReactNode {
+  useSyncExternalStore(subscribePanels, () => panelVersion, () => 0);
   const pending = pendingClose?.docId === docId ? pendingClose : null;
   // The copy stays while the dialog animates out.
   const shown = useRef(pending);
