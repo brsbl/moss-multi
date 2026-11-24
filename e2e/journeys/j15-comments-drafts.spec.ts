@@ -629,6 +629,7 @@ test('j15-comments: Cmd+Shift+A on a selected code block opens a block composer 
   await code.scrollIntoViewIfNeeded();
   // A click beside the code (its line numbers) selects the block itself; the code's own textarea keeps Cmd+A.
   await code.locator('.moss-codeblock-gutter').first().click();
+  await expect(code.locator('.editor-block-selection-outline'), 'the click beside the code selects the block').toBeVisible();
   modes.POST = 'fail';
   await ada.page.keyboard.press(COMMENT_KEY);
   const composer = ada.page.getByRole('dialog', { name: 'Add comment' });
