@@ -172,6 +172,12 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-11-17 — T4.V verified: comments now run on m3's note size limits, lean layout and in-place export, so a comment, reply, resolve or sidecar import counts against the note's structure guard and a refused comment write names the limit, with the full lane green on the m4 head.
 - 2026-11-18 — T4.W verified: comments now run on m3's paste rollback, so a paste's held deletes go out on the comments path too, and a comment on words a paste moved follows them onto the pasted text instead of detaching.
 
+### T9.52b — what the block click seam does not change (deviation 40)
+
+- A read-only body does not mount DecoratorBlockPlugin (`{!readOnly && <DecoratorBlockPlugin />}` in `MarkdownEditor.tsx`), so a commenter's or viewer's click beside a block still loses its outline, as at the pin. The harm is small: there the comment shortcut is offered on text only, and a block comment goes through the block's header button (`apps/web/src/host/comments/CommentOnlyTools.tsx`).
+- The comment shortcut still reads its target from the toolbar's React state before the live selection (`openCommentInput` in `MarkdownEditor.tsx`), so with nothing selected it can still open a composer on a block clicked earlier when no selection change came in between.
+- `m0` to `m3` keep the pin's click until they sit below a branch that has the seam.
+
 ## T1.1s identity audit
 
 - Members: signed-in link-only readers reached doc member names through either a doc or ancestor-folder token. Authorization now omits the token; folder members already used grants only. The regression run [37133412126](https://github.com/brsbl/moss-multi/actions/runs/37133412126) failed all four doc cases (query/header × doc/folder link) with 200 instead of 404. Owner emails, grantee names, anonymous denial and owner-only writes remain covered.
