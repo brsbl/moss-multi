@@ -25,12 +25,11 @@ export class SuggestLedger {
   }
 
   /**
-   * The reply to the oldest request in flight, which it settles. Given the `reply`, one that cannot answer that request
-   * (a frame this window never sent) settles nothing and returns undefined.
+   * The reply to the oldest request in flight, which it settles. Given the `reply`, one that fits none of the requests
+   * in flight (it answers a frame this window never sent) settles nothing and returns undefined.
    */
   replied(reply?: SuggestReply): SuggestRequest | undefined {
-    const oldest = this.#inFlight[0];
-    if (reply && (!oldest || !answers(oldest, reply))) return undefined;
+    if (reply && !this.#inFlight.some((request) => answers(request, reply))) return undefined;
     return this.#inFlight.shift();
   }
 

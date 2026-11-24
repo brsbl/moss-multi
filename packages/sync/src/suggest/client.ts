@@ -866,9 +866,9 @@ export class SuggestFork {
 
   receive(reply: SuggestReply): void {
     if (this.#disposed) return;
-    // A reply to a frame F never sent (another client on its socket) answers nothing F asked: it changes nothing.
-    const head = this.#inflight[0];
-    if (!head || !answers(head.request, reply)) return;
+    // A reply that fits none of F's requests in flight answers a frame F never sent (another client on its socket):
+    // it changes nothing.
+    if (!this.#inflight.some((pending) => answers(pending.request, reply))) return;
     const entry = this.#inflight.shift();
     const resumed = entry?.request.t === 'suggest-lease' && entry.request.resume !== undefined;
     if (reply.t !== 'suggest-refused' && typeof reply.room === 'number') {
