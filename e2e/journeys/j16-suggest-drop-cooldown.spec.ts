@@ -141,3 +141,44 @@ test('j16-suggest-drop halted-card suggester: text offered back after the owner 
     }
   });
 });
+
+test('j16-suggest-drop halted-card-sign-out suggester: "Sign out anyway" with offered-back text up signs out with no second prompt from the browser; Cancel keeps the card @slow', async ({ actors }, testInfo) => {
+  test.setTimeout(300_000);
+  const probe = await begin(actors, testInfo, 'halted-card-sign-out', 'suggester');
+  await probe.run(async () => {
+    const { ada, ben, docId } = probe;
+    await probe.enterSuggest(ben);
+    await caretEnd(ben, docId, START.one);
+    await probe.type(ben, 'Aa1', 'one', { counted: false });
+    await probe.settle(ben, 'Aa1');
+    probe.cut();
+    await probe.type(ben, 'Dd4', 'one', { counted: false });
+    await pause(300);
+    const panel = ada.page.locator(`[${SUGGESTIONS_PANEL_ATTR}]`);
+    if (!(await panel.isVisible())) await ada.page.locator(`[${SUGGESTIONS_BUTTON_ATTR}]`).first().click();
+    const open = panel.locator(`[${SUGGESTION_CARD_ATTR}][${SUGGESTION_STATUS_ATTR}="open"]`).first();
+    await expect(open).toContainText('Aa1', { timeout: BIND_TIMEOUT });
+    await open.getByRole('button', { name: 'Reject' }).click();
+    await expect(panel.locator(`[${SUGGESTION_CARD_ATTR}][${SUGGESTION_STATUS_ATTR}="rejected"]`)).toHaveCount(1, { timeout: BIND_TIMEOUT });
+    await ada.page.keyboard.press('Escape');
+    probe.up();
+    const card = ben.page.locator(`[${SUGGEST_UNSAVED_ATTR}]`).first();
+    await expect(card, 'the text typed while down is offered back').toBeVisible({ timeout: 25_000 });
+    // A browser prompt would be dismissed, so the page would stay where it is.
+    probe.dismissDialogs = true;
+    const confirmation = ben.page.getByRole('alertdialog');
+    await ui.signOutThroughSettings(ben);
+    await expect(confirmation, 'sign-out asks before discarding the offered text').toBeVisible({ timeout: 8_000 });
+    await confirmation.getByRole('button', { name: 'Cancel', exact: true }).click();
+    await ben.page.keyboard.press('Escape');
+    expect.soft(await card.isVisible(), 'Cancel keeps the card').toBe(true);
+    const asked = probe.dialogs.length;
+    await ui.signOutThroughSettings(ben);
+    await expect(confirmation).toBeVisible({ timeout: 8_000 });
+    await confirmation.getByRole('button', { name: 'Sign out anyway', exact: true }).click();
+    const left = await until(() => new URL(ben.page.url()).pathname, (path) => path === '/login', 15_000, 250);
+    probe.note('after "Sign out anyway"', { path: left.value, dialogs: probe.dialogs.slice(asked).map((dialog) => dialog.type) });
+    expect.soft(probe.dialogs.length - asked, 'the browser does not ask a second time').toBe(0);
+    expect.soft(left.ok, 'the sign-out lands on the login page').toBe(true);
+  });
+});
