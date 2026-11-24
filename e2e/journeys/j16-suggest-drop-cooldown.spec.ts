@@ -13,7 +13,7 @@ import {
 import { expect, test, ui } from '../lib/test.ts';
 import { occurrences } from '../lib/text.ts';
 
-/** The cooldown notice (the coordinator's wording). */
+/** The cooldown notice. */
 const PAUSED = 'Suggesting is paused for about a minute. What you typed is kept in this window, so don’t reload.';
 
 /** A suggest frame the DocDO refuses: a withdraw of a record that does not exist. */
@@ -43,7 +43,7 @@ async function refusedElsewhere(probe: Probe, count: number): Promise<void> {
   }
 }
 
-// `cooldown` is the brief's leg 5: the three frames go out on the window's own socket, and their replies reach its
+// `cooldown`: the three frames go out on the window's own socket, and their replies reach its
 // fork ahead of the reply to what it has in flight. `cooldown-elsewhere` sends them on another socket of the person's.
 for (const via of ['own', 'elsewhere'] as const) test(`j16-suggest-drop ${via === 'own' ? 'cooldown' : 'cooldown-elsewhere'} suggester: a real cooldown with a suggestion in flight, the refused frames on ${via === 'own' ? "the window's own socket" : 'another socket of the person'}, says so, ends by itself and delivers it with no click @slow`, async ({ actors }, testInfo) => {
   test.setTimeout(300_000);

@@ -58,7 +58,7 @@ it('an app-initiated leave that already settled its edits does not ask again, un
   } finally { markUnacked(session, false); }
 });
 
-// Round 3: every leave, reload or sign-out the app starts decides after its last await (docs/history/LEARNINGS.md).
+// Every leave, reload or sign-out the app starts decides after its last await (docs/history/LEARNINGS.md).
 const KEY = 'suggest-unsaved:doc-race';
 const tick = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
 /** What the session's reply handler does for a suggestion refused while it was the last one unacked: the fork

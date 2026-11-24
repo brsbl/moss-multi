@@ -425,8 +425,8 @@ export class SuggestIngest {
    * acknowledged clock. A resume rebinds every lease it names whatever the live count: the cap limits minting only, so
    * text a fork wrote offline is never refused over a spare it holds. Another connection the resuming fork takes its
    * leases from, held or idled, is retired: its other leases expire and `onSuperseded` hears it. When that connection
-   * was opened after the resuming one, the resume is late and the resuming connection is retired instead. A refused
-   * resume moves and retires nothing.
+   * was opened after the resuming one, the resume is late: it moves nothing and retires only the connection it arrived
+   * on. Any other refused resume moves and retires nothing.
    */
   lease(who: Suggester, resume: readonly number[] = [], count: number = SUGGEST_LIMITS.leaseBatch, fork: string | null = null): { ok: true; leases: LeaseGrant[] } | { ok: false; reason: SuggestRefusal } {
     if (!roleAtLeast(who.role, 'suggester')) return refused('role');
@@ -435,7 +435,7 @@ export class SuggestIngest {
     const since = now - SUGGEST_LIMITS.leaseIdleMs;
     const grants: LeaseGrant[] = [];
     const superseded = new Set<string>();
-    // Every name is checked before any lease moves, so a refused resume moves and retires nothing.
+    // Every name is checked before any lease moves, so a resume refused here moves and retires nothing.
     for (const client of resume) {
       const lease = typeof client === 'number' ? this.leases.get(client) : undefined;
       if (!lease || lease.principal !== who.id) return refused('lease');

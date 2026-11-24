@@ -6,7 +6,7 @@ import { CONNECTION_BANNER_ATTR } from '../lib/contract.ts';
 import { begin, caretEnd, draftLines, pause, ROLES, START, typeAcrossCut, until } from '../lib/suggest-drop.ts';
 import { expect, test, ui } from '../lib/test.ts';
 
-/** What the window the person's other Suggest windows leave no room for says (the coordinator's wording). */
+/** What the window the person's other Suggest windows leave no room for says. */
 const BUSY = 'This note is open for suggesting in other windows. Close one to suggest here.';
 
 for (const role of ROLES) {

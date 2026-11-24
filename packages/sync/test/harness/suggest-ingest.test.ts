@@ -841,7 +841,7 @@ describe('T5.S16 a connection a fork has resumed from elsewhere is retired @p:me
     expect(fresh.closed).toBeNull();
   });
 
-  // Round 3: the takeover retires the old connection whether or not its leases idled there.
+  // The takeover retires the old connection whether or not its leases idled there.
   const granted = (reply: SuggestReply) => (reply as Extract<SuggestReply, { t: 'suggest-leased' }>).leases;
   const IDLE = SUGGEST_LIMITS.leaseIdleMs + 60_000;
 
@@ -927,6 +927,42 @@ describe('T5.S16 a connection a fork has resumed from elsewhere is retired @p:me
     expect.soft(stalled.events.filter((event) => event.t === 'suggest-refused'), 'its late frames draw no refusal').toEqual([]);
     expect(await send(live, opsRequest(named[0].record, forge(doc, (d) => firstBlock(d).insert(0, 'Live '), named[0].client)))).toMatchObject({ t: 'suggest-ack', record: named[0].record });
     expect(live.closed).toBeNull();
+  });
+
+  it('three late resumes inside one refusal window each retire their own stale socket and count nothing toward the cooldown', async () => {
+    const opened = await seeded();
+    const doc = opened.dobj.document;
+    const fork = 'fork-t5s16-three-late';
+    const first = await on(opened, SAM);
+    const named = granted(await send(first, { t: 'suggest-lease', fork }));
+    const resume = { t: 'suggest-lease', resume: named.map((lease) => lease.client), fork, mint: 0 } as SuggestRequest;
+    // Three sockets of the same window, each given up before its resume landed, then the live one.
+    const stale: TestClient[] = [];
+    for (let i = 0; i < 3; i += 1) {
+      await vi.advanceTimersByTimeAsync(1_000);
+      stale.push(await on(opened, SAM));
+    }
+    await vi.advanceTimersByTimeAsync(1_000);
+    const live = await on(opened, SAM);
+    expect(await send(live, resume)).toMatchObject({ t: 'suggest-leased' });
+    // Each stale socket's resume arrives late, all inside one window of windowMs.
+    for (const socket of stale) {
+      const before = socket.events.length;
+      await vi.advanceTimersByTimeAsync(1_000);
+      await socket.deliver(`${CUSTOM_PREFIX}${JSON.stringify(resume)}`);
+      await socket.pump();
+      expect.soft(socket.events.slice(before).filter(isReply), 'a late resume is not answered').toEqual([]);
+    }
+    for (const [i, socket] of stale.entries()) expect.soft(socket.closed, `stale socket ${i} is retired`).toEqual({ code: CLOSE.normal, reason: 'superseded' });
+    expect(live.closed, 'the live socket stays open, never 4429').toBeNull();
+    // The leases are still bound to the live socket: a write under the active one lands there.
+    expect(await send(live, opsRequest(named[0].record, forge(doc, (d) => firstBlock(d).insert(0, 'Live '), named[0].client)))).toMatchObject({ t: 'suggest-ack', record: named[0].record });
+    // Nothing was counted: the live socket takes max - 1 refusals and stays open, and one more starts the cooldown.
+    const { max } = SUGGEST_LIMITS.refusals;
+    for (let i = 0; i < max - 1; i += 1) expect(await send(live, { t: 'suggest-withdraw', record: `nope-${i}` })).toMatchObject({ t: 'suggest-refused' });
+    expect(live.closed, 'the late resumes were not counted').toBeNull();
+    expect(await send(live, { t: 'suggest-withdraw', record: 'nope-last' })).toMatchObject({ t: 'suggest-refused' });
+    expect(live.closed?.code, 'forged refusals still start the cooldown').toBe(CLOSE.connectionLimit);
   });
 
   it("another window of the person's (another fork) never retires this one, even naming its idle leases", async () => {
