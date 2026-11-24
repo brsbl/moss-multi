@@ -415,7 +415,10 @@ test("j16-review: a rebuilt fork leaves the author's open list and its focus whe
   await expect(count).toBeFocused();
 
   // Ada rejects it while Ben watches the list.
-  await confirmClose(ada, (await openPanel(ada)).locator(`[${SUGGESTION_CARD_ATTR}][${SUGGESTION_STATUS_ATTR}="open"]`), 'Reject');
+  const adaCard = (await openPanel(ada)).locator(`[${SUGGESTION_CARD_ATTR}][${SUGGESTION_STATUS_ATTR}="open"]`);
+  // Her card asks for its preview 250 ms after it shows; a reject sent before the answer lets that request meet the closed record (409).
+  await expect(adaCard.getByRole('button', { name: 'Accept' }), "Ada's card has its preview").toBeEnabled({ timeout: BIND_TIMEOUT });
+  await confirmClose(ada, adaCard, 'Reject');
   await expect(cards(ben, 'rejected')).toHaveCount(1, { timeout: BIND_TIMEOUT });
   await expect(ui.body(ben, docId), 'the rebuilt fork').not.toContainText('plus', { timeout: BIND_TIMEOUT });
   await expect(ui.body(ben, docId)).toHaveAttribute(BODY_BINDING_ATTR, 'live', { timeout: BIND_TIMEOUT });
