@@ -784,6 +784,9 @@ export function useMossMultiPane(note: { id: string; trashedAt?: number | null }
   useLayoutEffect(() => binding?.attachFields(fields), [binding, fields]);
   useLayoutEffect(() => fields.title.setOpen(titleLive), [fields, titleLive]);
   const gone = trashed || terminal === 'deleted';
+  // Where the notices stand follows Moss's own record, which draws its Trash notice in the bottom slot: until it does,
+  // the pane's card stays there, so a note trashed under its owner always holds one notice (T9.50a).
+  const mossNotice = note?.trashedAt != null;
   if (docId && trashView) {
     return {
       bound: false,
@@ -806,11 +809,11 @@ export function useMossMultiPane(note: { id: string; trashedAt?: number | null }
   return {
     bound: true,
     readOnly: !live,
-    noticeBand: <NoticeBand docId={docId} refusals={docId === null || trashed} trashed={docId && trashed ? docId : null} />,
+    noticeBand: <NoticeBand docId={docId} refusals={docId === null || mossNotice} trashed={docId && mossNotice ? docId : null} />,
     bottomBand: docId ? (
       <BottomRegion docId={docId}>
         {/* Moss shows its Trash notice in this slot instead, so a trashed note's refusals and notices float from the band. */}
-        {trashed ? null : <><RefusalAnnouncer /><NoticeStack docId={docId} /></>}
+        {mossNotice ? null : <><RefusalAnnouncer /><NoticeStack docId={docId} /></>}
         {historyOpen ? null : <><RoleBand docId={docId} /><ReviewBand docId={docId} /><SuggestBand docId={docId} /></>}
       </BottomRegion>
     ) : null,
