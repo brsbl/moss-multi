@@ -324,7 +324,22 @@ class PaneBinding implements SuggestPane {
   #mountChanged(): void {
     const suggesting = this.#mount instanceof SuggestMount ? this.#mount : null;
     this.set({ suggestSent: suggesting?.fork.sent ?? 0, suggestRefused: suggesting?.refusals ?? 0 });
+    this.#readouts();
     for (const listener of [...this.#mountListeners]) listener();
+  }
+
+  /**
+   * The suggest readouts, written in the tick `data-sync-unacked` is, so they are current whenever it reads "0"; the
+   * render's props give the first value and remove them when the pane leaves Suggest. A pane leaving Suggest keeps
+   * its mount until reset, so the mode gates the write.
+   */
+  #readouts(): void {
+    if (this.#mode !== 'suggest') return;
+    const pane = this.#editor?.getRootElement()?.closest(`[${EDITOR_PANE_ATTR}]`);
+    if (!pane) return;
+    const suggesting = this.#mount instanceof SuggestMount ? this.#mount : null;
+    pane.setAttribute(SUGGEST_SENT_ATTR, String(suggesting?.fork.sent ?? 0));
+    pane.setAttribute(SUGGEST_REFUSED_ATTR, String(suggesting?.refusals ?? 0));
   }
 
   /**
@@ -527,6 +542,7 @@ class PaneBinding implements SuggestPane {
     const bodyState: BindingState = terminal ? 'terminal' : !state.synced || state.resync || !this.#role || !this.#mountReady ? 'unbound' : writes && !state.writePaused ? 'live' : 'readonly';
     editor.setEditable(bodyState === 'live');
     closeRoot(editor.getRootElement(), bodyState);
+    this.#readouts();
     editor.getRootElement()?.closest(`[${EDITOR_PANE_ATTR}]`)?.setAttribute(SYNC_UNACKED_ATTR, state.unacked || isLanding(editor) ? '1' : '0');
     const session = this.#session;
     if (session && state.synced && !state.resync) this.#fields?.bind(session.docId, session.doc, () => this.#state.bodyState === 'live' && this.#mode === 'edit');
