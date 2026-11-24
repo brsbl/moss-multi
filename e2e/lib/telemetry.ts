@@ -12,6 +12,14 @@ export interface SocketEntry {
   url: string; docId: string; epoch: number; openedAt: number; closedAt: number | null; error: string | null;
   /** The close the page heard (`code reason`), or that it asked for (`asked code`), so a reopen names its cause. */
   close: string | null;
+  /** The heard close event's code, when the page saw it (not on a routed page). */
+  code?: number | null;
+  /** The page document that opened it, when the page reported it (not on a routed page). */
+  document?: string | null;
+  /** It received the server's sync step 2 (y-protocols message 0, 1): the doc reached sync on it. */
+  synced?: boolean;
+  /** When it first received sync step 2. */
+  syncedAt?: number;
 }
 export interface StampEntry { url: string; status: number | null; meta: string | null; client: string | null; at: number }
 
@@ -19,6 +27,8 @@ export interface StampEntry { url: string; status: number | null; meta: string |
 const PAGE_CLOSE_BINDING = '__e2eDocSocketClosed';
 /** The page reports each doc socket's close event, code and reason, through this binding. */
 const PAGE_CLOSE_CODE_BINDING = '__e2eDocSocketCloseCode';
+/** The page reports the document that constructs each doc socket through this binding. */
+const SOCKET_DOCUMENT_BINDING = '__e2eDocSocketDocument';
 
 export class Telemetry {
   readonly console: ConsoleEntry[] = [];
@@ -35,6 +45,8 @@ export class Telemetry {
   ready: Promise<void> = Promise.resolve();
   private documentStatus: number | null = null;
   private pending: Promise<void>[] = [];
+  /** Each doc socket URL's document, as the page reported it (each URL carries its own `_pk`). */
+  private documents = new Map<string, string>();
 
   /**
    * `routed`: the context's doc sockets run through a routeWebSocket proxy (a severable actor). The page's own
@@ -54,9 +66,15 @@ export class Telemetry {
         page.exposeBinding(PAGE_CLOSE_CODE_BINDING, (_source, url: unknown, close: unknown) => {
           if (typeof url === 'string' && typeof close === 'string') t.closeHeard(url, close);
         }),
+        page.exposeBinding(SOCKET_DOCUMENT_BINDING, (_source, url: unknown, document: unknown) => {
+          if (typeof url === 'string' && typeof document === 'string') t.socketDocument(url, document);
+        }),
         page.addInitScript(
-          ({ path, binding, codeBinding }) => {
+          ({ path, binding, codeBinding, documents }) => {
             const bindings = window as unknown as Record<string, ((...args: unknown[]) => unknown) | undefined>;
+            // This document's identity: a socket the previous document opened as it unloaded can reach the census
+            // after this document's navigation response, so the navigation count alone would misfile it.
+            const documentId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
             const close = WebSocket.prototype.close;
             WebSocket.prototype.close = function (this: WebSocket, code?: number, reason?: string) {
               try {
@@ -71,6 +89,11 @@ export class Telemetry {
               constructor(url: string | URL, protocols?: string | string[]) {
                 super(url, protocols);
                 if (!new URL(this.url).pathname.startsWith(path)) return;
+                try {
+                  void bindings[documents]?.(this.url, documentId);
+                } catch {
+                  // the census never breaks the page
+                }
                 Native.prototype.addEventListener.call(this, 'close', (event: Event) => {
                   const { code, reason } = event as CloseEvent;
                   try {
@@ -82,7 +105,7 @@ export class Telemetry {
               }
             };
           },
-          { path: DOC_SOCKET_PATH, binding: PAGE_CLOSE_BINDING, codeBinding: PAGE_CLOSE_CODE_BINDING },
+          { path: DOC_SOCKET_PATH, binding: PAGE_CLOSE_BINDING, codeBinding: PAGE_CLOSE_CODE_BINDING, documents: SOCKET_DOCUMENT_BINDING },
         ),
       ]).then(() => undefined);
     }
@@ -109,6 +132,12 @@ export class Telemetry {
       if (!entry) return;
       socket.on('close', () => { entry.closedAt ??= Date.now(); });
       socket.on('socketerror', (error) => { entry.error = String(error); });
+      socket.on('framereceived', ({ payload }) => {
+        if (typeof payload !== 'string' && payload[0] === 0 && payload[1] === 1 && !entry.synced) {
+          entry.synced = true;
+          entry.syncedAt = Date.now();
+        }
+      });
     });
     page.on('load', () => {
       t.pending.push(t.stamp(page));
@@ -128,32 +157,57 @@ export class Telemetry {
       closedAt: null,
       error: null,
       close: null,
+      document: this.documents.get(url) ?? null,
     };
     this.sockets.push(entry);
     return entry;
   }
 
+  /** The page document that constructed the doc socket at `url`; the report and the open may arrive in either order. */
+  socketDocument(url: string, document: string): void {
+    this.documents.set(url, document);
+    for (const socket of this.sockets) if (socket.url === url && !socket.document) socket.document = document;
+  }
+
   /** The page closed the doc socket at `url` at page time `at` (each socket's URL carries its own `_pk`). */
   pageClosed(url: string, at: number, close: string | null = null): void {
-    const entry = [...this.sockets].reverse().find((socket) => socket.url === url && socket.closedAt === null);
+    // The browser's close event can reach the census before this binding call (a socket closed while connecting);
+    // the page's ask still names the close, which always precedes the close the page then hears.
+    const entry = [...this.sockets].reverse().find((socket) => socket.url === url && (socket.closedAt === null || socket.close === null));
     if (!entry) return;
-    entry.closedAt = Math.max(entry.openedAt, at);
+    const asked = Math.max(entry.openedAt, at);
+    entry.closedAt = entry.closedAt === null ? asked : Math.min(entry.closedAt, asked);
     entry.close ??= close;
   }
 
   /** The page heard the doc socket at `url` close with `close` (`code reason`). */
   closeHeard(url: string, close: string): void {
     const entry = [...this.sockets].reverse().find((socket) => socket.url === url && (socket.close === null || socket.close.startsWith('asked')));
-    if (entry) entry.close = entry.close ? `${entry.close}, then ${close}` : close;
+    if (!entry) return;
+    entry.close = entry.close ? `${entry.close}, then ${close}` : close;
+    const code = Number.parseInt(close, 10);
+    if (Number.isInteger(code)) entry.code = code;
   }
 
   /** A routed page socket, as the proxy saw it open; `closed()` records its close, once. */
-  routedSocket(url: string): { closed(): void } {
+  routedSocket(url: string): { closed(code?: number, reason?: string): void; received(message: string | Buffer): void } {
     const entry = this.socketOpened(url);
     return {
-      closed() {
+      // Sync step 2 relayed from the server leg, as the page-socket census reads it from CDP.
+      received(message) {
+        if (entry && typeof message !== 'string' && message[0] === 0 && message[1] === 1 && !entry.synced) {
+          entry.synced = true;
+          entry.syncedAt = Date.now();
+        }
+      },
+      // `code`: the server leg's close, so invariant 3 judges a routed 1006 or 1013 as it does a page socket's.
+      closed(code, reason = '') {
         if (entry && entry.closedAt === null) {
           entry.closedAt = Date.now();
+          if (typeof code === 'number') {
+            entry.close ??= `${code} ${reason}`.trim();
+            entry.code = code;
+          }
           entry.close ??= 'closed at the proxy';
         }
       },

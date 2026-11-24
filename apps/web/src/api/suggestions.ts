@@ -86,12 +86,15 @@ export async function handleSuggestion(request: Request, env: DocsEnv, docId: st
       shareToken: shareTokenOf(request),
     },
   };
-  const stub = await getServerByName(env.DocDO, docId);
-  let verdict: Verdict;
-  if (action === 'preview') verdict = (await stub.previewSuggestion(input)) as Verdict;
-  else if (action === 'accept') verdict = (await stub.acceptSuggestion({ ...input, previewHash: previewHash as string, digest: digest as string })) as Verdict;
-  else if (action === 'reject') verdict = (await stub.rejectSuggestion(input)) as Verdict;
-  else verdict = (await stub.withdrawSuggestion(input)) as Verdict;
+  const verdict = await retryingReset(async (retried) => {
+    const stub = await getServerByName(env.DocDO, docId);
+    const sent = retried ? { ...input, retried } : input;
+    if (action === 'preview') return (await stub.previewSuggestion(input)) as Verdict;
+    if (action === 'accept') return (await stub.acceptSuggestion({ ...sent, previewHash: previewHash as string, digest: digest as string })) as Verdict;
+    if (action === 'reject') return (await stub.rejectSuggestion(sent)) as Verdict;
+    return (await stub.withdrawSuggestion(sent)) as Verdict;
+  });
+  if (verdict === null) return json({ error: 'unavailable' }, 503, { ...NO_STORE, 'retry-after': '1' });
   if (!verdict.ok) {
     const status = verdict.status ?? 409;
     const limit = verdict.reason === 'doc-cap' && (verdict.limit === 'text' || verdict.limit === 'structure') ? verdict.limit : null;
@@ -102,6 +105,32 @@ export async function handleSuggestion(request: Request, env: DocsEnv, docId: st
   }
   const status = action === 'accept' ? 'accepted' : action === 'reject' ? 'rejected' : 'withdrawn';
   return json({ suggestion: { id: sid, status } }, 200, NO_STORE);
+}
+
+/** A DocDO exception the platform marks transient (a reset object), and not an overload, which a retry only adds to. */
+const transient = (error: unknown): boolean =>
+  typeof error === 'object' && error !== null && (error as { retryable?: unknown }).retryable === true && (error as { overloaded?: unknown }).overloaded !== true;
+
+/**
+ * One review call, made once more on a fresh stub when the platform reset the DocDO under it (its exception is
+ * `retryable`). The retry is marked, so a status change the first call already landed reads as done (retriedReview);
+ * null when the object stays unavailable or is overloaded, which the route answers 503. Any other error is thrown.
+ */
+export async function retryingReset<T>(call: (retried: boolean) => Promise<T>): Promise<T | null> {
+  try {
+    return await call(false);
+  } catch (error) {
+    if (!transient(error)) {
+      if ((error as { overloaded?: unknown } | null)?.overloaded === true) return null;
+      throw error;
+    }
+  }
+  try {
+    return await call(true);
+  } catch (error) {
+    if (transient(error) || (error as { overloaded?: unknown } | null)?.overloaded === true) return null;
+    throw error;
+  }
 }
 
 export const SUGGESTIONS_ROUTE = /^\/api\/docs\/([^/]+)\/suggestions$/;

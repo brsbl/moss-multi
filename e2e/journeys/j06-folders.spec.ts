@@ -161,6 +161,15 @@ test('j06-folders: an editor on a shared vault creates a folder the owner sees l
 
   const ben = await actors.open(benPrincipal);
   await ui.switchVault(ben.page, 'Home Can edit');
+  // The switch lands when Ada's vault has loaded; a folder made before that goes to the vault still shown.
+  await expect(async () => {
+    const list = await ui.openVaultList(ben.page);
+    try {
+      await expect(list.getByRole('menuitemradio', { name: 'Home Can edit', exact: true })).toBeChecked({ timeout: 1_000 });
+    } finally {
+      await ui.closeVaultList(ben.page);
+    }
+  }, "Ben's sidebar shows Ada's vault").toPass({ timeout: BOOT_TIMEOUT });
   await newFolder(ben, 'Ben research');
   await expect(ui.folderRow(ben, 'Ben research'), "Ben's folder shows in Ada's vault").toBeVisible();
   await expect(ui.folderRow(ada, 'Ben research'), 'Ada sees it without a reload').toBeVisible({ timeout: PEER_SIDEBAR_MS });

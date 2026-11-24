@@ -17,7 +17,9 @@ import type { Actor, Actors } from '../lib/actors.ts';
 import { DOC_STATE_ATTR, INPUT_REFUSAL_ATTR, paneSelector } from '../lib/contract.ts';
 import { cookieHeader, openDocClient, type DocClient } from '../lib/doc-client.ts';
 import { grantDoc } from '../lib/grants.ts';
-import { exported, fingerprint, importNote, PASTE_ROLLED_BACK_NOTICE, pastePlain, UNDO } from '../lib/paste.ts';
+import {
+  BYTES_NOTICE, exported, fingerprint, importNote, PASTE_PARTLY_KEPT_NOTICE, PASTE_ROLLED_BACK_NOTICE, pastePlain, STRUCTURE_NOTICE, TEXT_NOTICE, UNDO,
+} from '../lib/paste.ts';
 import { signIn } from '../lib/principals.ts';
 import type { Stack } from '../lib/stack.ts';
 import { expect, test, ui } from '../lib/test.ts';
@@ -148,7 +150,12 @@ async function cutPaste(actors: Actors, stack: Stack, select: boolean, before?: 
   await pastePlain(ada, docId, A);
   await expect.poll(() => stateBytes(ben) - bytes, { message: 'part of the paste lands', timeout: 180_000 }).toBeGreaterThan(500_000);
   ada.sever!.blackhole();
-  await ada.page.waitForTimeout(3_000);
+  // Frames that crossed before the blackhole may still be queued at the DocDO (off loopback each takes seconds): what
+  // is still to come is measured once Ben's copy has stopped growing.
+  for (let seen = -1, until = Date.now() + 120_000; structs(ben) !== seen && Date.now() < until; ) {
+    seen = structs(ben);
+    await ada.page.waitForTimeout(3_000);
+  }
   const rest = (await lastAdds(ada)) - (structs(ben) - beforeStructs);
   expect(rest, 'part of the paste is still to come').toBeGreaterThan(10_000);
   expect(count(ben.text(), 'Alpha'), 'Ben sees the part that landed').toBeGreaterThan(0);
@@ -159,12 +166,25 @@ async function cutPaste(actors: Actors, stack: Stack, select: boolean, before?: 
     }).toBeGreaterThan(0);
   }
 
-  // Ben fills the room: his writes fit beside what landed, the rest of the paste no longer does.
-  const bravos = await fillTo(ben, STRUCT_CAP - Math.floor(rest / 2), 'Bravo');
+  // Ben fills the room: his writes fit beside what landed, the rest of the paste no longer does. The admission's count
+  // runs above the structs that land, so the room left is a tenth of the measured rest: at staging round trips more of
+  // the paste landed before the blackhole, and half of the measured rest held all that was left (the paste landed whole).
+  const bravos = await fillTo(ben, STRUCT_CAP - Math.floor(rest / 10), 'Bravo');
   await watchSettled(ada, docId);
   before?.(ada, docId);
   ada.sever!.restore();
-  await expect(ada.page.locator(`[${INPUT_REFUSAL_ATTR}]`), 'the cut is announced').toContainText(PASTE_ROLLED_BACK_NOTICE, { timeout: 240_000 });
+  const refusal = ada.page.locator(`[${INPUT_REFUSAL_ATTR}]`);
+  const announced = await expect(refusal, 'the cut is announced').toContainText(PASTE_ROLLED_BACK_NOTICE, { timeout: 240_000 }).then(() => true, () => false);
+  if (!announced) {
+    // Off loopback the log keeps only numbers: which notice showed, how much of the paste landed, the room left.
+    const shown = (await refusal.allTextContents()).join(' ');
+    const kind = [PASTE_PARTLY_KEPT_NOTICE, STRUCTURE_NOTICE, TEXT_NOTICE, BYTES_NOTICE].findIndex((notice) => shown.includes(notice)) + 1;
+    expect(kind, 'the cut is announced, not another notice (1 partly kept, 2 structure, 3 text, 4 bytes)').toBe(0);
+    expect(Number(shown.length > 0), 'the cut is announced, not an unnamed notice').toBe(0);
+    expect(count(ben.text(), 'Alpha'), 'the cut is announced: the paste did not land whole').toBeLessThan(20_000);
+    expect(STRUCT_CAP - structs(ben), 'the cut is announced: the room left under the guard').toBeLessThan(0);
+    throw new Error('the cut is never announced');
+  }
   return { ada, ben, peer: page, docId, before: exportBefore, bravos };
 }
 

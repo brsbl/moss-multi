@@ -5,6 +5,7 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { FullConfig, FullResult, Reporter, Suite, TestCase, TestResult } from '@playwright/test/reporter';
+import { recordVerdict } from '../../scripts/deploy/retry-gate.mjs';
 import { isInfraBlocked } from './infra.ts';
 import { latencyRows, type LatencyRow, type LatencySample } from './measure.ts';
 
@@ -65,6 +66,10 @@ export default class MossReporter implements Reporter {
   }
 
   onTestEnd(test: TestCase, result: TestResult): void {
+    // A failed attempt with a retry left records whether it failed on infrastructure; the retry reads it (test.ts).
+    if (result.status !== 'passed' && result.status !== 'skipped' && result.retry < test.retries) {
+      recordVerdict(test.parent.project()?.outputDir ?? this.outputDir, test.id, result.retry, result.errors);
+    }
     const project = test.parent.project()?.name ?? '';
     const annotations = result.annotations;
     const browser = annotations.find((a) => a.type === 'browser')?.description;

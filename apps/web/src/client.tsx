@@ -7,6 +7,7 @@ import { CLIENT_BUILD_ATTR } from '@moss-multi/protocol/dom-contract';
 import { StartClient } from '@tanstack/react-start/client';
 import { StrictMode, startTransition } from 'react';
 import { hydrateRoot } from 'react-dom/client';
+import { logCaughtError } from './host/ChunkReloadBoundary.tsx';
 import { installClientProtocol } from './host/client-protocol.ts';
 import { installNotePopState } from './host/note-popstate.ts';
 import { BUILD } from './provenance.ts';
@@ -24,5 +25,7 @@ startTransition(() => {
     <StrictMode>
       <StartClient />
     </StrictMode>,
+    // A chunk the page's leave cut off is not an error to log (ChunkReloadBoundary.tsx).
+    { onCaughtError: logCaughtError },
   );
 });

@@ -159,6 +159,26 @@ describe('T5.3 accept, reject and withdraw through the DocDO @p:mean-2 @p:R16 @p
     unchanged();
   });
 
+  it('a retried review whose first call already closed the record as that action, by that reviewer, reads as done; any other stays not-open', async () => {
+    const opened = await seeded();
+    const sam = await on(opened, SAM);
+    const id = await suggest(sam, () => select('Hello', 24).insertText(' More words.'));
+    const shown = await preview(opened, id);
+    const accept = { id, reviewer: EDITOR, previewHash: shown.hash, digest: shown.digest };
+    expect(await opened.dobj.acceptSuggestion(accept)).toEqual({ ok: true });
+    const after = rootJson(opened.dobj.document);
+    // The Worker's retry after the platform reset the object mid-call: the accept had landed.
+    expect(await opened.dobj.acceptSuggestion({ ...accept, retried: true })).toEqual({ ok: true });
+    expect(rootJson(opened.dobj.document), 'nothing lands twice').toBe(after);
+    // A first call, another reviewer's retry, or a retry of another action is still refused.
+    expect(await opened.dobj.acceptSuggestion(accept)).toEqual({ ok: false, status: 409, reason: 'not-open' });
+    expect(await opened.dobj.acceptSuggestion({ ...accept, reviewer: { id: 'other@example.invalid', role: 'editor' }, retried: true })).toEqual({ ok: false, status: 409, reason: 'not-open' });
+    expect(await opened.dobj.rejectSuggestion({ id, reviewer: EDITOR, retried: true })).toEqual({ ok: false, status: 409, reason: 'not-open' });
+    const second = await suggest(sam, () => select('Indented', 0).insertText('Rejected words. '));
+    expect(await opened.dobj.rejectSuggestion({ id: second, reviewer: EDITOR })).toEqual({ ok: true });
+    expect(await opened.dobj.rejectSuggestion({ id: second, reviewer: EDITOR, retried: true })).toEqual({ ok: true });
+  });
+
   it('the default export is the clean body; ?view=working adds every valid open record', async () => {
     const opened = await seeded();
     const sam = await on(opened, SAM);

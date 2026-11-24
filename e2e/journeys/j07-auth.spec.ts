@@ -4,6 +4,7 @@
 // to the doc `next` names (and never off the site), a wrong password says so, no OAuth button renders, the card
 // works at both Tier A widths, a session lookup that fails or hangs degrades in place (R10), and a session that ends
 // under an open tab says so with a way to sign in, whichever action meets it first (T9.17).
+import { isLoopback } from '../../scripts/deploy/canary-artifacts.mjs';
 import { cookieHeader } from '../lib/doc-client.ts';
 import { signIn, type Principal } from '../lib/principals.ts';
 import type { Page, Request, Route } from '@playwright/test';
@@ -172,13 +173,13 @@ test('the keyboard follows a mode switch, and a too-short password on sign-up na
     actor.page.off('request', count);
     expect(signUps, 'and no sign-up request went out').toEqual([]);
 
-    // A three-character password is refused with the loopback minimum named.
+    // A three-character password is refused with the minimum named: 8 on a loopback stack, 12 on a deployment (config.ts).
     actor.expectHttp(400, '/api/auth/sign-up/email');
     await signUp.getByLabel('Name', { exact: true }).fill(person.name);
     await signUp.getByLabel('Email', { exact: true }).fill(person.email);
     await signUp.getByLabel('Password', { exact: true }).fill('abc');
     await signUp.getByRole('button', { name: 'Create account', exact: true }).click();
-    await expect(signUp.getByRole('alert'), `${label}: the refusal says how long a password must be`).toContainText(/at least 8 characters/);
+    await expect(signUp.getByRole('alert'), `${label}: the refusal says how long a password must be`).toContainText(`at least ${isLoopback(stack.baseUrl) ? 8 : 12} characters`);
 
     await signUp.getByLabel('Password', { exact: true }).fill(person.password);
     await signUp.getByRole('button', { name: 'Create account', exact: true }).click();
