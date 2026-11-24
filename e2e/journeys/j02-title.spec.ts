@@ -519,8 +519,9 @@ test('j02-title: @tierA a space typed in a title is stored as U+0020, first in t
   await ada.page.keyboard.type(' world');
   ada.typed({ docId: lead, field: 'title', text: ' world', ordered: true });
   await ui.waitAcked(ada, lead);
-  expect(codePoints(await ui.fieldText(ada, lead, 'title')), 'the title element holds U+0020 then "world"').toBe(codePoints(' world'));
-  expect(codePoints(await storedTitle(ada, lead)), "Y.Text('title') holds U+0020 then \"world\"").toBe(codePoints(' world'));
+  // Soft, so the paste case below still runs and reports when this one fails.
+  expect.soft(codePoints(await ui.fieldText(ada, lead, 'title')), 'the title element holds U+0020 then "world"').toBe(codePoints(' world'));
+  expect.soft(codePoints(await storedTitle(ada, lead)), "Y.Text('title') holds U+0020 then \"world\"").toBe(codePoints(' world'));
 
   // A word pasted after a typed space: the paste goes through the title's own onPaste, not the engine.
   const meeting = await ui.createNote(ada);
