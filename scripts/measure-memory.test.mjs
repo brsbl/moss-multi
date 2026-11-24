@@ -1,7 +1,7 @@
 import { createServer } from 'node:http';
 import { describe, expect, it } from 'vitest';
 import { STRUCT_CAP, STRUCT_HEADROOM, TEXT_CHAR_CAP } from '../packages/protocol/src/limits.ts';
-import { call, gcEvents, memoryProblems, NEED_RUNS, PHASE_LIMIT_MB, phaseFigures, reliableCap, REST_LIMIT_MB, smallestCap, stateAllowance, STRUCT_BOUNDS, STRUCT_CEILING } from './measure-memory.mjs';
+import { call, gcEvents, request, memoryProblems, NEED_RUNS, PHASE_LIMIT_MB, phaseFigures, reliableCap, REST_LIMIT_MB, smallestCap, stateAllowance, STRUCT_BOUNDS, STRUCT_CEILING } from './measure-memory.mjs';
 
 const LOG = [
   '[123:0x7f00]     1200 ms: Scavenge 30.5 (40.0) -> 22.1 (41.0) MB, pooled: 0 MB, 3.10 / 0.00 ms  (average mu = 1.000, current mu = 1.000) allocation failure;',
@@ -250,10 +250,20 @@ describe('requests to workerd', () => {
       server.closeAllConnections();
       await new Promise((resolve) => server.close(resolve));
     }
-    expect(seen.map((request) => request.connection), 'every request asks for its connection to close').toEqual(['close', 'close', 'close']);
-    expect(new Set(seen.map((request) => request.socket)).size, 'three requests, three sockets').toBe(3);
-    seen.forEach((request, i) => {
-      expect(request.closedBefore, `request ${i + 1} arrived once every earlier socket had closed`).toEqual(seen.slice(0, i).map((earlier) => earlier.socket));
+    expect(seen.map((entry) => entry.connection), 'every request asks for its connection to close').toEqual(['close', 'close', 'close']);
+    expect(new Set(seen.map((entry) => entry.socket)).size, 'three requests, three sockets').toBe(3);
+    seen.forEach((entry, i) => {
+      expect(entry.closedBefore, `request ${i + 1} arrived once every earlier socket had closed`).toEqual(seen.slice(0, i).map((earlier) => earlier.socket));
     });
+  });
+
+  it('names the path and the cause of a request that failed', async () => {
+    const server = createServer();
+    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const { port } = server.address();
+    await new Promise((resolve) => server.close(resolve));
+    const failure = await request(`http://127.0.0.1:${port}`, '/grow-table?doc=d').catch((error) => error);
+    expect(failure.message).toBe('/grow-table?doc=d: fetch failed (ECONNREFUSED)');
+    expect(failure.cause).toBeInstanceOf(TypeError);
   });
 });

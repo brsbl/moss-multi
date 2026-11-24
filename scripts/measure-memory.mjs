@@ -164,7 +164,7 @@ async function waitForServer(origin, child, logs) {
   for (;;) {
     if (child.exitCode !== null) throw new Error(`workerd exited before it served\n${logs.value.slice(-2_000)}`);
     try {
-      const response = await fetch(`${origin}/ping`, { signal: AbortSignal.timeout(2_000) });
+      const response = await request(origin, '/ping', {}, 2_000);
       if (response.ok) return;
     } catch {
       // not listening yet
@@ -220,8 +220,44 @@ async function stopWorkerd(child) {
   await Promise.race([new Promise((resolve) => child.once('exit', resolve)), new Promise((resolve) => setTimeout(resolve, 5_000))]);
 }
 
+/** When the last answer arrived and when the last `/create` went out (performance.now()), for a failure's report. */
+const clock = { answered: null, created: null };
+
+/**
+ * Every HTTP request the script makes. Each asks for its connection to close after it, so none goes out on a socket an
+ * earlier one left pooled: workerd's listener closes a kept-alive connection once 5 s have passed on its clock since
+ * the connection's last use, and that clock stands still while JavaScript runs, so after a few seconds of work the next
+ * request can meet a connection already closed (reproduced on workerd 1.20260721.1). A failed request is rethrown
+ * naming its path and its cause; nothing is resent.
+ */
+export async function request(origin, path, init = {}, timeoutMs = REQUEST_TIMEOUT_MS) {
+  if (path.startsWith('/create')) clock.created = performance.now();
+  try {
+    const response = await fetch(`${origin}${path}`, { ...init, headers: { ...init.headers, connection: 'close' }, signal: AbortSignal.timeout(timeoutMs) });
+    clock.answered = performance.now();
+    return response;
+  } catch (error) {
+    throw new Error(`${path}: ${error.message} (${error.cause?.code ?? error.cause?.message})`, { cause: error });
+  }
+}
+
+/** The timings and workerd's exit state when a request failed: a dropped connection reads apart from a dead workerd. */
+async function failureDetail(child) {
+  const now = performance.now();
+  const since = (at) => (at === null ? '?' : `${Math.round(now - at)} ms`);
+  const exited = child.exitCode !== null || child.signalCode !== null || await new Promise((resolve) => {
+    const timer = setTimeout(() => resolve(false), 10_000);
+    child.once('close', () => {
+      clearTimeout(timer);
+      resolve(true);
+    });
+  });
+  const state = exited ? `workerd exited (exit ${child.exitCode}, signal ${child.signalCode})` : 'workerd still running after 10 s';
+  return `${since(clock.answered)} after the previous answer, ${since(clock.created)} after /create was sent; ${state}`;
+}
+
 export async function call(origin, path, init) {
-  const response = await fetch(`${origin}${path}`, { ...init, signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
+  const response = await request(origin, path, init);
   const body = await response.text();
   if (!response.ok) throw new Error(`${path}: HTTP ${response.status} ${body.slice(0, 200)}`);
   return body;
@@ -249,13 +285,14 @@ async function measureNote(markdown, port, flags, { trace = false, wake = false,
   if (refused) {
     // A note past a cap: the create is refused whole with that limit, and the DocDO keeps only its seed.
     try {
-      const response = await fetch(`${server.origin}/create?lean&doc=${doc}`, { method: 'POST', body: markdown, signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
+      const response = await request(server.origin, `/create?lean&doc=${doc}`, { method: 'POST', body: markdown });
       const body = await response.text();
       result.refused = response.status === 413 ? JSON.parse(body).limit : `HTTP ${response.status} ${body.slice(0, 200)}`;
       result.size = JSON.parse(await call(server.origin, `/size?doc=${doc}`));
     } catch (error) {
+      const detail = await failureDetail(server.child);
       const fatal = /Fatal[^\n]*|out of memory[^\n]*/i.exec(server.logs.value)?.[0];
-      result.failed = { phase: 'create', message: fatal ?? String(error.message).split('\n')[0] };
+      result.failed = { phase: 'create', message: `${fatal ?? String(error.message).split('\n')[0]}; ${detail}` };
     } finally {
       await stopWorkerd(server.child);
     }
@@ -313,8 +350,9 @@ async function measureNote(markdown, port, flags, { trace = false, wake = false,
       result.copyMb = held - (await rest());
     }
   } catch (error) {
+    const detail = await failureDetail(server.child);
     const fatal = /Fatal[^\n]*|out of memory[^\n]*/i.exec(server.logs.value)?.[0];
-    result.failed = { phase, message: fatal ?? String(error.message).split('\n')[0] };
+    result.failed = { phase, message: `${fatal ?? String(error.message).split('\n')[0]}; ${detail}` };
     result.logs = server.logs.value.slice(-3_000);
   } finally {
     await stopWorkerd(server.child);
@@ -369,7 +407,7 @@ async function deleteToCeiling(origin, doc) {
   const Y = requireFromSync('yjs');
   const { CUSTOM_PREFIX } = await import('../packages/protocol/src/sync.ts');
   const mirror = new Y.Doc();
-  const state = await fetch(`${origin}/state?doc=${doc}`, { signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
+  const state = await request(origin, `/state?doc=${doc}`);
   if (!state.ok) throw new Error(`/state: HTTP ${state.status}`);
   Y.applyUpdate(mirror, new Uint8Array(await state.arrayBuffer()));
   const root = mirror.get('root', Y.XmlText);
