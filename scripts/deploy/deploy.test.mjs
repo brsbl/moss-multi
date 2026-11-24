@@ -509,7 +509,7 @@ describe('deploy-staging.yml target', () => {
     // network drops job, reading every attempt's drops and request counts; one failed-only re-run of the suite) with
     // T9.25's "Read the CI run" (pages of 50 with retries) through stagingView: the same jobs, steps, triggers, env and
     // concurrency. A deliberate change to the staging jobs updates this hash.
-    expect(sha256(stagingView(WORKFLOW))).toBe('324f3474ba90d4fef3dba5cd1bb94743ff583752c213a671c10987536fc1790d');
+    expect(sha256(stagingView(WORKFLOW))).toBe('760f119e75497c30fa66f859d10e94d7fd629fe16a3020571ce685fc6a9051c8');
   });
 
   it('target=pilot runs only the gate, then deploy-pilot.yml: no staging deploy, canary or upload', () => {

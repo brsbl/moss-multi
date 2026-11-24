@@ -3,7 +3,7 @@
 // reopenings, and waits out a 429's Retry-After before asking again.
 import type { SuggestionRecord } from '@moss-multi/core/suggest/apply';
 import { SUGGESTION_CARD_ATTR, SUGGESTION_ID_ATTR } from '@moss-multi/protocol/dom-contract';
-import { act, createElement } from 'react';
+import { act, createElement, Fragment } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
@@ -11,7 +11,7 @@ vi.mock('../../access.ts', () => ({ useDocRole: () => 'editor' }));
 vi.mock('../../auth.ts', () => ({ useAuthState: () => ({ status: 'signed-in', user: { id: 'me' } }) }));
 vi.mock('../../surfaces/NotificationsBell.tsx', () => ({ timeAgo: () => 'Just now' }));
 
-const { SuggestionList } = await import('./SuggestionsPanel.tsx');
+const { CloseConfirmation, SuggestionList } = await import('./SuggestionsPanel.tsx');
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -109,12 +109,14 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-async function render(docId: string, records: SuggestionRecord[]): Promise<Root> {
+/** The list, and with `confirm` the Reject and Withdraw confirmation the panel renders beside it. */
+async function render(docId: string, records: SuggestionRecord[], { confirm = false } = {}): Promise<Root> {
   const host = document.createElement('div');
   document.body.appendChild(host);
   const root = createRoot(host);
   roots.push(root);
-  await act(async () => root.render(createElement(SuggestionList, { docId, open: records, reviewed: [], me: 'me', role: 'editor', active: null })));
+  const list = createElement(SuggestionList, { docId, open: records, reviewed: [], me: 'me', role: 'editor', active: null });
+  await act(async () => root.render(confirm ? createElement(Fragment, null, list, createElement(CloseConfirmation, { docId })) : list));
   return root;
 }
 
@@ -182,12 +184,18 @@ it('reopening the panel shows the kept previews without asking again @p:mean-2 @
 // On staging a preview can still be on the way when the reader's review closes the record; its answer would be a 409
 // for a suggestion no longer open (T8.2). The review drops it, and the card previews nothing after it.
 it('a review sent while the card\'s preview is in flight aborts that preview and asks for none after it @p:R16', async () => {
-  await render('doc-review-race', [record('w', 1)]);
+  await render('doc-review-race', [record('w', 1)], { confirm: true });
   await show(['w']);
   await advance(300);
   expect(requested).toEqual(['w']);
   const reject = [...card('w').querySelectorAll('button')].find((button) => button.textContent?.includes('Reject')) as HTMLButtonElement;
   await act(async () => reject.click());
+  // Reject asks first (T9.5); nothing is sent, and the preview is kept, until it is confirmed.
+  expect(signals.get('w')?.aborted, 'the preview is kept while Reject asks').toBe(false);
+  const dialog = document.querySelector('[role="alertdialog"]');
+  expect(dialog?.textContent, 'Reject asks first').toContain('Reject suggestion?');
+  const confirm = [...dialog!.querySelectorAll('button')].find((button) => button.textContent === 'Reject') as HTMLButtonElement;
+  await act(async () => confirm.click());
   expect(signals.get('w')?.aborted, 'the preview in flight is dropped').toBe(true);
   const review = pending.find((request) => request.id === '')!;
   await act(async () => review.answer(200, { ok: true }));

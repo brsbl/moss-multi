@@ -1,14 +1,10 @@
 // j16-review-race (T8.2; PRODUCT ruling 16): a review sent while its card's preview is still on the way leaves no
 // refused preview behind. On staging the preview often reached the server after the withdraw closed the record, and
 // its answer was a 409; here a route holds it until then. Its own group keeps j16-review's shard under budget.
-import type { Locator } from '@playwright/test';
 import type { Actor } from '../lib/actors.ts';
-import {
-  SUGGEST_MARK_ATTR, SUGGEST_REFUSED_ATTR, SUGGESTION_CARD_ATTR, SUGGESTION_STATUS_ATTR, SUGGESTIONS_BUTTON_ATTR,
-  SUGGESTIONS_PANEL_ATTR, SYNC_UNACKED_ATTR,
-} from '../lib/contract.ts';
+import { SUGGEST_MARK_ATTR, SUGGEST_REFUSED_ATTR, SUGGESTION_CARD_ATTR, SUGGESTION_STATUS_ATTR, SYNC_UNACKED_ATTR } from '../lib/contract.ts';
 import { grantDoc } from '../lib/grants.ts';
-import { BIND_TIMEOUT, caret, openIn } from '../lib/suggest.ts';
+import { BIND_TIMEOUT, cards, caret, closePanel, confirmClose, openIn, openPanel } from '../lib/suggest.ts';
 import { expect, test, ui } from '../lib/test.ts';
 
 const NOTE = 'Keep every original word.\n\nSecond paragraph here.';
@@ -34,20 +30,6 @@ async function sharedNote(actors: Actors) {
   await grantDoc(ada, docId, benPrincipal, 'suggester');
   const ben = await actors.session(benPrincipal);
   return { ada, ben, docId };
-}
-
-const panel = (actor: Actor): Locator => actor.page.locator(`[${SUGGESTIONS_PANEL_ATTR}]`);
-const cards = (actor: Actor, status: string): Locator => panel(actor).locator(`[${SUGGESTION_CARD_ATTR}][${SUGGESTION_STATUS_ATTR}="${status}"]`);
-
-async function openPanel(actor: Actor): Promise<Locator> {
-  if (!(await panel(actor).isVisible())) await actor.page.locator(`[${SUGGESTIONS_BUTTON_ATTR}]`).click();
-  await expect(panel(actor)).toBeVisible();
-  return panel(actor);
-}
-
-async function closePanel(actor: Actor): Promise<void> {
-  if (await panel(actor).isVisible()) await actor.page.keyboard.press('Escape');
-  await expect(panel(actor)).toBeHidden();
 }
 
 test("j16-review-race: a withdraw sent while the card's preview is still on the way leaves no refused preview behind @p:R16", async ({ actors }) => {
@@ -78,7 +60,8 @@ test("j16-review-race: a withdraw sent while the card's preview is still on the 
   });
   const own = (await openPanel(ben)).locator(`[${SUGGESTION_CARD_ATTR}][${SUGGESTION_STATUS_ATTR}="open"]`);
   await intercepted;
-  await own.getByRole('button', { name: 'Withdraw' }).click();
+  // Withdraw is in the card's own menu and asks first (T9.5, T9.34); the confirmation sends it.
+  await confirmClose(ben, own, 'Withdraw');
   await expect(cards(ben, 'withdrawn')).toHaveCount(1, { timeout: BIND_TIMEOUT });
   release();
   const outcome = await Promise.race([ended, ben.page.waitForTimeout(15_000).then(() => 'pending' as const)]);

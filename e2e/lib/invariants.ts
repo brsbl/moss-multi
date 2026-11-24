@@ -284,8 +284,7 @@ const bindingOf = (pane: Pane, field: Field) => (field === 'title' ? pane.titleB
 /**
  * Invariant 7: every typed string, exactly once and in order, on every actor that has the doc open. A field still
  * binding or rebinding shows no doc text yet, so the check waits for it to bind (at most `settleMs` across the whole
- * check) and then reads it; one that never binds is its own finding, not a missing string, unless it already shows
- * what was typed.
+ * check) and then reads it; one that never binds is its own finding, not a missing string.
  */
 export async function typedFindings(actors: ActorView[], typed: Typed[], { settleMs = BIND_WAIT_MS }: { settleMs?: number } = {}): Promise<Finding[]> {
   const findings: Finding[] = [];
@@ -312,15 +311,12 @@ export async function typedFindings(actors: ActorView[], typed: Typed[], { settl
       for (const pane of panes) {
         for (const field of fields) {
           const report = finding(7, actor.label);
-          const entries = typed.filter((entry) => entry.docId === docId && entry.field === field);
-          const problems = typedProblems(pane[field], entries);
           if (bindingOf(pane, field) === 'unbound') {
-            if (problems.length > 0) {
-              findings.push(report(`${docId} ${field}: still unbound after ${settleMs / 1000} s, pane never bound (title "${pane.title}", body ${pane.body.length} chars)`));
-            }
+            findings.push(report(`${docId} ${field}: still unbound after ${settleMs / 1000} s, pane never bound (title "${pane.title}", body ${pane.body.length} chars)`));
             continue;
           }
-          findings.push(...problems.map((detail) => report(`${docId} ${field}: ${detail}`)));
+          const entries = typed.filter((entry) => entry.docId === docId && entry.field === field);
+          findings.push(...typedProblems(pane[field], entries).map((detail) => report(`${docId} ${field}: ${detail}`)));
         }
       }
     }
