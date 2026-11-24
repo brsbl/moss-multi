@@ -1073,16 +1073,20 @@ test('j08 compact: Share names the note, folder or vault in its first visible li
     const triggers = dialog.getByRole('button', { name: /^(Access|Link access|Access for .+)$/ });
     for (const text of await triggers.allInnerTexts()) expect(WORDS, `a role trigger reads "${text.trim()}"`).toContain(text.trim());
     await triggers.first().click();
+    // A mouse press opens the menu on the next frame; an Escape before it closes the dialog instead.
     const menu = ui.openRoleMenu(dialog);
-    for (const text of await menu.getByRole('menuitemradio').allInnerTexts()) expect(WORDS, `a role menu row reads "${text.trim()}"`).toContain(text.trim());
+    await expect(menu, 'the role menu opens').toBeVisible();
+    await expect(menu.getByRole('menuitemradio'), 'the role menu reads the product’s role words').toHaveText(WORDS);
     await ada.page.keyboard.press('Escape');
     await expect(menu).toHaveCount(0);
+    await expect(dialog, 'Escape closed the menu alone').toBeVisible();
   };
 
   await ada.goto(`/d/${docId}`);
   await ui.waitOpen(ada, docId, 'live');
   const noteDialog = await ui.openShare(ada, docId);
   await expect.poll(() => firstVisibleLine(noteDialog), { message: 'the first visible line names the note' }).toBe('Note “Packing list”');
+  await expect(ui.pendingInvites(noteDialog), 'declared setup: the invites are listed').toHaveCount(6);
   await rolesRead(noteDialog);
   await nameStaysWhileScrolling(noteDialog, 'Packing list');
   await ada.page.keyboard.press('Escape');
