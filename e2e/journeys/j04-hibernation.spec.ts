@@ -57,10 +57,13 @@ test('j04-hibernation: reopen and warm creator with a cold peer after shared idl
   info.annotations.push({ type: 'quiescence', description: 'simulated document visibility; real surviving WebSocket' });
   const owner = await actors.principal('ada');
   const peer = await actors.principal('ben');
+  // The cold peer is a third person: a page load reads every note its person can list (the formula index), so a
+  // reopen peer that also listed the warm note would wake it before the cold peer arrives.
+  const coldPeer = await actors.principal('cy');
   const closed = await note(actors, owner, peer, 'closed-creator');
-  const warm = await note(actors, owner, peer, 'warm-creator');
+  const warm = await note(actors, owner, coldPeer, 'warm-creator');
   const reader = await actors.session(peer, { label: 'reopen-peer' });
-  const joiner = await actors.session(peer, { label: 'cold-peer' });
+  const joiner = await actors.session(coldPeer, { label: 'cold-peer' });
   const incoming = awarenessFrames(joiner);
   // Every request and socket naming the warm note, from each page that could wake it.
   const asked: { actor: string; at: number; what: string }[] = [];
