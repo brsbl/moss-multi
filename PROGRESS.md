@@ -176,6 +176,12 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - The [tests-first parity run](https://github.com/brsbl/moss-multi/actions/runs/37164693065) reproduced both 144 px² shell-default failures. The target now focuses both editors before capture, retaining the toolbar in the pixel comparison without widening masks or thresholds (deviation 10). The j01 blur leg remains the behavior gate.
 - The read-only color plugin's initial sweep is guarded by editability; the [tests-first run](https://github.com/brsbl/moss-multi/actions/runs/37164862573) changed read-only text into a color node while its editable positive control passed. Local browser verification remains assigned to the independent checker by the implementer brief; no local tests run.
 
+### T9.52a — the hibernation leg's cold peer is its own person
+
+- The j04 leg "reopen and warm creator with a cold peer" gave one person both notes. After the idle, that person's reopen page read the warm note (`GET /api/docs/<warm>/content`, from the formula index, plus its backlinks and `/api/workspace?doc=<warm>`) and woke it before the cold peer arrived. The new check "only the cold peer asks for the warm note after the idle" was red 5 of 5 in each engine before the fix ([run 45423944384](https://github.com/brsbl/moss-multi/actions/runs/45423944384)). With the warm note shared with a third person it passed 10 of 10 in each engine over two dispatches ([45426881415](https://github.com/brsbl/moss-multi/actions/runs/45426881415), [45426903295](https://github.com/brsbl/moss-multi/actions/runs/45426903295)); the warm note's instance was built 646 to 790 ms after the cold peer's action began in every execution.
+- Not covered any more: no leg now has one person listing two notes across an idle, so no test shows that a page load reads, and so wakes, every note the person can list.
+- Not covered: no leg covers a note woken by that read while a hidden socket to it survives, with a peer joining after. That path passed 12 of 12 when it was measured with the two failing checks made soft, and `docs/history/LEARNINGS.md` records a past defect on it. Both points wait on the owner's ruling on page-load reads.
+
 ## Follow-ups (P2)
 
 Parked from the M0 checker and critic passes, each with the task that owns it.
