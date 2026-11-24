@@ -574,7 +574,7 @@ export class DocDO extends YServer<SyncEnv> {
         if (!continues) this.#noticeSuggestion(record, author);
       },
       limit: (growth) => this.#recordLimit(growth),
-      onSuperseded: (nonce) => this.#retireConnection(nonce),
+      onSuperseded: (nonce, principal) => this.#retireConnection(nonce, principal),
     });
     store.onCompacted = () => this.#ingest?.compacted();
     this.document.getMap(SUGGESTIONS).observeDeep(() => {
@@ -1033,10 +1033,14 @@ export class DocDO extends YServer<SyncEnv> {
     this.#countRefusal(attachment.principalId);
   }
 
-  /** The connection a fork's resume took its leases from (its nonce) is retired and closed (a superseded socket). */
-  #retireConnection(nonce: string): void {
+  /**
+   * The connection a fork's resume took its leases from (its nonce) is retired and closed (a superseded socket); only
+   * ever one of the resuming principal's own.
+   */
+  #retireConnection(nonce: string, principal: string): void {
     for (const connection of this.getConnections()) {
-      if ((attachmentOf(connection)?.nonce ?? connection.id) !== nonce) continue;
+      const attachment = attachmentOf(connection);
+      if ((attachment?.nonce ?? connection.id) !== nonce || attachment?.principalId !== principal) continue;
       retire(connection);
       connection.close(CLOSE.normal, 'superseded');
     }

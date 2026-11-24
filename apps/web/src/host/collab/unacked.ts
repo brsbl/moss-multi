@@ -24,15 +24,42 @@ function listen(): void {
 /** `key` holds text only this window has until it is let go: the browser asks before a reload or close meanwhile. */
 export function markKept(key: string, kept: boolean): void {
   if (kept) keeping.add(key);
-  else keeping.delete(key);
+  else {
+    keeping.delete(key);
+    released.delete(key);
+  }
   listen();
 }
 
-/** navigation.ts's leaves have already waited for acks or asked, so the browser does not ask again. */
-export function allowUnload(): void {
+/** Kept text the person chose to discard (the sign-out confirm): the leave that follows does not ask about it again. */
+const released = new Set<string>();
+/** `release`: the person chose to discard what is kept now; otherwise that choice no longer stands. */
+export function releaseKept(release: boolean): void {
+  released.clear();
+  if (release) for (const key of keeping) released.add(key);
+}
+
+/**
+ * The one decision every leave, reload and sign-out the app starts makes (A§10.6), read when it would go, after its
+ * last await: `kept`, text offered back and not dismissed that the person has not chosen to discard (no wait saves
+ * it, so the page stays or the person is asked); `unacked`, edits the DocDO has not acked yet; null, nothing is lost.
+ */
+export function unsavedHere(): 'kept' | 'unacked' | null {
+  for (const key of keeping) if (!released.has(key)) return 'kept';
+  return holding.size > 0 ? 'unacked' : null;
+}
+
+/**
+ * navigation.ts's leaves have already waited for acks or asked, so the browser does not ask again. While text is
+ * kept that nobody asked about, the browser's guard stays armed and asks instead; returns whether it stood aside.
+ */
+export function allowUnload(): boolean {
+  if (unsavedHere() === 'kept') return false;
+  released.clear();
   leaving = true;
   // A page restored from the back-forward cache guards again.
   window.addEventListener('pageshow', () => { leaving = false; }, { once: true });
+  return true;
 }
 
 export function markUnacked(session: object, unacked: boolean): void {
@@ -45,8 +72,6 @@ export function markUnacked(session: object, unacked: boolean): void {
 }
 
 export const hasUnacked = (): boolean => holding.size > 0;
-/** Text only this window holds, offered back and not dismissed: no wait for acks can save it. */
-export const hasKept = (): boolean => keeping.size > 0;
 const openSessions = new Set<object>();
 export function markSession(session: object, open: boolean): void {
   if (open) openSessions.add(session);

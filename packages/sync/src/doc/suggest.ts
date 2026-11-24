@@ -288,8 +288,8 @@ export interface IngestOptions {
   onCreated?: (id: string, author: string, continues?: string) => void;
   /** The note limit a record write adding `growth` would pass, or null (the DocDO's #limitMet); none when absent. */
   limit?: (growth: RecordGrowth) => DocLimit | null;
-  /** Hears each connection a fork's resume took its leases from: the DocDO retires and closes it. */
-  onSuperseded?: (connection: string) => void;
+  /** Hears each connection of `principal`'s a fork's resume took its leases from: the DocDO retires and closes it. */
+  onSuperseded?: (connection: string, principal: string) => void;
 }
 
 /** Where each struct of an open record's ops sits, per doc and client, clock-sorted, so a later op's structs can be placed. */
@@ -421,8 +421,9 @@ export class SuggestIngest {
    * Fresh leases for `who`'s connection, at most `count` (never past `leaseBatch`) and never past `liveLeases` live
    * ones; beside a `resume` of `who`'s leases whose connection closed or idled, rebound to this one with their
    * acknowledged clock. A resume rebinds every lease it names whatever the live count: the cap limits minting only, so
-   * text a fork wrote offline is never refused over a spare it holds. The connection a resume takes held leases from
-   * is retired: its other leases expire and `onSuperseded` hears it.
+   * text a fork wrote offline is never refused over a spare it holds. Another connection the resuming fork takes its
+   * leases from, held or idled, is retired: its other leases expire and `onSuperseded` hears it. A resume refused
+   * whole retires nothing.
    */
   lease(who: Suggester, resume: readonly number[] = [], count: number = SUGGEST_LIMITS.leaseBatch, fork: string | null = null): { ok: true; leases: LeaseGrant[] } | { ok: false; reason: SuggestRefusal } {
     if (!roleAtLeast(who.role, 'suggester')) return refused('role');
@@ -438,13 +439,15 @@ export class SuggestIngest {
       // Held by another open connection: only the fork it was granted to may take it over (its old socket is dead
       // to it, though the DocDO has not seen it close).
       if (held && lease.connection !== who.connection && !(fork !== null && lease.fork === fork)) return refused('lease');
-      if (held && lease.connection !== who.connection) superseded.add(lease.connection);
+      // Taken from another connection by the fork it is bound to: that is this window's own old socket, retired
+      // whether or not the lease idled there. Another fork (another window) never retires it.
+      if (lease.connection !== who.connection && fork !== null && lease.fork === fork) superseded.add(lease.connection);
       this.leases.put({ ...lease, connection: who.connection, expired: false, usedAt: now, fork: fork ?? lease.fork ?? null });
       grants.push({ client, record: lease.record === null ? lease.reserved : this.#head(lease.record), clock: ownValue(lease.clocks, BODY_DOC) ?? 0, clocks: lease.clocks });
     }
     for (const connection of superseded) {
       this.leases.expireConnection(connection);
-      this.options.onSuperseded?.(connection);
+      this.options.onSuperseded?.(connection, who.id);
     }
     const wanted = Math.min(Math.max(0, Math.floor(count)), SUGGEST_LIMITS.leaseBatch, SUGGEST_LIMITS.liveLeases - this.leases.live(who.id, since));
     // A lease row is retained state too: none is minted past the share, or into the reserve kept for edits.
