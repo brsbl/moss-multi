@@ -771,6 +771,24 @@ export function DecoratorBlockPlugin(): null {
     );
   }, [editor]);
 
+  // moss-multi seam: block-click-select (T9.52b): a block's view selects it from a React click handler, which runs
+  // before Lexical's own click listener (decorators are portals inside the root); @lexical/rich-text then clears any
+  // node selection on CLICK_COMMAND. Claim the click when it landed on the block that is now selected.
+  useEffect(() => {
+    return editor.registerCommand(
+      CLICK_COMMAND,
+      (event) => {
+        const selection = $getSelection();
+        if (!$isNodeSelection(selection)) return false;
+        const target = event.target;
+        const block = target instanceof HTMLElement ? target.closest('[data-block-decorator-key]') : null;
+        const key = block?.getAttribute('data-block-decorator-key');
+        return !!key && selection.has(key);
+      },
+      COMMAND_PRIORITY_LOW
+    );
+  }, [editor]);
+
   return null;
 }
 
