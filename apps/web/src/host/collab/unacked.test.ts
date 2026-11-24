@@ -162,3 +162,20 @@ it('text the person chose to discard at the sign-out confirm is not asked about 
     cleanUp(session);
   }
 });
+
+it('text offered back again on the same note after a discard at the sign-out confirm is asked about (T5.S16)', async () => {
+  const { answerSignOut, prepareSignOut } = await import('../sign-out-guard.ts');
+  const { leaveTo } = await import('../navigation.ts');
+  const session = {};
+  try {
+    markKept(KEY, true);
+    const signOut = prepareSignOut();
+    await tick();
+    answerSignOut(true);
+    expect(await signOut).toBe(true);
+    // A refusal during the sign-out's request offers more text back under the same note's key.
+    markKept(KEY, true);
+    leaveTo('/login');
+    expect(unloadAsks(), 'the new text was never asked about').toBe(true);
+  } finally { cleanUp(session); }
+});

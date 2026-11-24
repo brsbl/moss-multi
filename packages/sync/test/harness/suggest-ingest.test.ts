@@ -901,6 +901,34 @@ describe('T5.S16 a connection a fork has resumed from elsewhere is retired @p:me
     expect(sky.closed).toBeNull();
   });
 
+  it("a late resume on a socket the fork has already left retires that socket, never the fork's newer one", async () => {
+    const opened = await seeded();
+    const doc = opened.dobj.document;
+    const fork = 'fork-t5s16-late-resume';
+    const first = await on(opened, SAM);
+    const named = granted(await send(first, { t: 'suggest-lease', fork }));
+    const resume = { t: 'suggest-lease', resume: named.map((lease) => lease.client), fork, mint: 0 } as SuggestRequest;
+    // The first socket drops; the page opens a second and resumes on it, then that link stalls too before the resume
+    // lands, and 12 s later the page opens a third and resumes there.
+    await vi.advanceTimersByTimeAsync(1_000);
+    const stalled = await on(opened, SAM);
+    await vi.advanceTimersByTimeAsync(12_000);
+    const live = await on(opened, SAM);
+    expect(await send(live, resume)).toMatchObject({ t: 'suggest-leased' });
+    // The stalled socket's resume, then its keystrokes, arrive late.
+    await stalled.deliver(`${CUSTOM_PREFIX}${JSON.stringify(resume)}`);
+    await stalled.pump();
+    for (let i = 0; i < 3; i += 1) {
+      await stalled.deliver(`${CUSTOM_PREFIX}${JSON.stringify(opsRequest(named[0].record, forge(doc, (d) => firstBlock(d).insert(0, `S${i} `), named[0].client)))}`);
+      await stalled.pump();
+    }
+    expect.soft(live.closed, "the fork's live socket stays open").toBeNull();
+    expect.soft(stalled.closed, 'the stalled socket is the one retired').toEqual({ code: CLOSE.normal, reason: 'superseded' });
+    expect.soft(stalled.events.filter((event) => event.t === 'suggest-refused'), 'its late frames draw no refusal').toEqual([]);
+    expect(await send(live, opsRequest(named[0].record, forge(doc, (d) => firstBlock(d).insert(0, 'Live '), named[0].client)))).toMatchObject({ t: 'suggest-ack', record: named[0].record });
+    expect(live.closed).toBeNull();
+  });
+
   it("another window of the person's (another fork) never retires this one, even naming its idle leases", async () => {
     const opened = await seeded();
     const one = await on(opened, SAM);
