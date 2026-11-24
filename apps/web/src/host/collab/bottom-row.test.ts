@@ -1,13 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import * as row from './bottom-row.ts';
-
-interface Press { target: unknown; preventDefault(): void }
-const keep = (row as unknown as { keepCaretInNote?: (event: Press) => void }).keepCaretInNote;
+import { keepCaretInNote } from './bottom-row.ts';
 
 /** Whether a press on `target` was kept from moving focus. */
 function kept(target: unknown): boolean {
   let prevented = false;
-  keep?.({ target, preventDefault: () => { prevented = true; } });
+  keepCaretInNote({ target, preventDefault: () => { prevented = true; } });
   return prevented;
 }
 const element = (inButton: boolean) => ({ closest: (selector: string) => (selector === 'button' && inButton ? {} : null) });
