@@ -43,6 +43,9 @@ type IdSpan = { client: number; clock: number; len: number };
 Doc-socket string frames; replies use the `__YPS:` envelope.
 
 - `suggest-lease` → `{clients}`. Entering Suggest pre-leases one active id and one spare. The request names the client fork, so after a drop the same fork resumes its leases from its new socket even while the DocDO still holds the old one open (a half-open socket); no other connection can (T5.1).
+  - **A resume rebinds every lease it names that is the person's own, whatever the live count** (T5.S16). The cap of `liveLeases` (4) limits minting only, so text a fork wrote offline is never refused over a spare it holds. Through resumes a person can hold up to `RESERVED_MAX` (16) live unused leases; minting stays capped at 4.
+  - **A resume mints only what the fork lacks.** Its optional `mint` asks for at most that many fresh leases beside the named ones (never past `leaseBatch`); a fork with its active and spare sends `mint: 0`, so a reconnect leaves the person holding no more unused leases than before it. A request without `mint` mints a batch, as before.
+  - **The connection a resume takes held leases from is retired**: its other leases expire, the DocDO closes it (1000 `superseded`), and any suggest frame still arriving on it is dropped in O(1), unanswered and uncounted.
 - `suggest-ops {record, update}`. The first frame for an unused record id creates the record.
 - `suggest-delete {record, part:{id, targets}}` and `suggest-undelete {record, partId}`.
 - `suggest-merge {into, from}` and `suggest-withdraw {record}`.
@@ -66,7 +69,7 @@ If all pass, one server transaction pushes the update and bumps `updatedAt`, `cl
 
 **`suggest-delete`.** Every target is a live body item in a channel of the §4.4 table whose client is not under a pending lease; the DO derives the quote. O(spans × log n) plus the items named, capped per part.
 
-**Refusal rate.** Three refusals per principal per minute trigger a 60 s 4429 cooldown.
+**Refusal rate.** Three refusals per principal per minute trigger a 60 s 4429 cooldown. Every refusal that does admission work counts, whatever its reason (T5.S12); an honest window draws none (T5.S16): its resumes are never capped, a refused first lease is not asked again until the person chooses Retry, and its superseded socket is retired. A 4429 naming `suggest-cooldown` is not the connection limit: the window keeps what it owes, says suggesting is paused, and reconnects by itself once after the cooldown, delivering it with no click. While text offered back after a closed suggestion is undismissed, a reload or close asks first.
 
 ## 4. Accept, reject, withdraw
 

@@ -12,9 +12,11 @@ export type SuggestRequest =
   /**
    * Fresh leases for this connection, or `resume` of this principal's leases whose connection closed or idled.
    * `fork` names the client fork asking (random per fork): the same fork on a new socket may resume its leases while
-   * the DocDO still holds the old socket open (a half-open drop), and no other connection may.
+   * the DocDO still holds the old socket open (a half-open drop), and no other connection may. A resume rebinds every
+   * lease it names whatever the live cap; `mint` is how many fresh ones to add beside them, at most `leaseBatch` (the
+   * default when absent), so a fork asks only for the spare it lacks.
    */
-  | { t: 'suggest-lease'; resume?: number[]; fork?: string }
+  | { t: 'suggest-lease'; resume?: number[]; fork?: string; mint?: number }
   /** One fork transaction's V1 update, base64, in `doc`: the body (the default) or a payload doc by its id. */
   | { t: 'suggest-ops'; record: string; doc?: string; update: string }
   | { t: 'suggest-delete'; record: string; part: { id: string; targets: IdSpan[] } }

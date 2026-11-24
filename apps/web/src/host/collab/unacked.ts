@@ -2,14 +2,30 @@
 // stale-chunk reload can wait on it without loading the collab code.
 
 const holding = new Set<object>();
+/** Text this window alone holds that no session owes any more (a closed suggestion's, offered back until dismissed). */
+const keeping = new Set<string>();
 const waiters = new Set<() => void>();
 let leaving = false;
 
 /** A reload or tab close would discard edits only this window holds, so the browser asks first. */
 function guardUnload(event: BeforeUnloadEvent): void {
-  if (leaving || holding.size === 0) return;
+  if (leaving || (holding.size === 0 && keeping.size === 0)) return;
   event.preventDefault();
   event.returnValue = '';
+}
+
+/** Listening only while needed: a beforeunload listener keeps a page out of the back-forward cache. */
+function listen(): void {
+  if (typeof window === 'undefined') return;
+  if (holding.size > 0 || keeping.size > 0) window.addEventListener('beforeunload', guardUnload);
+  else window.removeEventListener('beforeunload', guardUnload);
+}
+
+/** `key` holds text only this window has until it is let go: the browser asks before a reload or close meanwhile. */
+export function markKept(key: string, kept: boolean): void {
+  if (kept) keeping.add(key);
+  else keeping.delete(key);
+  listen();
 }
 
 /** navigation.ts's leaves have already waited for acks or asked, so the browser does not ask again. */
@@ -22,11 +38,7 @@ export function allowUnload(): void {
 export function markUnacked(session: object, unacked: boolean): void {
   if (unacked) holding.add(session);
   else holding.delete(session);
-  // Listening only while needed: a beforeunload listener keeps a page out of the back-forward cache.
-  if (typeof window !== 'undefined') {
-    if (holding.size > 0) window.addEventListener('beforeunload', guardUnload);
-    else window.removeEventListener('beforeunload', guardUnload);
-  }
+  listen();
   if (holding.size > 0) return;
   for (const done of [...waiters]) done();
   waiters.clear();

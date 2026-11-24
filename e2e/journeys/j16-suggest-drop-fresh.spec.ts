@@ -16,7 +16,7 @@ import { expect, test, ui } from '../lib/test.ts';
 import { occurrences } from '../lib/text.ts';
 
 /** The cooldown notice (the coordinator's wording). */
-const PAUSED = "Suggesting is paused for about a minute. What you typed is kept in this window, so don't reload.";
+const PAUSED = 'Suggesting is paused for about a minute. What you typed is kept in this window, so don’t reload.';
 
 /**
  * A fresh page of the person's own session, as a second tab or a fresh-load comparison is: the same cookies in a

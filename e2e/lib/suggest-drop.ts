@@ -62,7 +62,7 @@ interface WireEvent extends Partial<TapEvent> { ms: number; conn: number; kind: 
 export const pause = (ms: number) => new Promise((done) => setTimeout(done, ms));
 export const firstLine = (error: unknown) => String(error instanceof Error ? error.message : error).split('\n')[0].slice(0, 300);
 export const draftLines = (lines: string[]) => lines.filter((line) => line.startsWith('Draft line'));
-export const exportLines = (markdown: string) => draftLines(markdown.split('\n').map((line) => line.replace(/ /g, ' ').trimEnd()));
+export const exportLines = (markdown: string) => draftLines(markdown.split('\n').map((line) => line.replace(/\u00a0/g, ' ').trimEnd()));
 
 export async function until<T>(read: () => Promise<T> | T, done: (value: T) => boolean, timeoutMs: number, everyMs = 250): Promise<{ value: T; ok: boolean; ms: number }> {
   const start = Date.now();
@@ -76,7 +76,7 @@ export async function until<T>(read: () => Promise<T> | T, done: (value: T) => b
 
 /** In the page: what the doc's pane shows now. */
 function readPane({ selector, attrs }: { selector: string; attrs: Record<string, string> }): Shown {
-  const flat = (text: string | null | undefined) => (text ?? '').replace(/ /g, ' ');
+  const flat = (text: string | null | undefined) => (text ?? '').replace(/\u00a0/g, ' ');
   const squash = (text: string | null | undefined) => flat(text).replace(/\s+/g, ' ').trim();
   const banners = [...document.querySelectorAll(`[${attrs.banner}]`)].map((el) => `${el.getAttribute(attrs.banner)}: ${squash(el.textContent)}`);
   const unsaved = [...document.querySelectorAll(`[${attrs.unsaved}]`)].map((el) => squash(el.textContent).slice(0, 300));

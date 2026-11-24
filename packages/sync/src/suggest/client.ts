@@ -817,7 +817,8 @@ export class SuggestFork {
 
   /**
    * Resumes this fork's leases on the current connection, `RESUME_MAX` a frame; everything else waits until the last
-   * frame's answer.
+   * frame's answer. Only the last frame asks for fresh leases, and only for the spare F lacks, so a reconnect leaves the
+   * author holding no more unused leases than before it.
    */
   #resume(): void {
     const clients = this.#resumable();
@@ -827,7 +828,14 @@ export class SuggestFork {
     this.#resuming = true;
     this.#resumeLeft = chunks.length;
     this.#resumed = [];
-    for (const resume of chunks) this.#send({ request: { t: 'suggest-lease', resume, fork: this.#id } });
+    for (const [index, resume] of chunks.entries()) {
+      this.#send({ request: { t: 'suggest-lease', resume, fork: this.#id, mint: index === chunks.length - 1 ? this.#lacking() : 0 } });
+    }
+  }
+
+  /** The leases F lacks of its active one and a spare. */
+  #lacking(): number {
+    return Math.max(0, 2 - this.#leases.length);
   }
 
   /**
@@ -1343,7 +1351,7 @@ export class SuggestFork {
     this.#setClient(this.#leases[0].client);
     if (this.#leases.length < 2 && !this.#leasing) {
       this.#leasing = true;
-      this.#request({ t: 'suggest-lease', fork: this.#id });
+      this.#request({ t: 'suggest-lease', fork: this.#id, mint: this.#lacking() });
     }
   }
 

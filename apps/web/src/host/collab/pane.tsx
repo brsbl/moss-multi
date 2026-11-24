@@ -29,7 +29,7 @@ import {
 } from './doc-session.ts';
 import { auth } from '../auth.ts';
 import { captureCaret, type CaretMark } from './suggest/caret.ts';
-import { modeFor, offerUnsaved, showMode, subscribeModes } from './suggest/mode.ts';
+import { clearSuggestBusy, modeFor, offerUnsaved, showMode, subscribeModes, suggestBusy } from './suggest/mode.ts';
 import { ReviewMount, SuggestMount } from './suggest/mounts.ts';
 import { afterRefusal, NO_SUGGESTION_ROOM } from './suggest/rebuild.ts';
 import { SuggestModeChip, SuggestUnsavedBand } from './suggest/SuggestChrome.tsx';
@@ -301,6 +301,8 @@ class PaneBinding implements SuggestPane {
    */
   mountFor(session: DocSession): { doc: Doc; provider: Provider } {
     this.#mount = null;
+    // A new mount asks afresh: a busy notice belongs to the one it replaces.
+    clearSuggestBusy(this.docId);
     this.#inputClosed = this.#noRoom;
     this.#mountReady = this.#mode === 'edit';
     if (this.#mode === 'edit') return { doc: session.doc, provider: session.provider as unknown as Provider };
@@ -316,7 +318,8 @@ class PaneBinding implements SuggestPane {
         refused: (unsaved, reason, limit) => {
           // Input closes in this tick; F is rebuilt once the DocDO has answered everything in flight. A note with no
           // room for more suggestions keeps input closed in the rebuilt F until the mode changes, and a refusal of
-          // that F's lease, or of a first lease (F then fills read-only), rebuilds nothing more.
+          // that F's lease, or of a first lease (F then fills read-only), rebuilds nothing more. Nor does a first lease
+          // the person's other Suggest windows leave no room for: the note shows read-only, and Retry asks again.
           const next = afterRefusal(reason, { noRoom: this.#noRoom, ready: this.#mountReady });
           const full = NO_SUGGESTION_ROOM.has(reason);
           this.#noRoom = next.noRoom;
@@ -325,6 +328,7 @@ class PaneBinding implements SuggestPane {
           offerUnsaved(this.docId, unsaved, full, limit);
           this.#apply(session.state);
           this.#mountChanged();
+          if (next.busy) suggestBusy(this.docId, () => this.#remount());
           if (next.rebuild) this.#remount();
         },
         rebuild: () => this.#remount(),
