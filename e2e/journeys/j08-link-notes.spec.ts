@@ -48,8 +48,9 @@ function recordAddress(names: { row: string; doc: string }): void {
 }
 
 /** Records every later document of the actor's context (`recordAddress`). */
-const recordWindow = (actor: Actor): Promise<void> =>
-  actor.context.addInitScript(recordAddress, { row: SIDEBAR_ROW_ATTR, doc: NAMES.docId });
+async function recordWindow(actor: Actor): Promise<void> {
+  await actor.context.addInitScript(recordAddress, { row: SIDEBAR_ROW_ATTR, doc: NAMES.docId });
+}
 
 /** What the load wrote to the history: entries added, and writes of an address that names another note. */
 const startupHistory = (actor: Actor, docId: string): Promise<{ added: number; otherNotes: string[] }> => actor.page.evaluate((linked) => {
