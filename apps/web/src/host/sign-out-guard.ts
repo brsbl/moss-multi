@@ -1,5 +1,5 @@
 // The auth writer pauses doc input before this wait. Cancel preserves every live and lingering session.
-import { hasUnacked, waitForAllAcked } from './collab/unacked.ts';
+import { hasKept, hasUnacked, waitForAllAcked } from './collab/unacked.ts';
 
 let confirm: ((discard: boolean) => void) | null = null;
 const listeners = new Set<() => void>();
@@ -16,6 +16,6 @@ export function answerSignOut(discard: boolean): void {
   answer?.(discard);
 }
 export async function prepareSignOut(): Promise<boolean> {
-  if (!hasUnacked() || await waitForAllAcked(5_000)) return true;
+  if (!hasKept() && (!hasUnacked() || await waitForAllAcked(5_000))) return true;
   return new Promise<boolean>((resolve) => { confirm = resolve; publish(); });
 }

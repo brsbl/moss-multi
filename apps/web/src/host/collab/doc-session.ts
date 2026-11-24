@@ -1154,7 +1154,8 @@ export class DocSession {
       // A slow ack read is a User Timing measure, so a held tab can be told apart from the paste's batches.
       if (performance.now() - started > 50) performance.measure('moss-sync-ack', { start: started });
     } else if (isSuggestReply(event)) {
-      this.#suggest.replied();
+      // A reply to a frame this window never sent settles nothing; each fork checks it against its own requests.
+      this.#suggest.replied(event);
       for (const listener of [...this.#suggestListeners]) listener(event);
       this.#settleUnacked();
     } else if (event.t === 'write-refused') {

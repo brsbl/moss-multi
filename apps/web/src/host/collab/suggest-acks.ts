@@ -1,7 +1,7 @@
 // Suggest-frame coverage (docs/design/suggestions.md §2): the DocDO answers every suggest request with exactly one
 // `suggest-ack`, `suggest-leased` or `suggest-refused`, in order, so a request is settled by the next reply. A request
 // still in flight when its socket drops gets no reply; it stays unsettled until the fork takes it to resend.
-import type { SuggestReply, SuggestRequest } from '@moss-multi/protocol/suggest';
+import { answers, type SuggestReply, type SuggestRequest } from '@moss-multi/protocol/suggest';
 
 export class SuggestLedger {
   #inFlight: SuggestRequest[] = [];
@@ -24,8 +24,13 @@ export class SuggestLedger {
     this.#unsent.push(request);
   }
 
-  /** The reply to the oldest request in flight, which it settles. */
-  replied(): SuggestRequest | undefined {
+  /**
+   * The reply to the oldest request in flight, which it settles. Given the `reply`, one that cannot answer that request
+   * (a frame this window never sent) settles nothing and returns undefined.
+   */
+  replied(reply?: SuggestReply): SuggestRequest | undefined {
+    const oldest = this.#inFlight[0];
+    if (reply && (!oldest || !answers(oldest, reply))) return undefined;
     return this.#inFlight.shift();
   }
 

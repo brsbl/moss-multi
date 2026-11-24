@@ -45,6 +45,8 @@ export function markUnacked(session: object, unacked: boolean): void {
 }
 
 export const hasUnacked = (): boolean => holding.size > 0;
+/** Text only this window holds, offered back and not dismissed: no wait for acks can save it. */
+export const hasKept = (): boolean => keeping.size > 0;
 const openSessions = new Set<object>();
 export function markSession(session: object, open: boolean): void {
   if (open) openSessions.add(session);

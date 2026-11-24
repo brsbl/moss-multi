@@ -8,7 +8,7 @@ import {
   BODY_DOC, BODY_ROOTS, hydrate, ownValue, PAYLOAD_ID, regRefs, ROOT_KINDS, structsIn, type Inserted, type RecordOp, type SuggestionRecord,
 } from '@moss-multi/core/suggest/apply';
 import { STATE_CAP_BYTES } from '@moss-multi/protocol/limits';
-import { RESUME_MAX, SUGGEST_LIMITS, type IdSpan, type LeaseGrant, type SuggestReply, type SuggestRefusal, type SuggestRequest } from '@moss-multi/protocol/suggest';
+import { answers, RESUME_MAX, SUGGEST_LIMITS, type IdSpan, type LeaseGrant, type SuggestReply, type SuggestRefusal, type SuggestRequest } from '@moss-multi/protocol/suggest';
 import { bytesToBase64 } from '@moss-multi/protocol/sync';
 import { attachPayloadDocs, PAYLOAD_LOADED, PayloadDocs, payloadDocsFor, payloadMap, payloadText } from '../payload-docs.ts';
 import { attachPayloadSource } from '../server-doc.ts';
@@ -866,6 +866,9 @@ export class SuggestFork {
 
   receive(reply: SuggestReply): void {
     if (this.#disposed) return;
+    // A reply to a frame F never sent (another client on its socket) answers nothing F asked: it changes nothing.
+    const head = this.#inflight[0];
+    if (!head || !answers(head.request, reply)) return;
     const entry = this.#inflight.shift();
     const resumed = entry?.request.t === 'suggest-lease' && entry.request.resume !== undefined;
     if (reply.t !== 'suggest-refused' && typeof reply.room === 'number') {

@@ -72,6 +72,18 @@ export type SuggestReply =
    */
   | { t: 'suggest-refused'; record: string | null; reason: SuggestRefusal; limit?: Exclude<DocLimit, 'state'> };
 
+/**
+ * Whether `reply` can be the DocDO's answer to `request`. Replies come in request order, one each, and name the record
+ * the request named (`into` for a merge; none for a lease), so a reply that does not fit the oldest request in flight
+ * answers a frame this client never sent, and settles nothing.
+ */
+export function answers(request: SuggestRequest, reply: SuggestReply): boolean {
+  const named = request.t === 'suggest-lease' ? null : request.t === 'suggest-merge' ? request.into : request.record;
+  if (reply.t === 'suggest-leased') return request.t === 'suggest-lease';
+  if (reply.t === 'suggest-ack') return named !== null && reply.requested === named;
+  return reply.record === named;
+}
+
 export const SUGGEST_LIMITS = {
   /** Live (unspent, unexpired) leases one principal may hold; a request cannot raise it. */
   liveLeases: 4,
