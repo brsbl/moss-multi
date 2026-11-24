@@ -26,6 +26,7 @@ import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type Fo
 import { useDocRole } from '../access.ts';
 import { sessionFetch, useSessionEnded } from '../session-fetch.ts';
 import { useTerminal } from '../collab/terminal.ts';
+import { UNTITLED } from '../collab/title-binding.ts';
 import { heldRead, isLeaveCancelled, leaveAwareSend } from '../leave.ts';
 
 export type ShareTarget =
@@ -238,10 +239,11 @@ async function copy(text: string): Promise<void> {
   await navigator.clipboard.writeText(text);
 }
 
-/** The trimmed title of moss's note record, null for none or an empty one. */
+/** The trimmed title of moss's note record; null for none, an empty one, or moss's placeholder for an empty title. */
 function shownTitle(note: object | null): string | null {
   const title = (note as { title?: unknown } | null)?.title;
-  return typeof title === 'string' && title.trim() ? title.trim() : null;
+  const trimmed = typeof title === 'string' ? title.trim() : '';
+  return trimmed && trimmed !== UNTITLED ? trimmed : null;
 }
 
 /** The shell keeps a fixed title (Moss prints titles in faint capitals); the body's first line names the target. */
