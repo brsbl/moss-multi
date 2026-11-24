@@ -18,7 +18,9 @@ import {
   DropdownMenuTrigger,
 } from '@moss/shared/components/ui/dropdown-menu';
 import { Input } from '@moss/shared/components/ui/input';
+import { noteEntityAtom } from '@moss/shared/state/note-atoms';
 import { LINK_ROLES, SHARE_ROLES, type LinkRole, type Role, type ShareRole } from '@moss-multi/protocol/roles';
+import { useStore } from 'jotai';
 import { Check, ChevronDown, X } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type FormEvent, type KeyboardEvent, type ReactNode } from 'react';
 import { useDocRole } from '../access.ts';
@@ -236,6 +238,12 @@ async function copy(text: string): Promise<void> {
   await navigator.clipboard.writeText(text);
 }
 
+/** The trimmed title of moss's note record, null for none or an empty one. */
+function shownTitle(note: object | null): string | null {
+  const title = (note as { title?: unknown } | null)?.title;
+  return typeof title === 'string' && title.trim() ? title.trim() : null;
+}
+
 /** The shell keeps a fixed title (Moss prints titles in faint capitals); the body's first line names the target. */
 function titles(target: ShareTarget, name: string | null): { title: string; description: string; kind: string; named: string | null } {
   if (target.type === 'doc') {
@@ -341,7 +349,9 @@ function ShareDialog({ target, open, onOpenChange }: { target: ShareTarget; open
   const [linkAccess, setLinkAccess] = useState<LinkRole>('viewer');
   const [pending, setPending] = useState(false);
   const [status, setStatus] = useState<Status>(null);
-  const [name, setName] = useState<string | null>(null);
+  // A note's name starts as the title the window shows, so the header names it before the reads answer (T9.50b).
+  const store = useStore();
+  const [name, setName] = useState<string | null>(() => (target.type === 'doc' ? shownTitle(store.get(noteEntityAtom(target.id))) : null));
   const [inherited, setInherited] = useState<InheritedGroup[]>([]);
   const [linksAbove, setLinksAbove] = useState<LinkAbove[]>([]);
   const [hasAgent, setHasAgent] = useState(false);
