@@ -290,6 +290,8 @@ export interface IngestOptions {
   limit?: (growth: RecordGrowth) => DocLimit | null;
   /** Hears each connection of `principal`'s a fork's resume took its leases from: the DocDO retires and closes it. */
   onSuperseded?: (connection: string, principal: string) => void;
+  /** Whether one of `holders`, `principal`'s, is open and was admitted after `connection` (the DocDO's attachments). */
+  newer?: (connection: string, holders: ReadonlySet<string>, principal: string) => boolean;
 }
 
 /** Where each struct of an open record's ops sits, per doc and client, clock-sorted, so a later op's structs can be placed. */
@@ -422,8 +424,9 @@ export class SuggestIngest {
    * ones; beside a `resume` of `who`'s leases whose connection closed or idled, rebound to this one with their
    * acknowledged clock. A resume rebinds every lease it names whatever the live count: the cap limits minting only, so
    * text a fork wrote offline is never refused over a spare it holds. Another connection the resuming fork takes its
-   * leases from, held or idled, is retired: its other leases expire and `onSuperseded` hears it. A resume refused
-   * whole retires nothing.
+   * leases from, held or idled, is retired: its other leases expire and `onSuperseded` hears it. When that connection
+   * was opened after the resuming one, the resume is late and the resuming connection is retired instead. A refused
+   * resume moves and retires nothing.
    */
   lease(who: Suggester, resume: readonly number[] = [], count: number = SUGGEST_LIMITS.leaseBatch, fork: string | null = null): { ok: true; leases: LeaseGrant[] } | { ok: false; reason: SuggestRefusal } {
     if (!roleAtLeast(who.role, 'suggester')) return refused('role');
@@ -432,6 +435,7 @@ export class SuggestIngest {
     const since = now - SUGGEST_LIMITS.leaseIdleMs;
     const grants: LeaseGrant[] = [];
     const superseded = new Set<string>();
+    // Every name is checked before any lease moves, so a refused resume moves and retires nothing.
     for (const client of resume) {
       const lease = typeof client === 'number' ? this.leases.get(client) : undefined;
       if (!lease || lease.principal !== who.id) return refused('lease');
@@ -439,9 +443,19 @@ export class SuggestIngest {
       // Held by another open connection: only the fork it was granted to may take it over (its old socket is dead
       // to it, though the DocDO has not seen it close).
       if (held && lease.connection !== who.connection && !(fork !== null && lease.fork === fork)) return refused('lease');
-      // Taken from another connection by the fork it is bound to: that is this window's own old socket, retired
-      // whether or not the lease idled there. Another fork (another window) never retires it.
+      // Bound to another connection of the fork's own, held or idled there: one of the two is this window's stale
+      // socket. Another fork (another window) never retires it.
       if (lease.connection !== who.connection && fork !== null && lease.fork === fork) superseded.add(lease.connection);
+    }
+    // The fork already resumed on a socket opened after this one: this resume arrived late on a socket the window has
+    // left, so this socket is the stale one and is retired instead; the leases stay where they are.
+    if (superseded.size > 0 && this.options.newer?.(who.connection, superseded, who.id)) {
+      this.leases.expireConnection(who.connection);
+      this.options.onSuperseded?.(who.connection, who.id);
+      return refused('lease');
+    }
+    for (const client of resume) {
+      const lease = this.leases.get(client)!;
       this.leases.put({ ...lease, connection: who.connection, expired: false, usedAt: now, fork: fork ?? lease.fork ?? null });
       grants.push({ client, record: lease.record === null ? lease.reserved : this.#head(lease.record), clock: ownValue(lease.clocks, BODY_DOC) ?? 0, clocks: lease.clocks });
     }

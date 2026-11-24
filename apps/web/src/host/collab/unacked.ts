@@ -23,11 +23,10 @@ function listen(): void {
 
 /** `key` holds text only this window has until it is let go: the browser asks before a reload or close meanwhile. */
 export function markKept(key: string, kept: boolean): void {
+  // Text offered back again under a key, kept or not, is new: a discard chosen before it does not cover it.
+  released.delete(key);
   if (kept) keeping.add(key);
-  else {
-    keeping.delete(key);
-    released.delete(key);
-  }
+  else keeping.delete(key);
   listen();
 }
 

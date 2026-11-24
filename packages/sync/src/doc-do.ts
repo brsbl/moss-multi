@@ -575,6 +575,7 @@ export class DocDO extends YServer<SyncEnv> {
       },
       limit: (growth) => this.#recordLimit(growth),
       onSuperseded: (nonce, principal) => this.#retireConnection(nonce, principal),
+      newer: (nonce, holders, principal) => this.#openedAfter(nonce, holders, principal),
     });
     store.onCompacted = () => this.#ingest?.compacted();
     this.document.getMap(SUGGESTIONS).observeDeep(() => {
@@ -1024,6 +1025,8 @@ export class DocDO extends YServer<SyncEnv> {
     }
     const who: Suggester = { id: attachment.principalId, name: attachment.name, role: attachment.role, connection: attachment.nonce ?? connection.id };
     const reply: SuggestReply = request ? handleSuggest(ingest, who, request) : { t: 'suggest-refused', record: null, reason: 'malformed' };
+    // A late resume on a socket its fork has left retired that socket: no reply, nothing counted.
+    if (retired(connection)) return;
     this.sendCustomMessage(connection, JSON.stringify(reply));
     if (reply.t !== 'suggest-refused') {
       noRoom(connection, 0);
@@ -1044,6 +1047,21 @@ export class DocDO extends YServer<SyncEnv> {
       retire(connection);
       connection.close(CLOSE.normal, 'superseded');
     }
+  }
+
+  /** Whether one of `holders` (nonces) is an open, unretired socket of `principal`'s admitted after socket `nonce`. */
+  #openedAfter(nonce: string, holders: ReadonlySet<string>, principal: string): boolean {
+    let mine: number | undefined;
+    const theirs: number[] = [];
+    for (const connection of this.getConnections()) {
+      const attachment = attachmentOf(connection);
+      if (!attachment || attachment.principalId !== principal || retired(connection) || !isOpen(connection)) continue;
+      const id = attachment.nonce ?? connection.id;
+      if (id === nonce) mine = attachment.admittedAt;
+      else if (holders.has(id)) theirs.push(attachment.admittedAt ?? 0);
+    }
+    const since = mine;
+    return since !== undefined && theirs.some((at) => at > since);
   }
 
   /** Whether the connection is still in its no-room window: at most one counted room refusal per window. */

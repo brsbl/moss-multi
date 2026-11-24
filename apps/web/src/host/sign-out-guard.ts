@@ -11,11 +11,13 @@ export function subscribeSignOutConfirmation(listener: () => void): () => void {
 const publish = () => { for (const listener of listeners) listener(); };
 export function answerSignOut(discard: boolean): void {
   const answer = confirm;
+  // The dialog closes itself after either button: that close answers nothing and must not undo the choice.
+  if (!answer) return;
   confirm = null;
   // Discard covers the text kept now: the sign-out's leave does not ask about it again, but does about any later.
   releaseKept(discard);
   publish();
-  answer?.(discard);
+  answer(discard);
 }
 export async function prepareSignOut(): Promise<boolean> {
   releaseKept(false);
