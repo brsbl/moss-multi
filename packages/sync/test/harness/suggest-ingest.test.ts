@@ -815,3 +815,29 @@ describe('T5.B1 a payload op refused for its lease or a cap loads no payload doc
     }
   });
 });
+
+describe('T5.S16 a connection a fork has resumed from elsewhere is retired @p:mean-2', () => {
+  it("after a fork's takeover, three suggest frames on the superseded connection start no cooldown, and its leases stop counting", async () => {
+    const opened = await seeded();
+    const doc = opened.dobj.document;
+    const fork = 'fork-t5s16-harness';
+    const old = await on(opened, SAM);
+    const named = ((await send(old, { t: 'suggest-lease', fork })) as Extract<SuggestReply, { t: 'suggest-leased' }>).leases;
+    // Two more on the old connection that the resume will not name.
+    expect(await send(old, { t: 'suggest-lease', fork })).toMatchObject({ t: 'suggest-leased' });
+    // The page gives the stalled socket up; its fork resumes on a new one while the DocDO still holds the old one open.
+    const fresh = await on(opened, SAM);
+    expect(await send(fresh, { t: 'suggest-lease', resume: named.map((lease) => lease.client), fork, mint: 0 } as SuggestRequest)).toMatchObject({ t: 'suggest-leased' });
+    // The stalled socket's late keystrokes arrive now, one frame each, under a lease it no longer holds.
+    for (let i = 0; i < 3; i += 1) {
+      await old.deliver(`${CUSTOM_PREFIX}${JSON.stringify(opsRequest(named[0].record, forge(doc, (d) => firstBlock(d).insert(0, `L${i} `), named[0].client)))}`);
+      await old.pump();
+    }
+    expect(fresh.closed, 'no cooldown: the new socket stays open').toBeNull();
+    expect(await send(fresh, opsRequest(named[0].record, forge(doc, (d) => firstBlock(d).insert(0, 'Mine '), named[0].client)))).toMatchObject({ t: 'suggest-ack', record: named[0].record });
+    // The retired connection's own leases no longer count: another window gets its two.
+    const other = await on(opened, SAM);
+    expect(await leases(other)).toHaveLength(2);
+    expect(fresh.closed).toBeNull();
+  });
+});
