@@ -1778,7 +1778,10 @@ export function App() {
             if (cancelled || didInitializeStartupSelectionRef.current) {
               return;
             }
-            if (store.get(activeNoteIdAtom)) {
+            // moss-multi seam: startup-link-note (T9.54): only a note chosen during the read stops here. The derived
+            // note (moss's newest, with nothing chosen) does not: a note opened by its address that the listing does
+            // not carry, as through a share link, would never open for a person with a note of their own.
+            if (store.get(activeNoteSelectionAtom).storedId) {
               didInitializeStartupSelectionRef.current = true;
               setStartupSelectionDone(true);
               return;

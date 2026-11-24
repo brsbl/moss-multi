@@ -134,15 +134,21 @@ diff --git a/packages/desktop/src/renderer/App.tsx b/packages/desktop/src/render
          return;
        }
  
-@@ -1750,6 +1779,7 @@ export function App() {
+@@ -1748,8 +1777,12 @@ export function App() {
+             if (cancelled || didInitializeStartupSelectionRef.current) {
+               return;
              }
-             if (store.get(activeNoteIdAtom)) {
+-            if (store.get(activeNoteIdAtom)) {
++            // moss-multi seam: startup-link-note (T9.54): only a note chosen during the read stops here. The derived
++            // note (moss's newest, with nothing chosen) does not: a note opened by its address that the listing does
++            // not carry, as through a share link, would never open for a person with a note of their own.
++            if (store.get(activeNoteSelectionAtom).storedId) {
                didInitializeStartupSelectionRef.current = true;
 +              setStartupSelectionDone(true);
                return;
              }
              if (record && record.trashedAt == null) {
-@@ -1771,6 +1801,7 @@ export function App() {
+@@ -1771,6 +1804,7 @@ export function App() {
        availableNotes = store.get(activeNotesAtom);
        if (availableNotes.length === 0) {
          didInitializeStartupSelectionRef.current = true;
@@ -150,7 +156,7 @@ diff --git a/packages/desktop/src/renderer/App.tsx b/packages/desktop/src/render
          return;
        }
  
-@@ -1798,6 +1829,14 @@ export function App() {
+@@ -1798,6 +1832,14 @@ export function App() {
      windowContextReady
    ]);
  
@@ -165,7 +171,7 @@ diff --git a/packages/desktop/src/renderer/App.tsx b/packages/desktop/src/render
    const runSerializedNoteSwitch = useCallback((task: () => Promise<void>) => {
      noteSwitchQueueRef.current = noteSwitchQueueRef.current.then(task, task);
      return noteSwitchQueueRef.current;
-@@ -1941,6 +1980,9 @@ export function App() {
+@@ -1941,6 +1983,9 @@ export function App() {
              return;
            }
          }
@@ -175,7 +181,7 @@ diff --git a/packages/desktop/src/renderer/App.tsx b/packages/desktop/src/render
  
          setAppMode(targetView);
          viewSelectionRef.current[targetView] = noteId;
-@@ -1948,7 +1990,7 @@ export function App() {
+@@ -1948,7 +1993,7 @@ export function App() {
          // No swap needed - activeActionTabsAtom auto-derives from activeNoteId
        });
      },
@@ -184,7 +190,7 @@ diff --git a/packages/desktop/src/renderer/App.tsx b/packages/desktop/src/render
    );
  
    const handleCloseSplitPane = useCallback(
-@@ -2588,7 +2630,10 @@ export function App() {
+@@ -2588,7 +2633,10 @@ export function App() {
      const subscribe = window.electronAPI.notes.onInternalFileOpen;
      if (typeof subscribe !== 'function') return;
      const cleanup = subscribe((noteId) => {
@@ -196,7 +202,7 @@ diff --git a/packages/desktop/src/renderer/App.tsx b/packages/desktop/src/render
          try {
            const record = await window.electronAPI.notes.getById(noteId);
            if (record) {
-@@ -2608,10 +2653,11 @@ export function App() {
+@@ -2608,10 +2656,11 @@ export function App() {
              if (!canSwitch) return;
            }
            navigateToNote(noteId);
@@ -209,7 +215,7 @@ diff --git a/packages/desktop/src/renderer/App.tsx b/packages/desktop/src/render
      });
      return cleanup;
    }, [applyNoteRecordToStore, flushBeforeNoteSwitch, hasElectronBridge, navigateToNote, runSerializedNoteSwitch, store]);
-@@ -2846,11 +2892,11 @@ export function App() {
+@@ -2846,11 +2895,11 @@ export function App() {
  
      // Always create regular notes in a non-system folder.
      // If the active folder is a system folder, fall back to root.
@@ -226,7 +232,7 @@ diff --git a/packages/desktop/src/renderer/App.tsx b/packages/desktop/src/render
  
      const finishCreation = (note: MockNote, preloadedRecord?: NoteWithContent): MockNote => {
        insertNote(note);
-@@ -2859,7 +2905,7 @@ export function App() {
+@@ -2859,7 +2908,7 @@ export function App() {
        }
        navigateToNote(note.id);
        if (focusTarget === 'title') {
@@ -235,7 +241,7 @@ diff --git a/packages/desktop/src/renderer/App.tsx b/packages/desktop/src/render
        } else {
          setShouldFocusBody(true);
        }
-@@ -2917,12 +2963,19 @@ export function App() {
+@@ -2917,12 +2966,19 @@ export function App() {
    ]);
  
    const handleCreateNote = useCallback(async () => {
@@ -257,7 +263,7 @@ diff --git a/packages/desktop/src/renderer/App.tsx b/packages/desktop/src/render
  
    const handleDuplicateNote = useCallback(async (noteId: string) => {
      const canSwitch = await flushBeforeNoteSwitch();
-@@ -2932,35 +2985,7 @@ export function App() {
+@@ -2932,35 +2988,7 @@ export function App() {
      if (!entity) return;
  
      try {
@@ -294,7 +300,7 @@ diff --git a/packages/desktop/src/renderer/App.tsx b/packages/desktop/src/render
        const note = mapRecordToMockNote(persistedRecord);
        insertNote(note);
        applyNoteRecordToStore(persistedRecord);
-@@ -3127,14 +3152,8 @@ export function App() {
+@@ -3127,14 +3155,8 @@ export function App() {
    const handleRenameNote = useCallback(
      (noteId: string) => {
        handleSelectNote(noteId);
@@ -311,7 +317,7 @@ diff --git a/packages/desktop/src/renderer/App.tsx b/packages/desktop/src/render
      },
      [handleSelectNote]
    );
-@@ -3159,7 +3178,8 @@ export function App() {
+@@ -3159,7 +3181,8 @@ export function App() {
              noteId,
              error
            });
@@ -321,7 +327,7 @@ diff --git a/packages/desktop/src/renderer/App.tsx b/packages/desktop/src/render
            await reconcileNotesFromDisk('restore-error', noteId);
            return;
          }
-@@ -3788,7 +3808,8 @@ export function App() {
+@@ -3788,7 +3811,8 @@ export function App() {
  
        const key = e.key.toLowerCase();
  
@@ -331,7 +337,7 @@ diff --git a/packages/desktop/src/renderer/App.tsx b/packages/desktop/src/render
          e.preventDefault();
          if (showCommandPalette) {
            // Already open - just focus the input
-@@ -3914,8 +3935,33 @@ export function App() {
+@@ -3914,8 +3938,33 @@ export function App() {
    }, [store, activeNoteId]);
  
    const handleCollapseNotesPanel = useCallback(() => {
@@ -366,7 +372,7 @@ diff --git a/packages/desktop/src/renderer/App.tsx b/packages/desktop/src/render
  
    const handleOpenActionImages = useCallback((sources: string[], startIndex: number) => {
      if (!sources.length) return;
-@@ -3941,13 +3987,14 @@ export function App() {
+@@ -3941,13 +3990,14 @@ export function App() {
      onDeleteNote: handleNoteDeleted,
      onRestoreNote: handleNoteRestored,
      onNavigateToNote: handleSelectNote,
@@ -386,7 +392,7 @@ diff --git a/packages/desktop/src/renderer/App.tsx b/packages/desktop/src/render
    };
  
    const actionsPanelContent = (
-@@ -3955,9 +4002,9 @@ export function App() {
+@@ -3955,9 +4005,9 @@ export function App() {
        // In browser-split the panel renders inside <main> next to the note pane,
        // so it needs its own divider. In the normal placement the canvas area's
        // border-r already draws the seam — no border here to avoid doubling.
@@ -399,7 +405,7 @@ diff --git a/packages/desktop/src/renderer/App.tsx b/packages/desktop/src/render
        width="var(--actions-panel-width, 280px)"
        scrollContainerRef={actionsPanelScrollRef}
        isAgentStreaming={actionTabs.some(tab => tab.isStreaming)}
-@@ -4047,7 +4094,7 @@ export function App() {
+@@ -4047,7 +4097,7 @@ export function App() {
        searchBarAutoFocus={searchBarAutoFocus}
        onCloseSearch={handleCloseSearch}
        onOpenSearch={() => { setSearchQuery(''); setSearchBarAutoFocus(true); }}
@@ -408,7 +414,7 @@ diff --git a/packages/desktop/src/renderer/App.tsx b/packages/desktop/src/render
        onLeftTitleFocusComplete={handleTitleFocusComplete}
        leftAutoFocusBody={shouldFocusBody}
        onLeftBodyFocusComplete={handleBodyFocusComplete}
-@@ -4063,6 +4110,7 @@ export function App() {
+@@ -4063,6 +4113,7 @@ export function App() {
        feedbackTooltipOpen={feedbackTooltipFixtureOpen}
        mode={appMode}
        onModeChange={handlePanelViewChange}
@@ -416,7 +422,7 @@ diff --git a/packages/desktop/src/renderer/App.tsx b/packages/desktop/src/render
        onOpenFeedback={() => setFeedbackDialogOpen(true)}
        onOpenSettings={async () => {
          handleCloseSearch();
-@@ -4072,8 +4120,8 @@ export function App() {
+@@ -4072,8 +4123,8 @@ export function App() {
      />
    );
  
@@ -427,7 +433,7 @@ diff --git a/packages/desktop/src/renderer/App.tsx b/packages/desktop/src/render
    const notesPanelWidthPx = notesListWidth + NOTES_PANEL_RESIZER_WIDTH_PX;
  
    const notePanelContent =
-@@ -4108,11 +4156,13 @@ export function App() {
+@@ -4108,11 +4159,13 @@ export function App() {
          notesPanelOverlay ? 'absolute inset-y-0 left-0 z-40 border-r border-border-subtle/50 shadow-[0_8px_24px_var(--ink-shadow-soft)]' : '',
          notesPanelOverlay && notesPanelVisible ? 'translate-x-0 opacity-100' : '',
          notesPanelOverlay && !notesPanelVisible ? '-translate-x-full opacity-0 pointer-events-none' : '',
@@ -441,7 +447,7 @@ diff --git a/packages/desktop/src/renderer/App.tsx b/packages/desktop/src/render
      >
        <div
          className="flex h-full min-w-0 shrink-0 overflow-hidden"
-@@ -4199,6 +4249,8 @@ export function App() {
+@@ -4199,6 +4252,8 @@ export function App() {
        <SnapshotUiFixtureLayer fixture={automationUiFixture} />
        {operationFailure ? (
          <div
