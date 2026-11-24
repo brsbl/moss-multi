@@ -4,7 +4,7 @@
 import { execFile } from 'node:child_process';
 import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
-import type { AddressInfo } from 'node:net';
+import { createServer as createNetServer, type AddressInfo, type Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
@@ -85,22 +85,46 @@ test.describe('settled panes (invariant 7)', () => {
 });
 
 test.describe('API request connections', () => {
-  test("each request through an actor's API context goes out on a connection of its own", async () => {
-    const sockets = new Set<number>();
-    const server = createServer((req, res) => {
-      sockets.add(req.socket.remotePort ?? 0);
-      res.end('ok');
+  test("each request through an actor's API context goes out on a connection of its own", async ({ browser }) => {
+    // Answers as the local Worker does: no `Connection: close` in the answer, whatever the request asked, and the
+    // socket left open for the client to reuse.
+    let connections = 0;
+    let requests = 0;
+    const open = new Set<Socket>();
+    const server = createNetServer((socket) => {
+      connections += 1;
+      open.add(socket);
+      let buffered = '';
+      socket.on('data', (chunk) => {
+        buffered += chunk.toString('latin1');
+        for (;;) {
+          const end = buffered.indexOf('\r\n\r\n');
+          if (end < 0) return;
+          const length = Number(/\r\ncontent-length:\s*(\d+)/i.exec(buffered.slice(0, end))?.[1] ?? 0);
+          if (buffered.length < end + 4 + length) return;
+          buffered = buffered.slice(end + 4 + length);
+          requests += 1;
+          socket.write('HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 2\r\n\r\nok');
+        }
+      });
+      socket.on('error', () => {});
     });
     await new Promise<void>((done) => server.listen(0, '127.0.0.1', done));
     const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/`;
     const api = closeEachConnection(await request.newContext());
+    const context = await browser.newContext();
+    closeEachConnection(context.request);
     try {
       await api.get(url);
       await api.post(url, { data: { a: 1 } });
       await api.fetch(url, { method: 'GET' });
-      expect(sockets.size, 'no request reuses a pooled connection').toBe(3);
+      await context.request.get(url);
+      expect(requests, 'every request was answered').toBe(4);
+      expect(connections, 'no request reuses a pooled connection').toBe(4);
     } finally {
       await api.dispose();
+      await context.close();
+      for (const socket of open) socket.destroy();
       server.close();
     }
   });
