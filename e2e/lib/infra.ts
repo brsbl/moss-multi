@@ -1,6 +1,7 @@
 // Infrastructure is never a product verdict (S-test §2.8): fixtures throw InfraBlocked, the reporter writes
 // test-results/blocked.json, and the summary says BLOCKED instead of FAILED.
-import type { APIRequestContext } from '@playwright/test';
+import http from 'node:http';
+import https from 'node:https';
 
 export class InfraBlocked extends Error {
   constructor(reason: string) {
@@ -47,17 +48,14 @@ export function assertNotInfra(text: string, where: string): void {
 }
 
 /**
- * Playwright's API requests share one keep-alive agent per process, and the stack's dev proxy closes an idle pooled
- * connection, sometimes just as a request goes out on it: "socket hang up" on a GET and a POST (runs 38389778699,
- * 38346480112 and 38406081753), on a stack that answered every other request. Every request through `request` asks
- * for its connection to close after it, so none goes out on a connection the proxy may be closing.
+ * Playwright sends API requests (`request`, `request.newContext()`, `route.fetch()`) through process-wide keep-alive
+ * agents and never resends one. The local Worker ignores a request's `connection: close`, answers without it and
+ * closes a connection 5 s after its last answer, so a request written to a pooled socket just then failed with
+ * "socket hang up" (runs 45257142311, 45132107814, 45089319305). No Node agent in this process pools a socket: each
+ * request opens its own connection and nothing is resent. Call at module scope, before the first request; off
+ * loopback each Node-side request costs a TLS handshake.
  */
-export function closeEachConnection(request: APIRequestContext): APIRequestContext {
-  type Send = (url: unknown, options?: { headers?: Record<string, string> }) => unknown;
-  for (const method of ['get', 'head', 'post', 'put', 'patch', 'delete', 'fetch'] as const) {
-    const original = request[method].bind(request) as Send;
-    const closing: Send = (url, options = {}) => original(url, { ...options, headers: { connection: 'close', ...options.headers } });
-    (request as unknown as Record<string, Send>)[method] = closing;
-  }
-  return request;
+export function ownConnections(): void {
+  http.Agent.prototype.keepSocketAlive = () => false;
+  https.Agent.prototype.keepSocketAlive = () => false;
 }

@@ -3,9 +3,13 @@
 import { test as base } from '@playwright/test';
 import { Actors } from '../lib/actors.ts';
 import { closeBrowserTimed, watchBrowser } from '../lib/engine.ts';
+import { ownConnections } from '../lib/infra.ts';
 import { startFixtureServer, type FixtureServer } from './server.ts';
 
 export { expect } from '@playwright/test';
+
+// Before this worker's first request: a socket pooled earlier would be reused once more (infra.ts).
+ownConnections();
 
 export const test = base.extend<{ actors: Actors }, { server: FixtureServer }>({
   browser: [

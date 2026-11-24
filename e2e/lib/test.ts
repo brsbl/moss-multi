@@ -7,11 +7,15 @@ import { gateRetry } from '../../scripts/deploy/retry-gate.mjs';
 import { Actors } from './actors.ts';
 import { paceAuth } from './auth-pace.ts';
 import { closeBrowserTimed, watchBrowser } from './engine.ts';
+import { ownConnections } from './infra.ts';
 import { Measure } from './measure.ts';
 import { Stack } from './stack.ts';
 
 export { expect } from '@playwright/test';
 export * as ui from './ui.ts';
+
+// Before this worker's first request: a socket pooled earlier would be reused once more (infra.ts).
+ownConnections();
 
 interface TestFixtures { actors: Actors; stack: Stack; measure: Measure }
 interface WorkerFixtures { runToken: string; stackW: Stack }

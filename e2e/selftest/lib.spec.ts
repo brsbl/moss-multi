@@ -17,7 +17,7 @@ import { BODY_BINDING_ATTR, DOC_ID_ATTR, EDITOR_PANE_ATTR, TITLE_BINDING_ATTR } 
 import { probeSocket } from '../lib/doc-client.ts';
 import { browserLog, closeBrowserTimed } from '../lib/engine.ts';
 import { inductionProblems, ownerProbe } from '../lib/hibernate.ts';
-import { browserCrashIn, classifyInfra, closeEachConnection, InfraBlocked, isInfraBlocked } from '../lib/infra.ts';
+import { browserCrashIn, classifyInfra, InfraBlocked, isInfraBlocked } from '../lib/infra.ts';
 import { awaitingRecovery, errorProblems, socketProblems, typedFindings, type ActorView } from '../lib/invariants.ts';
 import { budgetProblem, latencyRows, Measure, percentile } from '../lib/measure.ts';
 import { assertTestEmail, parseSetCookie, principalProblems, signIn } from '../lib/principals.ts';
@@ -85,7 +85,7 @@ test.describe('settled panes (invariant 7)', () => {
 });
 
 test.describe('API request connections', () => {
-  test("each request through an actor's API context goes out on a connection of its own", async ({ browser }) => {
+  test("each Node-side request goes out on a connection of its own", async ({ browser }) => {
     // Answers as the local Worker does: no `Connection: close` in the answer, whatever the request asked, and the
     // socket left open for the client to reuse.
     let connections = 0;
@@ -111,9 +111,8 @@ test.describe('API request connections', () => {
     });
     await new Promise<void>((done) => server.listen(0, '127.0.0.1', done));
     const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/`;
-    const api = closeEachConnection(await request.newContext());
+    const api = await request.newContext();
     const context = await browser.newContext();
-    closeEachConnection(context.request);
     try {
       await api.get(url);
       await api.post(url, { data: { a: 1 } });
