@@ -820,3 +820,39 @@ describe('T5.S16 a resume is never refused for the cap and reserves only what th
     }
   });
 });
+
+describe('T5.S16 a reply the fork never asked for changes nothing @p:mean-2', () => {
+  it('refusals and a grant of frames another client sent on its socket leave the text in flight owed, and it lands', () => {
+    const live = seededBody();
+    const link = wire(live);
+    const m = mount(live, link);
+    try {
+      m.act(() => select('Hello', 24).insertText(' One.'));
+      expect(link.outbox.length, 'the edit is in flight').toBeGreaterThan(0);
+      // Frames the fork never sent, answered on its socket ahead of its own: three refusals (as a forged withdraw of an
+      // unknown record draws), a grant of a lease request and a refusal naming no record.
+      const stray: SuggestReply[] = [
+        ...[0, 1, 2].map((i) => handleSuggest(link.ingest, link.who, { t: 'suggest-withdraw', record: `unknown-${i}` })),
+        handleSuggest(link.ingest, link.who, { t: 'suggest-lease', mint: 1 }),
+        { t: 'suggest-refused', record: null, reason: 'malformed' },
+      ];
+      expect(stray.slice(0, 3).map((reply) => (reply.t === 'suggest-refused' ? reply.reason : reply.t))).toEqual(['record', 'record', 'record']);
+      for (const reply of stray) m.fork.receive(reply);
+      expect(m.events.filter((event) => event.type === 'refused'), 'input stays open').toEqual([]);
+      expect(m.fork.closed).toBe(false);
+      expect(m.fork.owes, 'the edit is still owed').toBe(true);
+      link.deliver(m.fork);
+      expect(m.fork.owes).toBe(false);
+      const [record] = recordIds(live).filter((id) => readMeta(live, id)?.status === 'open');
+      expect(readRecord(live, record)?.ops.length, 'the edit lands').toBe(m.fork.sent);
+      // A refusal of a request it did send still halts it.
+      m.act(() => select('Hello', 29).insertText(' Two.'));
+      const mine = link.outbox.splice(0)[0];
+      expect(mine?.t).toBe('suggest-ops');
+      m.fork.receive({ t: 'suggest-refused', record: mine?.t === 'suggest-ops' ? mine.record : null, reason: 'record-closed' });
+      expect(m.events.filter((event) => event.type === 'refused')).toHaveLength(1);
+    } finally {
+      m.dispose();
+    }
+  });
+});

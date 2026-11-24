@@ -63,11 +63,12 @@ export const GROUPS = {
   // Suggest mode and the suggestions server.
   suggest: ['j16'],
   // A suggester's connection dropping and returning: what is refused, the cooldown, and where the text is afterwards;
-  // one window's cuts, more windows, windows returning, and fresh pages with the cooldown's net.
+  // one window's cuts, more windows, windows returning, fresh pages, and the cooldown's net.
   suggestDropCuts: ['j16-suggest-drop-cuts'],
   suggestDropTabs: ['j16-suggest-drop-tabs'],
   suggestDropReturn: ['j16-suggest-drop-return'],
   suggestDropFresh: ['j16-suggest-drop-fresh'],
+  suggestDropCooldown: ['j16-suggest-drop-cooldown'],
   // Large pastes in Suggest mode: admitted whole or refused whole, one frame, one undo step.
   suggestPaste: ['j16-paste'],
   // Suggest-mode pastes over table cells, refused whole or struck; an undone split that reads as the body; a Review

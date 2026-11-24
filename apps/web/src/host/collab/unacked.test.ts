@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { expect, it } from 'vitest';
-import { allowUnload, markUnacked } from './unacked.ts';
+import { allowUnload, markKept, markUnacked } from './unacked.ts';
 
 const unloadAsks = () => {
   const event = new Event('beforeunload', { cancelable: true });
@@ -26,6 +26,25 @@ it('text offered back after a closed suggestion holds the unload guard until it 
   offerUnsaved('doc-full', [], true);
   expect(unloadAsks(), 'a no-room notice with nothing offered back holds nothing').toBe(false);
   dismissUnsaved('doc-full');
+});
+
+it('a sign-out or an in-app leave with offered-back text undismissed asks first or stays (T5.S16)', async () => {
+  const { answerSignOut, needsSignOutConfirmation, prepareSignOut } = await import('../sign-out-guard.ts');
+  const { departTo, LEAVE_UNSYNCED } = await import('../navigation.ts');
+  const { refusalMessage } = await import('../refusal.ts');
+  markKept('suggest-unsaved:doc-leave', true);
+  try {
+    const signOut = prepareSignOut();
+    await Promise.resolve();
+    expect(needsSignOutConfirmation(), 'sign-out asks before discarding the offered text').toBe(true);
+    answerSignOut(false);
+    expect(await signOut).toBe(false);
+    await departTo('/f/folder');
+    expect(refusalMessage(), 'the page stays and says why').toBe(LEAVE_UNSYNCED);
+  } finally {
+    markKept('suggest-unsaved:doc-leave', false);
+  }
+  expect(await prepareSignOut(), 'once dismissed, sign-out goes ahead').toBe(true);
 });
 
 it('an app-initiated leave that already settled its edits does not ask again, until the page is shown again', () => {

@@ -692,3 +692,24 @@ export async function typeAcrossCut(probe: Probe): Promise<number> {
   probe.note('Dd4 typed while down', await probe.brief(ben));
   return cutAt;
 }
+
+/**
+ * A fresh page of the person's own session, as a second tab or a fresh-load comparison is: the same cookies in a
+ * context of its own, so the first window's socket census stays its own. Records its suggest refusals.
+ */
+export async function freshPage(probe: Probe): Promise<{ page: Page; refused: string[]; close: () => Promise<void> }> {
+  const browser = probe.ben.context.browser();
+  if (!browser) throw new Error('no browser for a fresh page');
+  const context = await browser.newContext();
+  await context.addCookies(await probe.ben.context.cookies());
+  const page = await context.newPage();
+  probe.listen(page, 'ben-fresh');
+  const refused: string[] = [];
+  page.on('websocket', (socket) => {
+    socket.on('framereceived', (data) => {
+      const frame = suggestFrame(data.payload);
+      if (frame?.t === 'suggest-refused') refused.push(String(frame.reason));
+    });
+  });
+  return { page, refused, close: () => context.close() };
+}

@@ -121,6 +121,8 @@ for (const drop of ['unseen', 'seen'] as const) test(`j16-suggest-drop flap sugg
     // Each drop is followed by typing two blocks away, which starts a new group and asks for a spare lease. Every
     // token is counted: nothing is taken from the screen.
     const plan: [LineKey, string][] = [['three', 'Bb2'], ['one', 'Cc3'], ['three', 'Dd4'], ['one', 'Ee5']];
+    const typed: string[] = [];
+    const startedAt = Date.now();
     for (const [line, token] of plan) {
       const cutAt = probe.cut();
       await pause(500);
@@ -129,10 +131,15 @@ for (const drop of ['unseen', 'seen'] as const) test(`j16-suggest-drop flap sugg
       await probe.attempt(`typing "${token}"`, async () => {
         await caretEnd(ben, docId, START[line]);
         await probe.type(ben, token, line);
+        typed.push(token);
       });
       await pause(600);
       if (probe.cooled()) break;
     }
+    const flapMs = Date.now() - startedAt;
+    probe.note('the drops', { typed, ms: flapMs });
+    expect.soft(typed, 'every planned drop resumed and its token was typed').toEqual(plan.map(([, token]) => token));
+    expect.soft(flapMs, 'the four drops fall inside a minute').toBeLessThan(60_000);
     const locked = await probe.cooldownWithin(2_000);
     if (!locked) {
       await probe.checkpoint('K1 no lockout');
@@ -163,6 +170,7 @@ for (const role of ROLES) test(`j16-suggest-drop one-window ${role} unseen: one 
     probe.note('the owner', { mode: await probe.ownerReview() });
     const rounds: [LineKey, LineKey, string[]][] = [['one', 'three', ['Bb2', 'Cc3', 'Dd4']], ['three', 'one', ['Ee5', 'Ff6', 'Gg7']], ['one', 'three', ['Hh8', 'Ii9', 'Jj1']]];
     const startedAt = Date.now();
+    let done = 0;
     rounds: for (const [here, away, [first, second, moved]] of rounds) {
       // Two cuts, each with typing while down.
       for (const token of [first, second]) {
@@ -173,14 +181,19 @@ for (const role of ROLES) test(`j16-suggest-drop one-window ${role} unseen: one 
         if (!(await probe.resumed(cutAt, 'crossed', 15_000))) break rounds;
       }
       // Then typing two blocks away: a new group.
-      await probe.attempt(`typing "${moved}"`, async () => {
+      const moveTyped = await probe.attempt(`typing "${moved}"`, async () => {
         await caretEnd(ben, docId, START[away]);
         await probe.type(ben, moved, away);
+        return true;
       });
+      if (moveTyped) done += 1;
       await pause(600);
       if (probe.cooled()) break;
     }
-    probe.note('three rounds', { ms: Date.now() - startedAt });
+    const roundsMs = Date.now() - startedAt;
+    probe.note('three rounds', { done, ms: roundsMs });
+    expect.soft(done, 'every round resumed both cuts and typed its move').toBe(rounds.length);
+    expect.soft(roundsMs, 'the three rounds fall inside a minute').toBeLessThan(60_000);
     await probe.cooldownWithin(2_000);
     await probe.checkpoint('K1 after three rounds');
     await probe.reload(ben);
