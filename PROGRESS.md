@@ -433,6 +433,29 @@ None of these is fixed or proven by T9.53.
 - Not on record: what switching vault in the app, or choosing a search result from another vault, writes to the history.
 - Not known: whether j13-vaults' "the notice says why" fails more often in WebKit with the fix; the fix on staging or with real network delay; WebKit driven by hand.
 
+### T9.54 — what it holds and what it leaves
+
+m3 to m8 and main keep this defect until m9 merges; the fix is built on m9 only.
+
+- The change is one condition in the vendored `App.tsx` (`store.get(activeNoteSelectionAtom).storedId`, seam startup-link-note), its recorded patch, and deviation 40. `atoms.ts` is unchanged: m9 already has `activeNoteSelectionAtom` (T9.48a), and `App.tsx` already imports it.
+- It relies on T9.53's gate on the focus report: without it the shared note would be pushed on top of the person's own note as a visit (inferred, not built).
+- The legs (`e2e/journeys/j08-link-notes.spec.ts`, group linkNotes) check that no history entry is added and no other note is written to the address, and that the linked note never has a sidebar row in the person's window. The sign-in control is "Sign in".
+- The legs do not exist below m9. On m3 the same condition opened the shared note but gave it a sidebar row for a moment and, in WebKit, a "WebSocket is closed before the connection is established" console error, so it was not carried there.
+
+### T9.54 — not in this task
+
+None of these is fixed or proven by T9.54.
+
+- **The wait remains.** Until Moss's read of the linked note answers (one request, at most 10 s), the person's own newest note is on screen, live and editable, and the tab's title is that note's.
+- **Removing the wait:** the bridge could answer Moss's read from the route gate's answer. Not built; it needs a rule for how long a kept answer may be used.
+- **A read that fails or times out ends on the person's own note with no message.** The gate retries the read; Moss's read does not.
+- **A note clicked during the read wins and the link is gone from the tab** (address `/d/<their note>?share=<token>`). Whether the link should win is not decided.
+- **Should the linked note have a row in the sidebar while the tab holds the link?** Today it has none, for anyone. Listing it for a signed-in holder would also fix this on every branch without a vendored change, but it is a design of its own (listing refreshes, search, row actions).
+- **"Copy note link" and "Open in New Window" keep the link's token on whatever note is open,** the person's own included.
+- **A folder link opened by someone who already sees the folder** lands on their own note with the folder open, as specified; it reads like this defect.
+- **The remembered note becomes the shared note;** the next plain `/` does not find it in the list and opens the newest note (inferred).
+- Not run: a person whose only listed note is shared with them by a grant; a first visit with a folder or vault token while Home is remembered; the token revoked or the note trashed while the shared note is open for a person with other notes; the token revoked between the gate and Moss's read; comment links to a folder or vault; a grant holder on a vault; the owner with a comment link; an agent key or bearer session opening a link; staging or a real network; WebKit by hand (WebKit evidence is the CI legs only).
+
 ## Follow-ups (P2)
 
 Parked from the M0 checker and critic passes, each with the task that owns it.
