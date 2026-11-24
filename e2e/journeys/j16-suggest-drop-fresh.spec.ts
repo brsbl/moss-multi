@@ -4,7 +4,7 @@
 // holds the leave-site guard until dismissed. The probe is e2e/lib/suggest-drop.ts.
 import type { Page } from '@playwright/test';
 import {
-  SUGGEST_UNSAVED_ATTR, SUGGESTION_CARD_ATTR, SUGGESTION_STATUS_ATTR, SUGGESTIONS_BUTTON_ATTR, SUGGESTIONS_PANEL_ATTR,
+  DOC_SOCKET_PATH, SUGGEST_UNSAVED_ATTR, SUGGESTION_CARD_ATTR, SUGGESTION_STATUS_ATTR, SUGGESTIONS_BUTTON_ATTR, SUGGESTIONS_PANEL_ATTR,
 } from '../lib/contract.ts';
 import { CUSTOM_PREFIX } from '../../packages/protocol/src/sync.ts';
 import { suggestFrame } from '../lib/sever.ts';
@@ -37,6 +37,30 @@ async function freshPage(probe: Probe): Promise<{ page: Page; refused: string[];
     });
   });
   return { page, refused, close: () => context.close() };
+}
+
+/**
+ * `count` suggest frames the DocDO refuses, sent on another socket of the person's (a client that ignores its binding),
+ * so the window's own fork never hears their replies.
+ */
+async function refusedElsewhere(probe: Probe, count: number): Promise<void> {
+  const fresh = await freshPage(probe);
+  try {
+    await fresh.page.goto(`${new URL(probe.ben.page.url()).origin}/api/version`);
+    await fresh.page.evaluate(async ({ path, count, prefix }) => {
+      const socket = new WebSocket(`${location.origin.replace(/^http/, 'ws')}${path}?_pk=${crypto.randomUUID()}`);
+      await new Promise((done, fail) => {
+        socket.addEventListener('open', done, { once: true });
+        socket.addEventListener('error', fail, { once: true });
+      });
+      // Past the DocDO's admission check, which holds a new socket's frames until it passes.
+      await new Promise((done) => setTimeout(done, 1_500));
+      for (let i = 0; i < count; i += 1) socket.send(`${prefix}${JSON.stringify({ t: 'suggest-withdraw', record: `unknown-${i}` })}`);
+      await new Promise((done) => setTimeout(done, 1_000));
+    }, { path: `${DOC_SOCKET_PATH}${probe.docId}`, count, prefix: CUSTOM_PREFIX });
+  } finally {
+    await fresh.close().catch(() => undefined);
+  }
 }
 
 /**
@@ -189,8 +213,8 @@ test('j16-suggest-drop cooldown suggester: a real cooldown with a suggestion in 
     sever.hold(docId);
     await probe.type(ben, 'Hh1');
     await pause(400);
-    // Three frames the DocDO refuses, sent on the person's socket as a forging client would: the third starts it.
-    for (let i = 0; i < 3; i += 1) sever.inject(`${CUSTOM_PREFIX}${JSON.stringify({ t: 'suggest-withdraw', record: `unknown-${i}` })}`);
+    // Three frames the DocDO refuses, from a forging client on another socket of the person's: the third starts it.
+    await refusedElsewhere(probe, 3);
     const closed = await probe.cooldownWithin(10_000);
     expect(closed, 'the forged frames start the cooldown').not.toBeNull();
     // What was held is lost with the socket: Hh1 is owed by the window alone.
