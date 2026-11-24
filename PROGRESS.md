@@ -182,6 +182,16 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - Not covered any more: no leg now has one person listing two notes across an idle, so no test shows that a page load reads, and so wakes, every note the person can list.
 - Not covered: no leg covers a note woken by that read while a hidden socket to it survives, with a peer joining after. That path passed 12 of 12 when it was measured with the two failing checks made soft, and `docs/history/LEARNINGS.md` records a past defect on it. Both points wait on the owner's ruling on page-load reads.
 
+### T9.52c — a space typed in a title is stored as a space
+
+- The title field was `white-space: normal`, so the engine put in U+00A0 for a space typed first, last or beside another space, and the field stored the element's text as it was; a word pasted after a typed space (the title's own `onPaste`) kept it inside the title, where the title filter, Trash search and the CLI's title match miss it. The field is now `white-space: pre-wrap` (`apps/web/src/styles.css`, DEVIATIONS 39). The new j02 leg (` world` typed first; `2026` pasted after `Meeting `) was red 5 of 5 in each engine before the rule, in both cases ([run 45446892415](https://github.com/brsbl/moss-multi/actions/runs/45446892415), jobs 138633780253 Chromium, 138633780130 WebKit). With the fold in `nonMonotonic` removed and no rule, "renames from Ada and then Ben reach Cy in order" was red 5 of 5 in each engine in the same run: it now guards the rule. With the rule the whole `j02-title` file (21 legs) passed 10 of 10 in each engine over two dispatches ([45451450344](https://github.com/brsbl/moss-multi/actions/runs/45451450344), [45451456917](https://github.com/brsbl/moss-multi/actions/runs/45451456917)), with no fold left.
+- Not changed: titles that already hold U+00A0 stay as they are; nothing rewrites stored titles.
+- Not changed: a U+00A0 inside pasted text is kept.
+- Not changed: deleting the middle word of `a b c` now leaves two plain spaces where it left a space and a U+00A0, so a search for "a c" still misses.
+- Not reached: the editor package's own title (`packages/editor/src/mount.tsx`, `data-moss-editor-title`) does not carry `data-title-binding`.
+- On screen, in Chromium (WebKit could not be driven locally; its CI legs are the evidence): two spaces inside a title and a pasted tab are drawn as typed in the title field, where they collapsed before; the sidebar, tab, breadcrumb and viewer heading still collapse them. A cleared title still shows its placeholder. A title holding a line break, which only the rename route or the CLI can store, is drawn on two lines and the title grows from 48 to 72 px, pushing the body down 24 px; before, it read as one line. Shift+Enter and Alt+Enter in a title move to the body, as Enter does, before and after the rule: the title holds only the word typed before them, 48 px high, so no key makes a two-line title.
+- Possible refinement, not tried: a newer CSS value that keeps spaces and still draws a line break as a space (`white-space-collapse: preserve-spaces`) would keep a stored line break on one line, but it is not available in every browser a person may use.
+
 ## Follow-ups (P2)
 
 Parked from the M0 checker and critic passes, each with the task that owns it.
