@@ -154,9 +154,7 @@ const titleLog = (actor: Actor) => actor.page.evaluate(() => (window as unknown 
 function nonMonotonic(values: string[]): string[] {
   const problems: string[] = [];
   let previous: string | null = null;
-  for (const raw of values) {
-    // contenteditable represents a trailing typed space as NBSP until the next character.
-    const value = raw.replace(/\u00a0/g, ' ');
+  for (const value of values) {
     const placeholder = value === '' || value === UNTITLED;
     if (placeholder) {
       if (previous !== null) problems.push(`"${value}" flashed back after "${previous}"`);
@@ -494,6 +492,51 @@ test('j02-title: @tierA on a warm stack, "+ Note" then "hello world" typed at on
   await expect.poll(() => ui.fieldText(ada, docId, 'title'), { message: 'the title holds exactly the keys that landed' }).toBe(landed);
   expect(creates, 'Space created no second note').toBe(1);
   await expect(ada.page.locator(`[${SIDEBAR_ROW_ATTR}]`), 'one new row').toHaveCount(rows + 1);
+});
+
+/** Each code point of a string, so U+0020 and U+00A0 read differently in a failure. */
+const codePoints = (text: string | null | undefined): string =>
+  text == null ? 'null' : [...text].map((c) => `U+${(c.codePointAt(0) ?? 0).toString(16).toUpperCase().padStart(4, '0')}`).join(' ');
+
+/** `Y.Text('title')` as a second client reads it from the doc socket. */
+async function storedTitle(actor: Actor, docId: string): Promise<string> {
+  const cookie = (await actor.context.cookies()).map(({ name, value }) => `${name}=${value}`).join('; ');
+  const reader = await openDocClient(new URL(actor.page.url()).origin, docId, cookie);
+  try {
+    await reader.synced;
+    return readField(reader.doc, 'title');
+  } finally {
+    reader.close();
+  }
+}
+
+test('j02-title: @tierA a space typed in a title is stored as U+0020, first in the title and before a pasted word @p:col-5 @p:note-6', async ({ actors }) => {
+  const ada = await openShell(actors, 'ada');
+  actors.solo('one person typing in their own titles; a second doc client reads what was stored');
+
+  // A space first: the failing run's own case, where the first key to land in a new title was the space.
+  const lead = await ui.createNote(ada);
+  await ada.page.keyboard.type(' world');
+  ada.typed({ docId: lead, field: 'title', text: ' world', ordered: true });
+  await ui.waitAcked(ada, lead);
+  expect(codePoints(await ui.fieldText(ada, lead, 'title')), 'the title element holds U+0020 then "world"').toBe(codePoints(' world'));
+  expect(codePoints(await storedTitle(ada, lead)), "Y.Text('title') holds U+0020 then \"world\"").toBe(codePoints(' world'));
+
+  // A word pasted after a typed space: the paste goes through the title's own onPaste, not the engine.
+  const meeting = await ui.createNote(ada);
+  await ada.page.keyboard.type('Meeting ');
+  ada.typed({ docId: meeting, field: 'title', text: 'Meeting ', ordered: true });
+  await ui.title(ada, meeting).evaluate((element, text) => {
+    const data = new DataTransfer();
+    data.setData('text/plain', text);
+    element.dispatchEvent(new ClipboardEvent('paste', { bubbles: true, cancelable: true, clipboardData: data }));
+  }, '2026');
+  await ui.waitAcked(ada, meeting);
+  const want = codePoints('Meeting 2026');
+  expect(codePoints(await ui.fieldText(ada, meeting, 'title')), 'the title element holds "Meeting", U+0020, "2026"').toBe(want);
+  expect(codePoints(await storedTitle(ada, meeting)), "Y.Text('title') holds \"Meeting\", U+0020, \"2026\"").toBe(want);
+  await expect.poll(async () => codePoints((await listed(ada, meeting))?.title), { message: 'the listed title holds "Meeting", U+0020, "2026"', timeout: RENAME_MS }).toBe(want);
+  await expect.poll(async () => codePoints(await rowTitle(ada, meeting)), { message: 'the sidebar row holds "Meeting", U+0020, "2026"', timeout: RENAME_MS }).toBe(want);
 });
 
 test('j02-title: @tierA Rename in a row menu focuses the bound title, and the name typed after it lands @p:R2@1 @p:col-5', async ({ actors }) => {
