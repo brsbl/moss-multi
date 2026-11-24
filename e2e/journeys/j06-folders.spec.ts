@@ -17,6 +17,7 @@ import {
 } from '../lib/contract.ts';
 import { grant } from '../lib/grants.ts';
 import { pageSockets } from '../lib/invariants.ts';
+import { watchNotices } from '../lib/notice-watch.ts';
 import type { Principal } from '../lib/principals.ts';
 import { expect, test, ui } from '../lib/test.ts';
 import { TRASH_COPY } from '../../packages/protocol/src/retention.ts';
@@ -124,6 +125,8 @@ test('j06-folders: from an empty workspace, create, nest, fill, rename and trash
   await expect(ui.folderRow(ben, 'Projects'), "Ben's sidebar shows Ada's folder").toBeVisible();
   expect(await ui.fieldText(ben, docId, 'body')).toBe(NOTE_TEXT);
 
+  // Ada's note holds one notice at every moment (T9.50a).
+  const watch = await watchNotices(ada.page);
   await ui.folderRow(ada, 'Projects').click({ button: 'right' });
   await ada.page.getByRole('menuitem', { name: 'Trash Folder', exact: true }).click();
   await ada.page.locator('[data-remote-web-surface-blocking-dialog]').getByRole('button', { name: 'Trash', exact: true }).click();
@@ -142,6 +145,7 @@ test('j06-folders: from an empty workspace, create, nest, fill, rename and trash
     await expect(noteRow(actor, docId), `${actor.label}: the note leaves the sidebar`).toHaveCount(0, { timeout: PEER_SIDEBAR_MS });
     await expectNoCodedErrors(actor);
   }
+  expect(await watch.stop(), 'ada: one notice at every moment').toEqual([]);
   // Typing into the terminal note does nothing.
   await ui.body(ben, docId).click({ force: true });
   await ben.page.keyboard.type('zombie');
