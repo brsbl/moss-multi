@@ -220,7 +220,7 @@ async function stopWorkerd(child) {
   await Promise.race([new Promise((resolve) => child.once('exit', resolve)), new Promise((resolve) => setTimeout(resolve, 5_000))]);
 }
 
-async function call(origin, path, init) {
+export async function call(origin, path, init) {
   const response = await fetch(`${origin}${path}`, { ...init, signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
   const body = await response.text();
   if (!response.ok) throw new Error(`${path}: HTTP ${response.status} ${body.slice(0, 200)}`);
