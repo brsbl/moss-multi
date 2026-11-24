@@ -1163,3 +1163,78 @@ test('j08 compact: Share names a note from its first frame, while its lists load
   await ada.page.keyboard.press('Escape');
   await expect(plain.dialog).toBeHidden();
 });
+
+test('j08 compact: Share reopened on a note names it as it is now, after a rename while its lists load and when one fails, and once an untitled note has a title (T9.50b) @p:ppl-2@2', async ({ actors, stack }) => {
+  const ada = await openShell(actors, 'ada');
+  actors.solo('one owner reads her own Share dialogs');
+  const made = async (data: { title?: string }) => {
+    const note = await ada.context.request.post('/api/docs', { headers: { origin: stack.baseUrl }, data });
+    expect(note.status(), 'declared setup: a note').toBe(201);
+    return ((await note.json()) as { doc: { id: string } }).doc.id;
+  };
+  const header = (dialog: Locator) => dialog.locator('p:not(.sr-only)').first();
+  /** Opens Share, lets its reads answer, then closes it. */
+  const openAndClose = async (docId: string, line: string) => {
+    const dialog = await ui.openShare(ada, docId);
+    await expect(dialog.getByRole('list', { name: 'People with access' }), 'its lists load').toBeVisible();
+    await expect(header(dialog)).toHaveText(line);
+    await ada.page.keyboard.press('Escape');
+    await expect(dialog).toBeHidden();
+  };
+  /** Types `name` over the note's title, as a person does, and waits until the window's tab shows it. */
+  const retitle = async (docId: string, name: string) => {
+    await ui.title(ada, docId).click();
+    await ada.page.keyboard.press(process.platform === 'darwin' ? 'Meta+A' : 'Control+A');
+    await ada.page.keyboard.type(name);
+    ada.typed({ docId, field: 'title', text: name, ordered: true });
+    await ui.waitAcked(ada, docId);
+    await expect(ada.page, 'the window shows the new title').toHaveTitle(new RegExp(`^${name} — `));
+  };
+  /** Reopens Share on `docId` with its three reads (members, links, invites) held unanswered; `release` answers them. */
+  const reopenHeld = async (docId: string) => {
+    const held: Route[] = [];
+    let holding = true;
+    for (const list of ['members', 'links', 'invites']) {
+      await ada.page.route(`**/api/docs/${docId}/${list}`, async (route) => {
+        if (holding && route.request().method() === 'GET') held.push(route);
+        else await route.fallback();
+      });
+    }
+    const dialog = await ui.openShare(ada, docId);
+    await expect.poll(() => held.length, { message: 'the three reads are held' }).toBe(3);
+    const release = async (answer: (route: Route) => Promise<void>) => {
+      holding = false;
+      for (const route of held) await answer(route);
+    };
+    return { dialog, release };
+  };
+
+  const titled = await made({ title: 'Packing list' });
+  await ada.goto(`/d/${titled}`);
+  await ui.waitOpen(ada, titled, 'live');
+  await openAndClose(titled, 'Note “Packing list”');
+  await retitle(titled, 'Packing list for June');
+  const renamed = await reopenHeld(titled);
+  await expect(header(renamed.dialog), 'the reopened dialog names the new title while its lists load').toHaveText('Note “Packing list for June”');
+  ada.expectHttp(403, `/api/docs/${titled}/links`);
+  await renamed.release((route) => (route.request().url().endsWith('/links')
+    ? route.fulfill({ status: 403, contentType: 'application/json', body: JSON.stringify({ error: 'forbidden' }) })
+    : route.fallback()));
+  await expect(renamed.dialog.getByText('Couldn’t load who has access. Close and open Share to try again.', { exact: true }), 'the load sentence shows')
+    .toBeVisible();
+  await expect(header(renamed.dialog), 'a failed read keeps the new title').toHaveText('Note “Packing list for June”');
+  await ada.page.keyboard.press('Escape');
+  await expect(renamed.dialog).toBeHidden();
+
+  const untitled = await made({});
+  await ada.goto(`/d/${untitled}`);
+  await ui.waitOpen(ada, untitled, 'live');
+  await openAndClose(untitled, 'Note');
+  await retitle(untitled, 'Day trip');
+  const named = await reopenHeld(untitled);
+  await expect(header(named.dialog), 'the reopened dialog names the title the note has now').toHaveText('Note “Day trip”');
+  await named.release((route) => route.fallback());
+  await expect(named.dialog.getByRole('list', { name: 'People with access' }), 'its lists load once answered').toBeVisible();
+  await ada.page.keyboard.press('Escape');
+  await expect(named.dialog).toBeHidden();
+});
