@@ -1,8 +1,7 @@
 // What pristine moss does with a click beside a code block, on its line numbers (T9.52b): the oracle's demo note,
 // whose `ts` block is e2e/fixtures/demo-note.md:42. Outputs: test-results/parity/block-click.json. Pinned to what moss
 // at the pin does, so a re-pin that changes it fails here: the block's React click handler selects it and Lexical's
-// own click listener clears that node selection inside the same click, so no outline shows and nothing is selected
-// (ours keeps the block selected instead; DEVIATIONS 40, DecoratorBlockPlugin `block-click-select` seam).
+// own click listener clears that node selection inside the same click, so no outline shows and nothing is selected.
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { expect, test } from '@playwright/test';

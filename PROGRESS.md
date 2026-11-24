@@ -172,11 +172,14 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-11-17 — T4.V verified: comments now run on m3's note size limits, lean layout and in-place export, so a comment, reply, resolve or sidecar import counts against the note's structure guard and a refused comment write names the limit, with the full lane green on the m4 head.
 - 2026-11-18 — T4.W verified: comments now run on m3's paste rollback, so a paste's held deletes go out on the comments path too, and a comment on words a paste moved follows them onto the pasted text instead of detaching.
 
-### T9.52b — what the block click seam does not change (deviation 40)
+### T9.52b — a click beside a block, and the comment shortcut leg
 
-- A read-only body does not mount DecoratorBlockPlugin (`{!readOnly && <DecoratorBlockPlugin />}` in `MarkdownEditor.tsx`), so a commenter's or viewer's click beside a block still loses its outline, as at the pin. The harm is small: there the comment shortcut is offered on text only, and a block comment goes through the block's header button (`apps/web/src/host/comments/CommentOnlyTools.tsx`).
-- The comment shortcut still reads its target from the toolbar's React state before the live selection (`openCommentInput` in `MarkdownEditor.tsx`), so with nothing selected it can still open a composer on a block clicked earlier when no selection change came in between.
-- `m0` to `m3` keep the pin's click until they sit below a branch that has the seam.
+- A click beside a block (a code block's line numbers, a block's frame) does not keep it selected, as in Moss at the pin: the block's click handler selects it and `@lexical/rich-text` clears that selection inside the same click. `e2e/parity/block-click.spec.ts` holds that behavior.
+- No fix was kept, because claiming those clicks also keeps a block selected through clicks inside its own editing surface, and then a whole block is removed where nothing was before:
+  - a stroke drawn on a selected canvas, then Backspace or Delete, removes the canvas;
+  - a chart clicked, Edit, text in its JSON selected and cut, removes the chart;
+  - on macOS, a click inside a code block's open text, then Ctrl+H or Ctrl+D, removes the code block.
+- The j15 comment shortcut leg now selects the code block from the keyboard: the caret at the end of the paragraph above, ArrowDown, the selection outline, then the shortcut.
 
 ## T1.1s identity audit
 
