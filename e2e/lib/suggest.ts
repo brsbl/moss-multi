@@ -67,8 +67,8 @@ const NOTE = 'Keep every original word.\n\nSecond paragraph here.';
 
 type Actors = Parameters<Parameters<typeof test>[2]>[0]['actors'];
 
-/** A note owned by ada that ben can suggest on. */
-export async function sharedNote(actors: Actors, markdown = NOTE) {
+/** A note owned by ada that ben can suggest on; with `severable`, ben's doc sockets can be dropped. */
+export async function sharedNote(actors: Actors, markdown = NOTE, { severable = false } = {}) {
   const adaPrincipal = await actors.principal('ada');
   const ada = await actors.open(adaPrincipal);
   const response = await ada.context.request.post('/api/docs', { headers: { origin: new URL(ada.page.url()).origin }, data: { markdown } });
@@ -76,7 +76,7 @@ export async function sharedNote(actors: Actors, markdown = NOTE) {
   const docId = ((await response.json()) as { doc: { id: string } }).doc.id;
   const benPrincipal = await actors.principal('ben');
   await grantDoc(ada, docId, benPrincipal, 'suggester');
-  const ben = await actors.session(benPrincipal);
+  const ben = await actors.session(benPrincipal, { severable });
   return { ada, ben, docId, adaPrincipal };
 }
 
