@@ -2,6 +2,7 @@
 // attribute, never by position. The reliable typing path is title, then Enter, then body (L§4.20).
 import { expect, type Locator, type Page } from '@playwright/test';
 import type { Actor } from './actors.ts';
+import { authHeadroom } from './auth-pace.ts';
 import {
   APP_STATE_ATTR, BODY_BINDING_ATTR, DOC_STATE_ATTR, EDITOR_PANE_ATTR, LEXICAL_EDITOR_SELECTOR, NAMES, paneSelector,
   SIDEBAR_ROW_ATTR, SYNC_UNACKED_ATTR, TITLE_BINDING_ATTR,
@@ -30,6 +31,7 @@ export async function signInThroughCard(actor: Actor, principal: Principal, { pa
   const form = loginForm(actor, 'Sign in');
   await form.getByLabel('Email', { exact: true }).fill(principal.email);
   await form.getByLabel('Password', { exact: true }).fill(password);
+  await authHeadroom('sign-in');
   await form.getByRole('button', { name: 'Sign in', exact: true }).click();
 }
 
@@ -41,6 +43,7 @@ export async function signUpThroughCard(actor: Actor, principal: Principal): Pro
   await form.getByLabel('Name', { exact: true }).fill(principal.name);
   await form.getByLabel('Email', { exact: true }).fill(principal.email);
   await form.getByLabel('Password', { exact: true }).fill(principal.password);
+  await authHeadroom('sign-up');
   await form.getByRole('button', { name: 'Create account', exact: true }).click();
 }
 
@@ -388,7 +391,13 @@ export async function typeTitle(actor: Actor, docId: string, text: string, { ent
 
 /** Types at the end of the body. */
 export async function typeBody(actor: Actor, docId: string, text: string): Promise<void> {
-  await body(actor, docId).click();
+  // A new note's title takes focus once it opens (moss's focusTitle waits for that), which off loopback can come after
+  // the body binds: the body is clicked once the title is open, until it holds the focus.
+  await pane(actor, docId).locator(`[${TITLE_BINDING_ATTR}="live"]`).waitFor({ timeout: 5_000 }).catch(() => undefined);
+  await expect(async () => {
+    await body(actor, docId).click();
+    expect(await body(actor, docId).evaluate((element) => element.contains(document.activeElement)), `${actor.label}: the body has the focus`).toBe(true);
+  }).toPass({ timeout: 10_000 });
   await actor.page.keyboard.press(toEnd);
   await actor.page.keyboard.type(text);
   actor.typed({ docId, field: 'body', text, ordered: true });

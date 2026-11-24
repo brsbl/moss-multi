@@ -92,6 +92,8 @@ export const GROUPS = {
   review: ['j16-review'],
   // Strikes, joins, pastes and highlights made while suggesting, through the card and accept.
   reviewStrikes: ['j16-review-strikes'],
+  // A review racing its card's preview (T8.2), apart so the review shard fits its budget.
+  reviewRace: ['j16-review-race'],
   // Edit-mode wedges over the gap cursor and their previews; formulas committed while suggesting.
   suggestMarks: ['j16-marks'],
   // The strike census: every block kind on each side of a boundary, every edge key and strike position.

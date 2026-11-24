@@ -1,23 +1,31 @@
 // The rest of e2e/lib proven able to fail: exact-bytes helpers, the allowlist expiry, the principal guard
 // (invariant 8), the hibernation proof, infra classification, phase-clock budgets and percentiles, the shard guard,
 // the sever, the reach sweep and the UI verbs.
-import { chmodSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { execFile } from 'node:child_process';
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { promisify } from 'node:util';
 import { request, type Page, type TestInfo } from '@playwright/test';
-import { Actors } from '../lib/actors.ts';
+import { Actors, recordsScreens } from '../lib/actors.ts';
 import { ALLOWLIST, expiredEntries, isAllowed, type AllowEntry } from '../lib/allowlist.ts';
-import { inductionProblems } from '../lib/hibernate.ts';
-import { browserLog, closeBrowserTimed } from '../lib/engine.ts';
-import { browserCrashIn, classifyInfra, closeEachConnection, InfraBlocked, isInfraBlocked } from '../lib/infra.ts';
+import { authHeadroom, paceAuth, recordAuth } from '../lib/auth-pace.ts';
+import { RequestBudget } from '../lib/budget.ts';
 import { BODY_BINDING_ATTR, DOC_ID_ATTR, EDITOR_PANE_ATTR, TITLE_BINDING_ATTR } from '../lib/contract.ts';
-import { socketProblems, typedFindings, type ActorView } from '../lib/invariants.ts';
+import { probeSocket } from '../lib/doc-client.ts';
+import { browserLog, closeBrowserTimed } from '../lib/engine.ts';
+import { inductionProblems, ownerProbe } from '../lib/hibernate.ts';
+import { browserCrashIn, classifyInfra, closeEachConnection, InfraBlocked, isInfraBlocked } from '../lib/infra.ts';
+import { awaitingRecovery, errorProblems, socketProblems, typedFindings, type ActorView } from '../lib/invariants.ts';
 import { budgetProblem, latencyRows, Measure, percentile } from '../lib/measure.ts';
-import { assertTestEmail, parseSetCookie, principalProblems } from '../lib/principals.ts';
+import { assertTestEmail, parseSetCookie, principalProblems, signIn } from '../lib/principals.ts';
 import MossReporter, { emptyShardProblem } from '../lib/reporter.ts';
 import { unreachableControls } from '../lib/reach.js';
 import { makeSeverable } from '../lib/sever.ts';
-import type { SocketEntry } from '../lib/telemetry.ts';
+import type { Stack } from '../lib/stack.ts';
+import { Telemetry, type SocketEntry } from '../lib/telemetry.ts';
 import { typedProblems, type Typed } from '../lib/text.ts';
 import * as ui from '../lib/ui.ts';
 import { expect, test } from './fixtures.ts';
@@ -153,6 +161,227 @@ test.describe('principals (invariant 8)', () => {
   });
 });
 
+test.describe('request budget', () => {
+  // Every request a shard sends the Worker counts: Node's fetch (setup's sign-ups and sign-ins with their retries, a
+  // leg's own pushes), Playwright API contexts, and child processes such as the CLI. Others and /assets/ do not.
+  test('counts Node fetch, API request contexts and child processes, and only the Worker', async ({ server }) => {
+    const dir = mkdtempSync(join(tmpdir(), 'budget-'));
+    const budget = new RequestBudget(join(dir, 'requests.json'), 4, server.url);
+    try {
+      budget.watchNode();
+      await (await fetch(`${server.url}/api/version`)).text();
+      await (await fetch(`${server.url}/assets/app.js`)).text();
+      expect(budget.count, 'Node fetch to the Worker, not /assets/').toBe(1);
+
+      const api = await request.newContext({ baseURL: server.url });
+      budget.watchApi(api);
+      await api.get('/api/version');
+      await api.post('/missing', { data: {} });
+      await api.dispose();
+      expect(budget.count, 'API request context, relative URLs included').toBe(3);
+
+      const child = "await fetch(process.argv[1] + '/api/version'); await fetch(process.argv[1] + '/assets/x.js');";
+      await promisify(execFile)(process.execPath, ['--input-type=module', '-e', child, server.url], { env: { PATH: process.env.PATH ?? '', ...budget.childEnv() } });
+      expect(budget.count, "a child process's fetch").toBe(4);
+      expect(budget.exceeded).toBe(false);
+      // A raw ws socket from Node (a protocol-level doc client), refused at the upgrade here: its handshake reached
+      // the Worker.
+      expect((await probeSocket(`${server.url}/refused`, 'd', null)).opened).toBe(false);
+      expect(budget.exceeded, 'a Node ws socket counts, and passes the budget').toBe(true);
+      expect(() => budget.assert('selftest')).toThrow(/5 Worker requests passed this run's budget of 4/);
+      expect(new RequestBudget(join(dir, 'requests.json'), 4, server.url).count, 'a restarted worker keeps counting').toBe(5);
+    } finally {
+      budget.unwatchNode();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+test.describe('doc sockets per document (invariant 3)', () => {
+  const socket = (openedAt: number, closedAt: number | null, document?: string | null): SocketEntry =>
+    ({ url: `ws://h/parties/doc-d-o/d?_pk=${openedAt}`, docId: 'd', epoch: 2, openedAt, closedAt, error: null, close: null, document });
+  test('two opens in one document fail, whichever epoch the navigation event gave them', () => {
+    expect(socketProblems([socket(0, 100, 'doc-a'), socket(200, null, 'doc-a')], new Map())).not.toEqual([]);
+    expect(socketProblems([socket(0, 100), socket(200, null)], new Map())).not.toEqual([]);
+  });
+  test("a socket the previous document opened as it unloaded is that document's, not the next one's", () => {
+    // WebKit can deliver the old document's socket after the new navigation's response, at the new epoch.
+    expect(socketProblems([socket(0, 100, 'doc-a'), socket(139, null, 'doc-b')], new Map())).toEqual([]);
+  });
+});
+
+test('the auth pace carries its counts to the next worker of the run (a restart after a failure), off the hook stack', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'auth-pace-'));
+  try {
+    const path = join(dir, 'auth-pace.json');
+    paceAuth('https://staging.example', path);
+    for (let i = 0; i < 9; i += 1) recordAuth('sign-in');
+    // A fresh worker reads them back, so its next sign-in waits out the window instead of meeting a 429.
+    paceAuth('https://staging.example', path);
+    test.info().setTimeout(0);
+    const started = Date.now();
+    const waited = authHeadroom('sign-in', 3).then(() => Date.now() - started);
+    const early = await Promise.race([waited, new Promise<number>((done) => setTimeout(() => done(-1), 1_000))]);
+    expect(early, 'the next sign-in waits').toBe(-1);
+    paceAuth(null);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test.describe('a network drop off loopback (invariants 1 and 3, T8.2)', () => {
+  const OFF = { offLoopback: true };
+  const socket = (openedAt: number, closedAt: number | null, code: number | null = null, extra: Partial<SocketEntry> = {}): SocketEntry => ({
+    url: `wss://h/parties/doc-d-o/d?_pk=${openedAt}`, docId: 'd', epoch: 2, openedAt, closedAt, error: null,
+    close: code === null ? null : String(code), code, document: 'doc-a', ...extra,
+  });
+  const synced = (openedAt: number) => socket(openedAt, null, null, { synced: true });
+  test('off loopback, one 1006 drop whose replacement reached sync passes', () => {
+    expect(socketProblems([socket(0, 100, 1006), synced(200)], new Map(), OFF)).toEqual([]);
+    expect(socketProblems([socket(0, 100, 1006, { error: 'socket error' }), synced(200)], new Map(), OFF)).toEqual([]);
+  });
+  test('off loopback, a drop whose replacement never reached sync fails', () => {
+    expect(socketProblems([socket(0, 100, 1006), socket(200, null)], new Map(), OFF)).not.toEqual([]);
+    expect(socketProblems([socket(0, 100, 1006)], new Map(), OFF)).not.toEqual([]);
+    // Only a later socket recovers it: the one before the drop synced, the one after never did.
+    expect(socketProblems([socket(0, 100, 1000, { synced: true }), socket(200, 300, 1006), socket(400, null)], new Map([['d', 1]]), OFF)).not.toEqual([]);
+  });
+  test('an unrecovered drop is awaited, whether its replacement is connecting, closed or not yet opened; a recovered one is not', () => {
+    expect(awaitingRecovery([socket(0, 100, 1006), socket(200, null)])).toBe(true);
+    expect(awaitingRecovery([socket(0, 100, 1006), synced(200)])).toBe(false);
+    expect(awaitingRecovery([socket(0, 100, 1006), socket(200, 300, 1000)])).toBe(true);
+    // The client waits out its reconnect delay before it opens the replacement.
+    expect(awaitingRecovery([socket(0, 100, 1006)])).toBe(true);
+    expect(awaitingRecovery([socket(0, null)])).toBe(false);
+  });
+  test('off loopback, a 1013 the journey did not declare fails, even recovered and within its declared reconnects', () => {
+    expect(socketProblems([socket(0, 100, 1013), synced(200)], new Map(), OFF)).not.toEqual([]);
+    expect(socketProblems([socket(0, 100, 1013), synced(200)], new Map([['d', 1]]), OFF)).not.toEqual([]);
+    expect(socketProblems([socket(0, 100, 1013), synced(200)], new Map([['d', 1]]), OFF, new Map([['d', 1]]))).toEqual([]);
+  });
+  test("a severable actor's routed socket keeps the server's close code, so its undeclared 1013 fails too", () => {
+    const telemetry = new Telemetry();
+    telemetry.routedSocket('wss://h/parties/doc-d-o/d?_pk=1').closed(1013, 'try again');
+    // The proxy marks a routed socket synced when its server leg relays sync step 2, as CDP does for a page socket.
+    telemetry.routedSocket('wss://h/parties/doc-d-o/d?_pk=2').received(Buffer.from([0, 1, 0]));
+    expect(telemetry.sockets[0]).toMatchObject({ code: 1013, close: '1013 try again' });
+    expect(telemetry.sockets[1].synced).toBe(true);
+    expect(socketProblems(telemetry.sockets, new Map([['d', 1]]), OFF)).toEqual(['d: 1 try-again closes (1013), 0 declared']);
+    // A close the proxy made itself (a sever) carries no server code.
+    const proxy = new Telemetry();
+    proxy.routedSocket('wss://h/parties/doc-d-o/d?_pk=1').closed();
+    expect(proxy.sockets[0].close).toBe('closed at the proxy');
+    expect(proxy.sockets[0].code ?? null).toBeNull();
+  });
+  test('on loopback the same drop fails, and off loopback a refusal, an unrecovered second drop or two sockets at once still fail', () => {
+    expect(socketProblems([socket(0, 100, 1006), synced(200)], new Map())).not.toEqual([]);
+    expect(socketProblems([socket(0, 100, 4408), synced(200)], new Map(), OFF)).not.toEqual([]);
+    // A second drop that no later socket recovered fails, even when the page opens no third socket.
+    expect(socketProblems([socket(0, 100, 1006), socket(200, 300, 1006, { synced: true })], new Map(), OFF)).toEqual([
+      'd: a socket dropped (1006) and no later socket of its document reached sync',
+    ]);
+    expect(socketProblems([socket(0, 300, 1006), synced(200)], new Map(), OFF)).not.toEqual([]);
+  });
+  test('off loopback, 2 recovered drops pass and are both reported; 3 fail, as does any drop that never recovered (T8.F)', async () => {
+    const { networkDrops } = await import('../lib/invariants.ts');
+    const two = [socket(0, 100, 1006), socket(200, 300, 1006, { synced: true, syncedAt: 250 }), socket(400, null, null, { synced: true, syncedAt: 1_400 })];
+    expect(socketProblems(two, new Map(), OFF)).toEqual([]);
+    expect(networkDrops(two)).toEqual([
+      { docId: 'd', at: 100, recovered: true, recoveryMs: 150 },
+      { docId: 'd', at: 300, recovered: true, recoveryMs: 1_100 },
+    ]);
+    // Their browser failure lines are the drops invariant 3 judged, not console errors.
+    const lines = two.slice(0, 2).map((s) => ({ type: 'error', text: `WebSocket connection to '${s.url}' failed: x`, url: '', at: s.closedAt ?? 0 }));
+    expect(errorProblems({ console: lines, pageErrors: [], http: [], sockets: two }, [], 'j01', OFF)).toEqual([]);
+    // A third, in another document: the run's allowance is passed in this one leg.
+    const other = (openedAt: number, closedAt: number | null, code: number | null, extra: Partial<SocketEntry> = {}) => socket(openedAt, closedAt, code, { document: 'doc-b', ...extra });
+    const three = [...two, other(500, 600, 1006), other(700, null, null, { synced: true, syncedAt: 800 })];
+    expect(socketProblems(three, new Map(), OFF)).toEqual(['3 recovered network drops (1006), 2 allowed in a run']);
+    expect(networkDrops(three)).toHaveLength(3);
+    const lost = [socket(0, 100, 1006), socket(200, null)];
+    expect(socketProblems(lost, new Map(), OFF)).toContain('d: a socket dropped (1006) and no later socket of its document reached sync');
+    expect(networkDrops(lost)).toEqual([{ docId: 'd', at: 100, recovered: false, recoveryMs: null }]);
+  });
+  test('off loopback, a drop that resynced to a replica differing from the server\'s export fails and is not recovered (T8.F)', async () => {
+    const { networkDrops } = await import('../lib/invariants.ts');
+    const one = [socket(0, 100, 1006), socket(200, null, null, { synced: true, syncedAt: 300 })];
+    expect(socketProblems(one, new Map(), { ...OFF, diverged: new Set(['d']) })).toContain(
+      "d: a socket dropped (1006) and resynced, but its replica differs from the server's export",
+    );
+    expect(networkDrops(one, new Map([['d', 'different']]))).toEqual([{ docId: 'd', at: 100, recovered: false, recoveryMs: 200, export: 'different' }]);
+    // The same drop with an identical export, or with no pane left to compare, is the reconnect path working.
+    expect(socketProblems(one, new Map(), { ...OFF, diverged: new Set() })).toEqual([]);
+    expect(networkDrops(one, new Map([['d', 'same']]))).toEqual([{ docId: 'd', at: 100, recovered: true, recoveryMs: 200, export: 'same' }]);
+    expect(networkDrops(one, new Map([['d', 'closed']]))[0]).toMatchObject({ recovered: true, export: 'closed' });
+  });
+  test('a resynced replica matches a fresh load only on the same text; across modes only the title is compared (T8.F)', async () => {
+    const { sameExport } = await import('../lib/actors.ts');
+    const shown = (mode: string, title: string, body: string) => ({ mode, title, body });
+    expect(sameExport(shown('edit', 'T', 'one two'), shown('edit', 'T', 'one two'))).toBe(true);
+    expect(sameExport(shown('edit', 'T', 'one two'), shown('edit', 'T', 'one'))).toBe(false);
+    expect(sameExport(shown('edit', 'T', 'x'), shown('edit', 'T2', 'x'))).toBe(false);
+    expect(sameExport(shown('suggest', 'T', 'one two'), shown('edit', 'T', 'one'))).toBe(true);
+    expect(sameExport(shown('edit', 'T', 'x'), null)).toBe(false);
+  });
+  test('a socket the page closed while it was still connecting hears 1006 but is no network drop', async () => {
+    const { networkDrops } = await import('../lib/invariants.ts');
+    const asked = [socket(0, 100, 1006, { close: 'asked -, then 1006' }), synced(200)];
+    expect(networkDrops(asked)).toEqual([]);
+    expect(awaitingRecovery([asked[0]])).toBe(false);
+    expect(socketProblems(asked, new Map([['d', 1]]), OFF)).toEqual([]);
+    // Not declared, its reopen is still counted as any other.
+    expect(socketProblems(asked, new Map(), OFF)).not.toEqual([]);
+    // The browser's line for that close is the page's own; another socket's is still a console error.
+    const line = (url: string) => [{ type: 'error', text: `WebSocket connection to '${url}' failed: x`, url: '', at: 100 }];
+    expect(errorProblems({ console: line(asked[0].url), pageErrors: [], http: [], sockets: asked }, [], 'j01', OFF)).toEqual([]);
+    expect(errorProblems({ console: line('wss://h/parties/doc-d-o/d?_pk=9'), pageErrors: [], http: [], sockets: asked }, [], 'j01', OFF)).not.toEqual([]);
+  });
+  test("the page's close of a connecting socket is asked even when the browser's close event reaches the census first", async () => {
+    const { networkDrops } = await import('../lib/invariants.ts');
+    const telemetry = new Telemetry();
+    const url = 'wss://h/parties/doc-d-o/d?_pk=1';
+    const entry = telemetry.socketOpened(url);
+    if (!entry) throw new Error('not a doc socket');
+    // The page's close binding and the browser's close event come over different channels, in either order.
+    entry.closedAt = entry.openedAt + 50;
+    telemetry.pageClosed(url, entry.openedAt + 10, 'asked -');
+    telemetry.closeHeard(url, '1006');
+    expect(entry).toMatchObject({ close: 'asked -, then 1006', code: 1006, closedAt: entry.openedAt + 10 });
+    expect(networkDrops(telemetry.sockets)).toEqual([]);
+    // A socket the page never asked to close is still a drop.
+    const dropped = new Telemetry();
+    const lost = dropped.socketOpened('wss://h/parties/doc-d-o/d?_pk=2');
+    if (!lost) throw new Error('not a doc socket');
+    lost.closedAt = lost.openedAt + 50;
+    dropped.closeHeard(lost.url, '1006');
+    expect(networkDrops(dropped.sockets)).toHaveLength(1);
+  });
+  test("off loopback only the recovered drop's own log line, while it lived, is left to invariant 3", () => {
+    const dropped = socket(0, 100, 1006);
+    const census = (text: string, at = 100, sockets = [dropped, synced(200)]) => ({
+      console: [{ type: 'error', text, url: '', at }], pageErrors: [], http: [], sockets,
+    });
+    const drop = `WebSocket connection to '${dropped.url}' failed: The network connection was lost.`;
+    expect(errorProblems(census(drop), [], 'j01', OFF)).toEqual([]);
+    expect(errorProblems(census(drop), [], 'j01')).not.toEqual([]);
+    expect(errorProblems(census("WebSocket connection to 'wss://h/parties/doc-d-o/d?_pk=200' failed: x"), [], 'j01', OFF)).not.toEqual([]);
+    // Not recovered, or logged long after that socket closed: an error.
+    expect(errorProblems(census(drop, 100, [dropped, socket(200, null)]), [], 'j01', OFF)).not.toEqual([]);
+    expect(errorProblems(census(drop, 60_000), [], 'j01', OFF)).not.toEqual([]);
+    // A 1013's log line is never exempt.
+    const refused = socket(0, 100, 1013);
+    expect(errorProblems(census(`WebSocket connection to '${refused.url}' failed: x`, 100, [refused, synced(200)]), [], 'j01', OFF)).not.toEqual([]);
+  });
+});
+
+test.describe('recording off loopback (T8.Ds)', () => {
+  test('screenshots are taken against a loopback stack or a fixture page only', () => {
+    expect(recordsScreens(null)).toBe(true);
+    expect(recordsScreens({ baseUrl: 'http://127.0.0.1:8850' })).toBe(true);
+    expect(recordsScreens({ baseUrl: 'https://moss-multi-staging.example.workers.dev' })).toBe(false);
+  });
+});
+
 test.describe('hibernation proof', () => {
   const base = { instanceId: 'a', constructedAt: 1_000 };
   test('a new instance built by the decisive action is induced', () => {
@@ -168,6 +397,106 @@ test.describe('hibernation proof', () => {
     expect(inductionProblems(base, { instanceId: 'b', constructedAt: 99_000 }, 100_000, 110_000)).not.toEqual([]);
     expect(inductionProblems(base, { instanceId: 'b', constructedAt: 110_500 }, 100_000, 110_000)).not.toEqual([]);
   });
+  // Off the hook stack sign-ins are paced at 10 a minute, so a probe that signed in each time could wait out the
+  // window after the decisive action while the woken DO idled out again; the probe itself then built the instance.
+  test('the owner probe signs in once, so a probe after the decisive action never waits on the sign-in limit', async () => {
+    let signIns = 0;
+    const server = createServer((req, res) => {
+      if (req.method === 'POST' && req.url === '/api/auth/sign-in/email') {
+        signIns += 1;
+        res.writeHead(200, { 'content-type': 'application/json', 'set-cookie': `session=s${signIns}; Path=/; HttpOnly` });
+        res.end('{}');
+        return;
+      }
+      const doc = /^\/api\/docs\/([^/]+)\/instance$/.exec(req.url ?? '');
+      const ok = doc && req.headers.cookie === 'session=s1';
+      res.writeHead(ok ? 200 : 404, { 'content-type': 'application/json' });
+      res.end(JSON.stringify(ok ? { instanceId: `i-${doc[1]}`, constructedAt: 1 } : { error: 'not-found' }));
+    });
+    await new Promise<void>((done) => server.listen(0, '127.0.0.1', done));
+    try {
+      const baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+      const probe = ownerProbe({ baseUrl } as Stack, { label: 'ada', name: 'Ada', email: 'mm-selftest-ada-1@example.invalid', password: 'p', id: null });
+      expect(await Promise.all([probe('d1'), probe('d2')])).toEqual([{ instanceId: 'i-d1', constructedAt: 1 }, { instanceId: 'i-d2', constructedAt: 1 }]);
+      expect(await probe('d1')).toEqual({ instanceId: 'i-d1', constructedAt: 1 });
+      expect(signIns, 'one sign-in for every probe').toBe(1);
+    } finally {
+      await new Promise((done) => server.close(done));
+    }
+  });
+});
+
+test.describe('setup resends', () => {
+  // The run log and summary count these (scripts/deploy/canary-reporter.mjs), so a resend is never silent.
+  test('a sign-in resent after a 429 and after a lost forward is recorded on the test, with its count', async () => {
+    let posts = 0;
+    const server = createServer((_req, res) => {
+      posts += 1;
+      if (posts === 1) {
+        res.writeHead(429, { 'x-retry-after': '1' });
+        res.end('limited');
+      } else if (posts === 2) {
+        res.writeHead(503);
+        res.end('Your worker restarted mid-request.');
+      } else {
+        res.writeHead(200, { 'content-type': 'application/json', 'set-cookie': 'session=s; Path=/; HttpOnly' });
+        res.end('{}');
+      }
+    });
+    await new Promise<void>((done) => server.listen(0, '127.0.0.1', done));
+    try {
+      const baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+      await signIn(baseUrl, { label: 'ada', name: 'Ada', email: 'mm-selftest-resend-1@example.invalid', password: 'p', id: null });
+      expect(posts).toBe(3);
+      const resends = test.info().annotations.filter((a) => a.type === 'setup-resend').map((a) => JSON.parse(a.description ?? ''));
+      expect(resends).toEqual([{ kind: 'sign-in', cause: '429', count: 1 }, { kind: 'sign-in', cause: 'lost forward', count: 1 }]);
+    } finally {
+      await new Promise((done) => server.close(done));
+    }
+  });
+});
+
+test.describe('setup on a stale connection', () => {
+  // A pooled keep-alive connection the far end closed as a setup request went out on it fails as "fetch failed"
+  // (other side closed) before any answer: the request is sent once more on a new connection, and counted.
+  test('a sign-in whose connection closed under it is resent once and recorded', async () => {
+    let posts = 0;
+    const server = createServer((req, res) => {
+      posts += 1;
+      if (posts === 1) {
+        req.socket.destroy();
+        return;
+      }
+      res.writeHead(200, { 'content-type': 'application/json', 'set-cookie': 'session=s; Path=/; HttpOnly' });
+      res.end('{}');
+    });
+    await new Promise<void>((done) => server.listen(0, '127.0.0.1', done));
+    try {
+      const baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+      await signIn(baseUrl, { label: 'ada', name: 'Ada', email: 'mm-selftest-stale-1@example.invalid', password: 'p', id: null });
+      expect(posts).toBe(2);
+      const resends = test.info().annotations.filter((a) => a.type === 'setup-resend').map((a) => JSON.parse(a.description ?? ''));
+      expect(resends).toEqual([{ kind: 'sign-in', cause: 'stale connection', count: 1 }]);
+    } finally {
+      await new Promise((done) => server.close(done));
+    }
+  });
+
+  test('a second close is not resent again', async () => {
+    let posts = 0;
+    const server = createServer((req) => {
+      posts += 1;
+      req.socket.destroy();
+    });
+    await new Promise<void>((done) => server.listen(0, '127.0.0.1', done));
+    try {
+      const baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+      await expect(signIn(baseUrl, { label: 'ada', name: 'Ada', email: 'mm-selftest-stale-2@example.invalid', password: 'p', id: null })).rejects.toThrow(/fetch failed/);
+      expect(posts).toBe(2);
+    } finally {
+      await new Promise((done) => server.close(done));
+    }
+  });
 });
 
 test.describe('infrastructure classification', () => {
@@ -175,6 +504,12 @@ test.describe('infrastructure classification', () => {
     expect(classifyInfra('<!DOCTYPE html><!--[if lt IE 7]> <html class="no-js ie6 oldie" lang="en-US"> <![endif]--> cloudflare')).not.toBeNull();
     expect(classifyInfra('D1_ERROR: Too many requests queued (7429)')).not.toBeNull();
     expect(classifyInfra('error code: 1101')).not.toBeNull();
+    // A Cloudflare page for the Worker's own exception or limit is named as such, never as an edge error page.
+    const page = (code: string, title: string) =>
+      `<!DOCTYPE html><!--[if lt IE 7]> <html class="no-js ie6 oldie" lang="en-US"> <![endif]--><title>${title} | Cloudflare</title><span class="cf-error-code">${code}</span>`;
+    expect(classifyInfra(page('1101', 'Worker threw exception'))).toBe('Worker 1101');
+    expect(classifyInfra(page('1102', 'Worker exceeded resource limits'))).toBe('Worker 1102');
+    expect(classifyInfra(page('502', 'Bad gateway'))).toBe('a Cloudflare error page');
     expect(classifyInfra('fetch failed: connect ECONNREFUSED 127.0.0.1:8850')).not.toBeNull();
   });
   test('product answers are not', () => {

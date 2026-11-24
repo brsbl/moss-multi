@@ -1,6 +1,6 @@
 # moss-multi progress
 
-**Overall: 94% done** (285 of 302 planned tasks verified)
+**Overall: 94% done** (286 of 305 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
@@ -12,8 +12,8 @@
 | M5 Suggestions | Suggest mode, vetting, accept/reject | 31 / 31 | in progress |
 | M6 History | Versions, view, diff, identity-preserving restore | 20 / 20 | in progress |
 | M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 26 / 26 | in progress |
-| M8 Ship | Everything on a permanent staging URL with demo content | 17 / 17 | |
-| M9 Polish | Understand every control without help: fixes found by using the whole product | 45 / 43 | |
+| M8 Ship | Everything on a permanent staging URL with demo content | 18 / 19 | |
+| M9 Polish | Understand every control without help: fixes found by using the whole product | 45 / 44 | |
 
 A task counts only after an independent checker passes it on green CI. Each milestone also ends with the cumulative journey suite green in Chromium and WebKit and a naive-user critic pass.
 
@@ -347,6 +347,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-11-21 — T8.V verified: staging and the pilot now carry m3's text, structure and storage limits, the lean stored layout, in-place export and paste rollback, and an outdated protocol-1 web bundle is refused on its doc socket (4426) and REST writes (426) before it can write the old layout.
 - 2026-11-22 — T9.48b measured: a 10,000-item check-list paste held the Chrome tab 2.9-4.6 s at a time and 5.3-6.3 s in all ([run 45018468321](https://github.com/brsbl/moss-multi/actions/runs/45018468321)); with the comment and suggestion highlight rules naming the editor root it holds it 0.9-1.0 s at a time and 2.2-3.5 s in all ([run 45024599133](https://github.com/brsbl/moss-multi/actions/runs/45024599133), 10 of 10 under 2 s).
 - 2026-11-22 — T9.48g measured: WebKit's network process crashed in 39 of 37,264 WebKit e2e jobs since Oct 1, on every runner image since Oct 5; a product-free page reproduced its silent hang once in 800 contexts, only with Playwright's request interception on, with libsoup reporting a reference count below zero in that process (details under T9.48g below).
+- 2026-11-23 — T8.F verified: the full journey suite, the security sweep (52 of 52) and the demo pass on staging on commit 7b55f7a, with each recovered connection drop listed in the run summary and a run failing past 2 recovered drops or on any unrecovered one.
 
 ### T9.48b — the check-list paste stall
 
@@ -705,6 +706,51 @@ Parked from the M0 checker and critic passes, each with the task that owns it.
 - T9.1 (The Review button says what it does and never leaves a note silently read-only) checker P2: Escape leaves Review in every reviewing pane, not only the focused one — each visible ReviewBand adds its own window keydown listener and calls leaveReview for its own doc, so with two notes in split view both in Review one Escape takes both out and remounts both; Done acts on one pane only.
 - T9.1 (The Review button says what it does and never leaves a note silently read-only) checker P2: j16-review's typing probe blurs the active element before keyboard.type('zz'), so the keys never reach the note and the not-toContainText check would pass even if the body took typing (the readonly binding assertion still covers it).
 - T9.1 (The Review button says what it does and never leaves a note silently read-only) checker P2: the one-second check starts only after waiting for the accepted card and reads data-edit-mode, which is set when the remount starts; whether the body is live is checked later with a 15 s allowance.
+
+### From T8.F's checker (fec015f, 2026-11-23)
+
+- T8.F checker P2 (Slow catch-up after a lost sync message whose acknowledgement is also lost, 10 to 14 s for code, HTML and formula blocks): payload asks are skipped while the outbox is busy and a lost ack keeps it busy for about 10 s; nothing is lost → T8.G (branch t/T8.G), accepted by a control and treatment pair on staging.
+- T8.F checker P2 (Staging is at its growth cap and cannot start a full-suite deploy): 29,360 note objects against a cap of 30,000 with 1,200 needed; prune or change the cap before the next full-suite run.
+- T8.F checker P2 (The connection-drop gate compares text only, counts a closed pane as recovered, and reads "different" when the fresh load cannot open the note): e2e/lib/actors.ts sameExport and compareExport, e2e/lib/invariants.ts networkDrops; record what differed, the pane's last close code and whether the fresh load opened.
+- T8.F checker P2 (Whether a suggester's text typed around a connection drop survives the 60 s suggestion cooldown, close code 4429, is not yet verified): in the red staging runs 9 of 22 "different" comparisons were a suggester whose replacement socket the server closed with 4429; being checked separately in CI, and a loss would be a launch blocker of its own.
+- T8.F checker P2 (13 Worker exceptions in one minute on staging, HTTP 500 on comments, access, backlinks, content, have no known cause): deploy 45245524556, 21:40 UTC on 2026-11-23, during the degraded route.
+- T8.F checker P2 (A failed-only re-run of a suite shard is not gated against earlier product failures): retry-gate.mjs admits retry 0 and seed.mjs carries no leg verdicts across attempts.
+- T8.F checker P2 (The j15 comment-composer leg repeats its gesture until the composer opens): the selection hand-back race behind it should be fixed in the product.
+- T8.F checker P2 (The demo screenshots on the pull request predate the final build): nothing visible changed since; re-capture with the next staging deploy.
+
+### From T8.F's staging runs (2026-11-22 to 23)
+
+**Where the launch check stands.** It closes on commit `7b55f7a`, the build that passed on staging: deploy 45135817095 ran the whole suite in one attempt (823 legs, 1 recovered drop whose reloaded copy matched the server), the security sweep passed 52 of 52, and its full lane 45132454263 is green. The branch head is that build plus documents. A later client change (the app asks again at once after a lost sync message) moved to its own task, T8.G, on branch `t/T8.G`; its two staging runs failed broadly on an afternoon when the CI runners' requests reached the platform by an unusual route, so they show nothing about it either way, and a change to sync code does not ship on reasoning alone.
+
+Recorded limits (accepted, not open findings):
+
+- After a lost sync message whose acknowledgement is also lost, a second person's code, HTML or formula block catches up 10 to 14 s late. Nothing is lost. The j01-registers black-hole check keeps the 40 s bound this build ran with until T8.G restores 10 s.
+- The connection-drop gate compares text only, and counts a closed pane as recovered.
+- Re-running only the failed jobs of a suite shard is a named human decision and is not gated by earlier verdicts.
+- The demo screenshots are from the first demo run; nothing visible changed since.
+- The j15 comment-composer leg repeats its gesture until the composer opens.
+
+Open:
+
+- Staging is at its growth cap: 29,360 note objects against 30,000, and a full suite needs 1,200. No further full-suite deploy can start until staging is pruned or the cap is changed.
+- On 2026-11-23, between about 14:00 and 22:00 UTC, requests from the CI runners entered the platform through unusual sites. Full-suite runs in that window (45189582791, 45245524556) are not evidence about the product.
+- 13 Worker exceptions within one minute (21:40 UTC, deploy 45245524556: HTTP 500 on comments, access, backlinks and content) have no known cause.
+- Whether a suggester's text typed around a connection drop survives the 60 s suggestion cooldown (close code 4429) is being checked separately.
+
+Deploy 45135817095 of `7b55f7a` passed the full suite in one attempt, both engines, with no leg re-run, 1 recovered drop (export `same`) and no infrastructure retry; the sweep on that build passed 52 of 52. Each earlier failure below is fixed at its cause: the setup resend (`setupFetch`), the review retry after a Durable Object reset (`retryingReset`, `retriedReview`), and the leave-aware chunk logging and recovery (WebKit stops a page's loads as a navigation starts; red in rehearsal 45121810915, 6 of 6, green in 45132450810, 12 of 12). The j16-paste leg past the cap passed 6 of 6 in that rehearsal and in the deploy; the staging log now names a failure with no kind by its error class.
+
+Failures in the two full-suite deploys before those fixes, per leg:
+
+| Deploy | Leg | Engine | What failed | Class |
+|---|---|---|---|---|
+| 45083542524 | j16-suggest routed deletes: past an inline link | Chromium | an undeclared try-again close (1013) about 6 s after open | D1 access check past its deadline (staging timing) |
+| 45083542524 | j16-suggest Edit-mode marks: a code block | WebKit | a setup request failed before the second principal existed | test setup on a closed keep-alive connection (fixed by `setupFetch`) |
+| 45083542524 | j16-census-blocks: heading before the boundary | WebKit | HTTP 500 on suggestion accept, as the doc's Durable Object reset (both peers dropped 1006 at once) | product: a DocDO reset mid-accept answers 500 |
+| 45083542524 | run total | both | 9 recovered drops, 2 allowed; 6 were three DocDO resets during j16-census-blocks legs | platform resets |
+| 45101189479 | j01-registers: three legs (warm-stack code block, read-only code field, formula popover move) | Chromium | a setup request failed (`kind request`) | test setup on a closed keep-alive connection (fixed by `setupFetch`) |
+| 45101189479 | j16-census-edges: leading heading after the boundary | WebKit | a page error and console error on Ben's page | product, undiagnosed (text withheld off loopback) |
+| 45101189479 | j16-paste: a large paste on an open suggestion past the cap | WebKit | an assertion of an unnamed kind | undiagnosed |
+| 45101189479 | run total | both | 4 recovered drops, 2 allowed | network |
 
 ### From T8.V's checker (8902dc4, 2026-11-21)
 

@@ -1,0 +1,320 @@
+#!/usr/bin/env node
+// What staging's Worker and Durable Objects did while a full suite ran (T8.2): deploy-staging.yml's tail job runs
+// one unfiltered `wrangler tail --format json` and reduces each failure to counts under fixed names, so the public log
+// and artifact never hold a URL, header, log line or error text (docs/DEPLOY.md). An isolate that passed its memory or
+// CPU limit resets every Durable Object it hosts, so the minutes it happened are kept to set against the failures.
+// SP9's probe uploads come from a header-filtered tail that runs alone, before it (ProbeSummary): unfiltered, a tail
+// sampled the near-cap upload away (run 39145040057), and beside a filtered tail an unfiltered one saw only the
+// filtered one's events (runs 39116654098, 39130102453).
+//   node scripts/deploy/tail-summary.mjs run OUT.json -- <command...>     (runs the tail; SIGTERM ends it, writes OUT)
+//   node scripts/deploy/tail-summary.mjs probe PROBE.json -- <command...> (the same for the probe uploads)
+//   node scripts/deploy/tail-summary.mjs check-probe PROBE.json          (fails without the near-cap upload's telemetry)
+import { spawn } from 'node:child_process';
+import { readFileSync, writeFileSync } from 'node:fs';
+import { pathToFileURL } from 'node:url';
+
+/** Exception classes, by a fixed pattern on the message; the message itself is never kept. */
+export const CLASSES = [
+  ['memory limit', /exceeded its memory limit|memory limit exceeded/i],
+  ['cpu limit', /exceeded (its )?cpu|cpu time limit/i],
+  ['object reset', /durable object reset|was reset/i],
+  ['object overloaded', /overloaded/i],
+  ['storage timeout', /storage operation exceeded timeout/i],
+  ['network lost', /network connection lost/i],
+  ['internal error', /internal error/i],
+];
+const LIMIT_CLASSES = new Set(['memory limit', 'cpu limit']);
+const NAME = /^[A-Za-z][A-Za-z0-9_]{0,39}$/;
+const OUTCOME = /^[A-Za-z]{1,30}$/;
+const METHOD = /^[A-Z]{3,7}$/;
+/** Route families only: ids, tokens and query strings never reach the summary. */
+const ROUTE = /^\/(api|parties)\/([a-z][a-z-]{0,29})(?=\/|$)/;
+
+const bump = (record, key) => {
+  record[key] = (record[key] ?? 0) + 1;
+};
+
+/** @param {unknown} url */
+function routeOf(url) {
+  try {
+    const match = ROUTE.exec(new URL(String(url)).pathname);
+    return match ? `/${match[1]}/${match[2]}` : 'other';
+  } catch {
+    return 'other';
+  }
+}
+
+/** wrangler prints each event as JSON.stringify(event, null, 4): `{` and `}` alone on their lines open and close it. */
+class EventStream {
+  #buffer = '';
+  #object = /** @type {string[] | null} */ (null);
+  #onEvent;
+  unparsed = 0;
+
+  /** @param {(event: any) => void} onEvent */
+  constructor(onEvent) {
+    this.#onEvent = onEvent;
+  }
+
+  /** @param {string} chunk wrangler's stdout, in any split */
+  push(chunk) {
+    this.#buffer += chunk;
+    let newline;
+    while ((newline = this.#buffer.indexOf('\n')) !== -1) {
+      this.#line(this.#buffer.slice(0, newline));
+      this.#buffer = this.#buffer.slice(newline + 1);
+    }
+  }
+
+  /** @param {string} line */
+  #line(line) {
+    if (this.#object === null) {
+      if (line === '{') this.#object = [line];
+      return;
+    }
+    this.#object.push(line);
+    if (line !== '}') return;
+    const text = this.#object.join('\n');
+    this.#object = null;
+    let event;
+    try {
+      event = JSON.parse(text);
+    } catch {
+      this.unparsed += 1;
+      return;
+    }
+    this.#onEvent(event);
+  }
+}
+
+export class TailSummary {
+  #stream = new EventStream((event) => this.#event(event));
+  events = 0;
+  overload = 0;
+  /** @type {Record<string, number>} */
+  outcomes = {};
+  /** @type {Record<string, number>} */
+  classes = {};
+  /** @type {Record<string, number>} */
+  limitMinutes = {};
+
+  /** @param {string} chunk wrangler's stdout, in any split */
+  push(chunk) {
+    this.#stream.push(chunk);
+  }
+
+  get unparsed() {
+    return this.#stream.unparsed;
+  }
+
+  /** @param {any} event */
+  #event(event) {
+    if (event?.event?.type === 'overload') {
+      this.overload += 1;
+      return;
+    }
+    if (typeof event?.outcome !== 'string') return;
+    // The tail is unfiltered: only a failure counts, an outcome other than ok, a 5xx, or a thrown exception.
+    const failed = event.outcome !== 'ok' || Number(event.event?.response?.status) >= 500 || (Array.isArray(event.exceptions) && event.exceptions.length > 0);
+    if (!failed) return;
+    this.events += 1;
+    const outcome = OUTCOME.test(event.outcome) ? event.outcome : 'other';
+    let source;
+    if (event.event && typeof event.event === 'object' && 'request' in event.event) {
+      const method = String(event.event.request?.method ?? '').toUpperCase();
+      source = `worker ${METHOD.test(method) ? method : 'other'} ${routeOf(event.event.request?.url)}`;
+    } else {
+      const entrypoint = typeof event.entrypoint === 'string' && NAME.test(event.entrypoint) ? event.entrypoint : 'other';
+      const method = typeof event.event?.rpcMethod === 'string' && NAME.test(event.event.rpcMethod) ? event.event.rpcMethod : 'other';
+      source = `${entrypoint}.${method}`;
+    }
+    bump(this.outcomes, `${source} ${outcome}`);
+    const minute = Number.isFinite(event.eventTimestamp) ? `${new Date(event.eventTimestamp).toISOString().slice(0, 16)}Z` : 'unknown';
+    let limited = outcome === 'exceededMemory' || outcome === 'exceededCpu';
+    for (const exception of Array.isArray(event.exceptions) ? event.exceptions : []) {
+      const message = String(exception?.message ?? '');
+      const found = CLASSES.find(([, pattern]) => pattern.test(message));
+      const name = found ? found[0] : 'unclassed';
+      bump(this.classes, name);
+      if (LIMIT_CLASSES.has(name)) limited = true;
+    }
+    if (limited) bump(this.limitMinutes, minute);
+  }
+
+  result() {
+    return {
+      events: this.events,
+      overload: this.overload,
+      unparsed: this.unparsed,
+      outcomes: this.outcomes,
+      classes: this.classes,
+      limitMinutes: this.limitMinutes,
+    };
+  }
+}
+
+/**
+ * The header j11-media's SP9 near-cap probe sends on each upload, its value the upload's label; the sp9
+ * job's tail filters on it (`--header`).
+ */
+export const SP9_PROBE_HEADER = 'x-sp9-probe';
+const PROBE_LABELS = new Set(['near-cap', 'truncated']);
+
+/** @param {unknown} value a millisecond count from the event, or null when it carries none */
+const ms = (value) => (typeof value === 'number' && Number.isFinite(value) && value >= 0 ? Math.round(value) : null);
+
+/**
+ * SP9's Worker telemetry (T8.2): for each probe upload, the invocation's outcome, response status, CPU time and wall
+ * time as the tail reports them (TraceItem `cpuTime`, `wallTime`). Cloudflare reports no per-invocation memory
+ * figure; its memory telemetry is the outcome, `exceededMemory` when the isolate passed its limit, kept as
+ * `withinMemoryLimit`. Labels outside the probe's are `other`; no URL, header value or text is kept.
+ */
+export class ProbeSummary {
+  /** @type {Record<string, { outcome: string, status: number | null, cpuTimeMs: number | null, wallTimeMs: number | null, withinMemoryLimit: boolean, exceptions: Record<string, number> }[]>} */
+  uploads = {};
+  #stream = new EventStream((event) => this.#event(event));
+
+  /** @param {string} chunk */
+  push(chunk) {
+    this.#stream.push(chunk);
+  }
+
+  /** @param {any} event */
+  #event(event) {
+    if (typeof event?.outcome !== 'string') return;
+    const headers = event.event?.request?.headers;
+    if (!headers || typeof headers !== 'object') return;
+    const key = Object.keys(headers).find((name) => name.toLowerCase() === SP9_PROBE_HEADER);
+    if (key === undefined) return;
+    const value = String(headers[key]);
+    const label = PROBE_LABELS.has(value) ? value : 'other';
+    const outcome = OUTCOME.test(event.outcome) ? event.outcome : 'other';
+    /** @type {Record<string, number>} */
+    const exceptions = {};
+    let memory = outcome === 'exceededMemory';
+    for (const exception of Array.isArray(event.exceptions) ? event.exceptions : []) {
+      const found = CLASSES.find(([, pattern]) => pattern.test(String(exception?.message ?? '')));
+      const name = found ? found[0] : 'unclassed';
+      bump(exceptions, name);
+      if (name === 'memory limit') memory = true;
+    }
+    const status = event.event?.response?.status;
+    (this.uploads[label] ??= []).push({
+      outcome,
+      status: Number.isInteger(status) ? status : null,
+      cpuTimeMs: ms(event.cpuTime),
+      wallTimeMs: ms(event.wallTime),
+      withinMemoryLimit: !memory,
+      exceptions,
+    });
+  }
+
+  result() {
+    return { uploads: this.uploads, unparsed: this.#stream.unparsed };
+  }
+}
+
+/**
+ * What is wrong with SP9's telemetry: the near-cap upload must have a tail event, `ok`, a 201, within the memory
+ * limit and timed; the truncated upload, the probe's red control, must have an event too.
+ * @param {{ uploads?: Record<string, { outcome: string, status: number | null, cpuTimeMs: number | null, wallTimeMs: number | null, withinMemoryLimit: boolean }[]> }} result
+ */
+export function probeProblems(result) {
+  const problems = [];
+  const uploads = result?.uploads ?? {};
+  const near = uploads['near-cap'] ?? [];
+  if (near.length === 0) problems.push('no tail event for the near-cap upload');
+  for (const upload of near) {
+    if (upload.outcome !== 'ok') problems.push(`the near-cap upload ended ${upload.outcome}`);
+    if (!upload.withinMemoryLimit) problems.push('the near-cap upload passed the memory limit');
+    if (upload.status !== 201) problems.push(`the near-cap upload returned ${upload.status ?? 'no status'}`);
+    if (upload.cpuTimeMs === null) problems.push('the near-cap upload has no CPU time');
+    if (upload.wallTimeMs === null) problems.push('the near-cap upload has no wall time');
+  }
+  if ((uploads.truncated ?? []).length === 0) problems.push('no tail event for the truncated upload');
+  return problems;
+}
+
+/**
+ * Runs `command` (the tail) and summarizes its stdout until this process gets SIGTERM or SIGINT, then writes each
+ * summary to its file. A tail that ends on its own (wrangler's ended about two hours into a suite, exit 0) is started
+ * again, up to `maxRestarts` times, and the restarts are counted. Its stderr is counted, never printed.
+ * @param {[string, { push(chunk: string): void, result(): object }][]} outputs
+ * @param {string[]} command
+ * @param {{ maxRestarts?: number, restartDelayMs?: number }} [options]
+ * @returns {Promise<void>} settles once the summaries are written
+ */
+export function runTail(outputs, command, { maxRestarts = 50, restartDelayMs = 2_000 } = {}) {
+  let stderrLines = 0;
+  let restarts = 0;
+  let stopping = false;
+  /** @type {import('node:child_process').ChildProcess} */
+  let child;
+  /** @type {() => void} */
+  let settle = () => {};
+  const done = new Promise((resolve) => {
+    settle = () => resolve(undefined);
+  });
+  let finished = false;
+  /** @param {string} exit */
+  const finish = (exit) => {
+    if (finished) return;
+    finished = true;
+    process.off('SIGTERM', stop);
+    process.off('SIGINT', stop);
+    for (const [out, summary] of outputs) {
+      writeFileSync(out, `${JSON.stringify({ ...summary.result(), tailExit: exit, tailRestarts: restarts, tailStderrLines: stderrLines }, null, 2)}\n`);
+    }
+    settle();
+  };
+  const start = () => {
+    if (stopping) return finish('stopped');
+    child = spawn(command[0], command.slice(1), { stdio: ['ignore', 'pipe', 'pipe'] });
+    child.stdout?.setEncoding('utf8').on('data', (chunk) => {
+      for (const [, summary] of outputs) summary.push(chunk);
+    });
+    child.stderr?.setEncoding('utf8').on('data', (chunk) => {
+      stderrLines += chunk.split('\n').length - 1;
+    });
+    child.on('exit', (code, signal) => {
+      if (stopping) return finish('stopped');
+      if (restarts < maxRestarts) {
+        restarts += 1;
+        setTimeout(start, restartDelayMs);
+        return;
+      }
+      finish(signal ? 'stopped' : String(code));
+    });
+    child.on('error', () => finish('failed to start'));
+  };
+  function stop() {
+    stopping = true;
+    // Between a tail's end and its restart there is no child to wait for.
+    if (child.exitCode !== null || child.signalCode !== null) return finish('stopped');
+    child.kill('SIGTERM');
+    setTimeout(() => child.kill('SIGKILL'), 5_000).unref();
+  }
+  process.on('SIGTERM', stop);
+  process.on('SIGINT', stop);
+  start();
+  return done;
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  const [mode, out, dashes, ...command] = process.argv.slice(2);
+  if ((mode === 'run' || mode === 'probe') && out && dashes === '--' && command.length > 0) {
+    runTail([[out, mode === 'probe' ? new ProbeSummary() : new TailSummary()]], command);
+  } else if (mode === 'check-probe' && out && dashes === undefined) {
+    let problems;
+    try {
+      problems = probeProblems(JSON.parse(readFileSync(out, 'utf8')));
+    } catch {
+      problems = [`no probe summary at ${out}`];
+    }
+    for (const problem of problems) console.error(`::error::SP9 telemetry: ${problem}`);
+    process.exitCode = problems.length ? 1 : 0;
+  } else {
+    console.error('usage: tail-summary.mjs run|probe OUT.json -- <command...> | check-probe PROBE.json');
+    process.exitCode = 1;
+  }
+}

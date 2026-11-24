@@ -11,8 +11,9 @@ import {
   ACTION_FEEDBACK_ATTR, APP_STATE_ATTR, BODY_BINDING_ATTR, CONNECTION_BANNER_ATTR, DOC_STATE_ATTR, EDIT_MODE_ATTR, ROLE_ATTR,
   ROLE_BAND_ATTR, SYNC_UNACKED_ATTR, TERMINAL_REASON_ATTR, paneSelector,
 } from '../lib/contract.ts';
+import { ACCESS_DEADLINE_MS, ACCESS_TICK_MS } from '../../packages/protocol/src/limits.ts';
 import { grantDoc } from '../lib/grants.ts';
-import { IDLE_MS, inductionProblems } from '../lib/hibernate.ts';
+import { idleWake, inductionProblems } from '../lib/hibernate.ts';
 import { visibility } from '../lib/idle.ts';
 import type { Principal } from '../lib/principals.ts';
 import { expect, test, ui } from '../lib/test.ts';
@@ -92,15 +93,12 @@ test('j09 demotion: Ada lowers Ben from edit to view; his socket closes 4403 wit
   const dialog = await ui.openShare(ada, docId);
   await expect(accessSelect(dialog, benPrincipal.name), 'Ben is listed with his access').toHaveText('Can edit');
   const patched = ada.page.waitForResponse((response) => response.url().endsWith(`/api/docs/${docId}/members`) && response.request().method() === 'PATCH');
-  // The clock starts when the demotion leaves the page, not while the role menu opens.
-  let sentAt = Number.POSITIVE_INFINITY;
-  const onRequest = (request: { url(): string; method(): string }) => {
-    if (request.method() === 'PATCH' && request.url().endsWith(`/api/docs/${docId}/members`)) sentAt = Math.min(sentAt, Date.now());
-  };
-  ada.page.on('request', onRequest);
+  // From the demotion's request, not the menu interaction before it: on a deployed stack the click alone is not instant.
+  const sent = ada.page.waitForRequest((request) => request.url().endsWith(`/api/docs/${docId}/members`) && request.method() === 'PATCH')
+    .then(() => Date.now());
   await chooseAccess(dialog, benPrincipal.name, 'Can view');
+  const sentAt = await sent;
   expect((await patched).status(), 'the demotion is saved').toBe(200);
-  ada.page.off('request', onRequest);
   await expect(accessSelect(dialog, benPrincipal.name), "Ada's list shows the new access").toHaveText('Can view');
   await expect(dialog.getByRole('status'), 'and says so').toContainText('Can view');
 
@@ -552,6 +550,7 @@ test('j09 sign-out: signing out in one window ends the same session in the other
   expect((await ben.context.request.get('/api/me')).status()).toBe(200);
 });
 
+// On staging the instances are read through the owner-only route after the run's idle (idleWake).
 test('j09 cold: after an idle wake, a revoked doc link and a revoked folder link land no frame @hibernate @slow @p:ppl-2 @p:tech-6', async ({ actors, stack }, info) => {
   test.setTimeout(300_000);
   // Ada works over the API only: an open shell shows a note (the newest when it loads, and keeps it), and its doc
@@ -586,18 +585,23 @@ test('j09 cold: after an idle wake, a revoked doc link and a revoked folder link
   }
   await actors.requireDistinct(2);
 
-  const baseline = await Promise.all(holders.map((h) => stack.docInstance(h.docId)));
+  const { probe, idleMs, skewMs } = idleWake(stack, ada.principal as Principal);
+  const baseline = await Promise.all(holders.map((h) => probe(h.docId)));
   // Every window goes quiet: a visible tab's resync keeps its DO awake.
   for (const holder of holders) await visibility(holder.actor, true);
-  await new Promise((resolve) => setTimeout(resolve, IDLE_MS));
+  // A holder's last frame arms the access tick, whose alarm wakes the DO and validates once more: the idle counts
+  // from the end of that validation, not from the last frame.
+  await new Promise((resolve) => setTimeout(resolve, ACCESS_TICK_MS + ACCESS_DEADLINE_MS + idleMs));
 
   const decisiveAt = Date.now();
   expect((await ada.context.request.delete(`/api/docs/${docId}/links/${docToken}`, { headers })).status()).toBe(200);
   expect((await ada.context.request.delete(`/api/folders/${folderId}/links/${folderToken}`, { headers })).status()).toBe(200);
-  for (const [index, holder] of holders.entries()) {
-    const after = await stack.docInstance(holder.docId);
+  const decisiveEnd = Date.now();
+  // Both at once, before either DO can idle out again.
+  const afters = await Promise.all(holders.map((holder) => probe(holder.docId)));
+  for (const [index, after] of afters.entries()) {
     await info.attach(`cold-${index}-instance.json`, { body: JSON.stringify({ base: baseline[index], after, decisiveAt }), contentType: 'application/json' });
-    expect(inductionProblems(baseline[index], after, decisiveAt), 'the revocation met a woken DO').toEqual([]);
+    expect(inductionProblems(baseline[index], after, decisiveAt, decisiveEnd, skewMs), 'the revocation met a woken DO').toEqual([]);
   }
 
   for (const holder of holders) {

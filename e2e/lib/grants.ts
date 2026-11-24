@@ -3,7 +3,7 @@
 // email is an invite bound to the email (A§8, T2.8): it grants nothing until the invitee, signed in with that email,
 // redeems it, so declared setup redeems it as following its link would.
 import type { Actor } from './actors.ts';
-import { signIn, type Principal } from './principals.ts';
+import { setupFetch, signIn, type Principal } from './principals.ts';
 
 export type GrantRole = 'viewer' | 'commenter' | 'suggester' | 'editor';
 export type InviteTarget = { docId: string } | { folderId: string };
@@ -26,7 +26,7 @@ export async function acceptInvite(owner: Actor, target: InviteTarget, member: P
   if (!invite) throw new Error(`no open invite for ${member.email} on ${pathOf(target)}`);
   const token = new URL(invite.url).pathname.replace(/^\/invite\//, '');
   const cookie = (await signIn(origin, member)).map(({ name, value }) => `${name}=${value}`).join('; ');
-  const response = await fetch(`${origin}/api/invites/${token}/accept`, {
+  const response = await setupFetch('setup', `${origin}/api/invites/${token}/accept`, {
     method: 'POST',
     headers: { origin, cookie, accept: 'application/json' },
     signal: AbortSignal.timeout(15_000),

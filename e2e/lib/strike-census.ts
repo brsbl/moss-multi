@@ -299,16 +299,17 @@ async function review(ada: Actor, ben: Actor, docId: string, original: string, l
     const inserted = await card.locator(`[${SUGGESTION_ROW_ATTR}="insert"] > span.min-w-0 > span:first-child`).allInnerTexts();
     expect(capitals(inserted.join(' ')), `${label}: the card adds no struck capital (${inserted.join(' | ')})`).toBe('');
     const before = await open.count();
-    await accept.click();
     // A card's preview is fetched when its record changes, so accepting another record can leave it stale: the
-    // accept answers `changed` (409), the card fetches again and Accept is pressed again.
+    // accept answers `changed` (409), the card fetches again and Accept is pressed again. Off loopback the card can
+    // refetch before its `changed` text is seen, so the 409 is declared before the click.
+    ada.expectHttp(409, /\/suggestions\/[^/]+\/accept$/);
+    await accept.click();
     const deadline = Date.now() + BIND_TIMEOUT;
     let again = 0;
     while ((await open.count()) >= before) {
       const text = await card.innerText().catch(() => '');
       if (text.includes('It changed while you reviewed it') && again < 3 && (await accept.isEnabled().catch(() => false))) {
         again += 1;
-        ada.expectHttp(409, /\/suggestions\/[^/]+\/accept$/);
         await accept.click();
       }
       if (Date.now() > deadline) throw new Error(`${label}: the accept did not land: ${text}`);

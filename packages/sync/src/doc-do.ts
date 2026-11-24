@@ -35,7 +35,7 @@ import { handleSuggest, SqlLeases, SuggestIngest, type NoteLimit, type RecordGro
 import { SuggestCooldowns } from './doc/suggest-cooldown.ts';
 import { newSuggestionsClient, patchMeta, readMeta, recordIds, SUGGESTIONS, SuggestionsWriter, writeSuggestions } from './suggest/records.ts';
 import {
-  acceptRecord, EMPTY_IDLE_MS, exportWorkingMarkdown, IDLE_BATCH, nodeRegistry, rejectRecord, reviewPreview, withdrawRecord, type Preview, type Reviewer, type ReviewResult,
+  acceptRecord, EMPTY_IDLE_MS, exportWorkingMarkdown, IDLE_BATCH, nodeRegistry, rejectRecord, retriedReview, reviewPreview, withdrawRecord, type Preview, type Reviewer, type ReviewResult,
 } from './suggest/review.ts';
 import { TRY_AGAIN, withDeadline, type Stamp } from './access-epoch.ts';
 import { publishMeta, publishReopened, type FanoutEnv, type Holder } from './fanout.ts';
@@ -1796,7 +1796,7 @@ export class DocDO extends YServer<SyncEnv> {
    * Accept (§4.1–4.3): editor and above, in one synchronous turn after the actor is re-authorized. The record lands
    * exactly as previewed or nothing does; its leases are spent in the same turn.
    */
-  acceptSuggestion(input: { id: string; reviewer: Reviewer; actor?: CommentActor; previewHash: string; digest: string }): Promise<ReviewResult | ReviewRefusal> {
+  acceptSuggestion(input: { id: string; reviewer: Reviewer; actor?: CommentActor; previewHash: string; digest: string; retried?: boolean }): Promise<ReviewResult | ReviewRefusal> {
     return this.#review(input, 'editor', (reviewer) => {
       const result = acceptRecord(this.document, input.id, { previewHash: input.previewHash, digest: input.digest }, reviewer, {
         stateCap: this.#limits.stateCapBytes,
@@ -1806,18 +1806,24 @@ export class DocDO extends YServer<SyncEnv> {
         this.#comments?.flush();
         this.#projections?.touch();
       }
-      return result;
+      return input.retried ? retriedReview(this.document, input.id, result, 'accepted', reviewer) : result;
     });
   }
 
-  /** Reject (§4.5): editor and above; only the record changes. */
-  rejectSuggestion(input: { id: string; reviewer: Reviewer; actor?: CommentActor }): Promise<ReviewResult | ReviewRefusal> {
-    return this.#review(input, 'editor', (reviewer) => rejectRecord(this.document, input.id, reviewer));
+  /** Reject (§4.5): editor and above; only the record changes. `retried`: the Worker's second call (retriedReview). */
+  rejectSuggestion(input: { id: string; reviewer: Reviewer; actor?: CommentActor; retried?: boolean }): Promise<ReviewResult | ReviewRefusal> {
+    return this.#review(input, 'editor', (reviewer) => {
+      const result = rejectRecord(this.document, input.id, reviewer);
+      return input.retried ? retriedReview(this.document, input.id, result, 'rejected', reviewer) : result;
+    });
   }
 
   /** Withdraw (§4.5): the author, at any role from suggester up; only the record changes. */
-  withdrawSuggestion(input: { id: string; reviewer: Reviewer; actor?: CommentActor }): Promise<ReviewResult | ReviewRefusal> {
-    return this.#review(input, 'suggester', (reviewer) => withdrawRecord(this.document, input.id, reviewer));
+  withdrawSuggestion(input: { id: string; reviewer: Reviewer; actor?: CommentActor; retried?: boolean }): Promise<ReviewResult | ReviewRefusal> {
+    return this.#review(input, 'suggester', (reviewer) => {
+      const result = withdrawRecord(this.document, input.id, reviewer);
+      return input.retried ? retriedReview(this.document, input.id, result, 'withdrawn', reviewer) : result;
+    });
   }
 
   /**
