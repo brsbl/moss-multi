@@ -180,6 +180,8 @@ import { canCreateNote, noteTargetFolder } from '@moss-multi/host/folders';
 import { standAboveTrashNotice } from '@moss-multi/host/notice-stack';
 // moss-multi seam: phone-shell (T2.7, deviation 11): below 640 px the notes panel overlays the canvas
 import { useNarrow } from '@moss-multi/host/viewport';
+// moss-multi seam: startup-link-note (T9.54): the stored choice, read where startup selection ends its read
+import { activeNoteSelectionAtom } from '@moss/shared/state/atoms';
 
 const nowInSeconds = (): number => Math.floor(Date.now() / 1000);
 const NOTE_LIST_SYNC_DEBOUNCE_MS = 150;
@@ -1766,7 +1768,10 @@ export function App() {
             if (cancelled || didInitializeStartupSelectionRef.current) {
               return;
             }
-            if (store.get(activeNoteIdAtom)) {
+            // moss-multi seam: startup-link-note (T9.54): only a note chosen during the read stops here. The derived
+            // note (moss's newest, with nothing chosen) does not: a note opened by its address that the listing does
+            // not carry, as through a share link, would never open for a person with a note of their own.
+            if (store.get(activeNoteSelectionAtom).storedId) {
               didInitializeStartupSelectionRef.current = true;
               return;
             }

@@ -408,6 +408,15 @@ export const activeNoteIdAtom = atom(
   }
 );
 
+// moss-multi seam (T9.48a): the stored choice, and whether the active id is derived from the listing instead (nothing
+// stored, or the stored note's record gone), so the host can pin the derived note before a peer's change reorders it.
+export const activeNoteSelectionAtom = atom((get) => {
+  const storedId = get(baseActiveNoteIdAtom);
+  // The index changes when a record is removed; the family then hands out a fresh, empty atom for its id.
+  get(noteIdsAtom);
+  return { storedId, derived: !storedId || !get(noteEntityAtom(storedId)) };
+});
+
 const getStoredValue = (key: string): string | null => {
   if (typeof window === 'undefined' || typeof window.localStorage === 'undefined') {
     return null;
