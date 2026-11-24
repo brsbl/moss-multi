@@ -990,13 +990,17 @@ export function App() {
     void notesApi.setOpenFileWatchTargets.invoke(noteIds).catch(() => undefined);
   }, [activeNoteId, hasElectronBridge, ipcReady, splitTabNoteId]);
 
+  // moss-multi seam: startup-focus (T9.53): until startup selection picks the tab's first note, the note moss shows
+  // (its newest) is not reported as focused: the host would write it to the address and count the pick as a visit.
+  // The pin effect (pin-active-note, T9.48a) reads the same state.
+  const [startupSelectionDone, setStartupSelectionDone] = useState(false);
   useEffect(() => {
-    if (!hasElectronBridge || !ipcReady) {
+    if (!hasElectronBridge || !ipcReady || !startupSelectionDone) {
       return;
     }
 
     void systemApi.setFocusedNoteId.invoke(focusedNoteId ?? null).catch(() => undefined);
-  }, [focusedNoteId, hasElectronBridge, ipcReady]);
+  }, [focusedNoteId, hasElectronBridge, ipcReady, startupSelectionDone]);
 
   // =========================================================================
   // Quit-flush: main process requests the window to flush before quitting.
@@ -1153,8 +1157,6 @@ export function App() {
     trash: null
   });
   const didInitializeStartupSelectionRef = useRef(false);
-  // moss-multi seam: pin-active-note (T9.48a): the pin effect needs to see startup selection finish
-  const [startupSelectionDone, setStartupSelectionDone] = useState(false);
   const commandPaletteRef = useRef<CommandPaletteOverlayHandle>(null);
 
   // moss-multi seam: only the requested note may consume a title-focus intent.
