@@ -351,9 +351,16 @@ function ShareDialog({ target, open, onOpenChange }: { target: ShareTarget; open
   const [linkAccess, setLinkAccess] = useState<LinkRole>('viewer');
   const [pending, setPending] = useState(false);
   const [status, setStatus] = useState<Status>(null);
-  // A note's name starts as the title the window shows, so the header names it before the reads answer (T9.50b).
+  // A note's name starts, at every opening, as the title the window shows, so the header names it before the reads
+  // answer (T9.50b). The dialog stays mounted while closed, so it is seeded again when `open` turns true.
   const store = useStore();
-  const [name, setName] = useState<string | null>(() => (target.type === 'doc' ? shownTitle(store.get(noteEntityAtom(target.id))) : null));
+  const seed = () => (target.type === 'doc' ? shownTitle(store.get(noteEntityAtom(target.id))) : null);
+  const [name, setName] = useState<string | null>(seed);
+  const [wasOpen, setWasOpen] = useState(open);
+  if (open !== wasOpen) {
+    setWasOpen(open);
+    if (open && target.type === 'doc') setName(seed());
+  }
   const [inherited, setInherited] = useState<InheritedGroup[]>([]);
   const [linksAbove, setLinksAbove] = useState<LinkAbove[]>([]);
   const [hasAgent, setHasAgent] = useState(false);
