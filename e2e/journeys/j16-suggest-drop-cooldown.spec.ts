@@ -180,5 +180,6 @@ test('j16-suggest-drop halted-card-sign-out suggester: "Sign out anyway" with of
     probe.note('after "Sign out anyway"', { path: left.value, dialogs: probe.dialogs.slice(asked).map((dialog) => dialog.type) });
     expect.soft(probe.dialogs.length - asked, 'the browser does not ask a second time').toBe(0);
     expect.soft(left.ok, 'the sign-out lands on the login page').toBe(true);
+    if (left.ok) await ui.waitForLoginCard(ben);
   });
 });
