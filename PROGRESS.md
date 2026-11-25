@@ -176,6 +176,40 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - The [tests-first parity run](https://github.com/brsbl/moss-multi/actions/runs/37164693065) reproduced both 144 px² shell-default failures. The target now focuses both editors before capture, retaining the toolbar in the pixel comparison without widening masks or thresholds (deviation 10). The j01 blur leg remains the behavior gate.
 - The read-only color plugin's initial sweep is guarded by editability; the [tests-first run](https://github.com/brsbl/moss-multi/actions/runs/37164862573) changed read-only text into a color node while its editable positive control passed. Local browser verification remains assigned to the independent checker by the implementer brief; no local tests run.
 
+### T9.54h — a share link opens the shared note for someone with notes of their own
+
+- Implemented, awaiting the checker. Signed in with a note of their own, a person who opened a link to someone else's note was shown their own newest note at `owner`, under the link's address, and their typing landed in it. The route gate now keeps its open answer once, and before moss mounts the boot puts that note into moss's note store as the note the tab is on. The note gets no sidebar row. Five host files change: `host/access.ts`, `host/boot.tsx`, `host/bridge/index.ts`, `host/moss-modules.d.ts`, `routes/d.$docId.tsx`. No vendored file, server file, on-screen word or deviation row changes.
+- Red first, legs only (`j08-link-notes`, seven legs, its own `linkNotes` group): [run 45629719985](https://github.com/brsbl/moss-multi/actions/runs/45629719985), 3 repeats, Chromium job 139259873208 and WebKit job 139259873261. Legs 1, 2 (both widths), 3, 4, 5 and 7 were red in every repeat in both engines where the brief says; leg 5 was red 3 of 3 in each engine at "no note had a sidebar row at any moment"; leg 6 was green.
+- With the fix as first drafted, where a failed listing read made the boot stand back: [run 45633787313](https://github.com/brsbl/moss-multi/actions/runs/45633787313), 3 repeats, jobs 139274311509 and 139274311817. Leg 4 was red in every repeat in both engines, with another note in the pane; every other leg was green.
+- With the fix (a listing read that fails concludes nothing): [run 45636500098](https://github.com/brsbl/moss-multi/actions/runs/45636500098), all seven legs green 10 of 10 in each engine (jobs 139283936200, 139283936342), and no WebKit log line "WebSocket is closed before the connection is established". `j08-share` and `j08-agents` green in both engines ([run 45636505494](https://github.com/brsbl/moss-multi/actions/runs/45636505494)); `j09-revoke-live`, `j10-stranger-phone` and `j13-vaults` green in both engines ([run 45636510948](https://github.com/brsbl/moss-multi/actions/runs/45636510948)).
+- `checks` (Typecheck, Lint, Unit tests, Vendor drift, Shard budget) green on the fix commit, [run 45636501508](https://github.com/brsbl/moss-multi/actions/runs/45636501508), after one re-run: its first attempt failed `sharing-security.test.ts` "settles concurrent shares of one person at every role on the highest" on an assertion inside miniflare's proxy worker, a server test this change does not touch.
+- Nothing was driven by hand in WebKit; WebKit evidence is the CI legs only.
+
+What the change does not do:
+
+- The linked note gets no row, and no row is highlighted while it is open. After a click on one of their own notes, the way back is moss's back arrow.
+- A revoked link does not hide the note: the pane ends in place with "Your access to this note has ended.", the title and last text stay readable, and the role shown is unchanged. Every request is still checked by the server.
+- Moss's remembered note becomes the linked note, so the next plain `/` opens the newest note instead of an older remembered one. Inferred, not run.
+- A look at Trash and back lands on the person's newest note, not the linked note. Inferred.
+- It is not faster: while the listing is read the tab shows the host's blank boot frame instead of moss's.
+
+Not in this task:
+
+- On `m9`, the browser's Back to the linked note shows its sidebar row for about 185 to 260 ms. Back hands the note to moss through its "open this note" path, which lists it until the next full listing read. It needs its own task and a red leg.
+- Whether a note opened through a link should have a lasting row in the opener's sidebar (open owner question). This fix works without one.
+- "Copy note link" and "Open in New Window" on the person's own note carry the link's token.
+- Inferred and never run: both listing reads failing; a failed first listing for the owner or a grant holder; the token revoked between the gate and the socket; a person whose only listed note is shared by a grant; a note in a linked folder opened by its address; a second vault of the person's own; the owner trashing the linked note while it is open this way; a linked note whose formulas refer to its own named formulas.
+- `m4` to `m8` are not built or run with this change.
+
+On the way up:
+
+| Branch | Product files | The legs |
+| --- | --- | --- |
+| `m3` | The five edits | As built here |
+| `m4` to `m7` | Nothing to adapt (inferred): `boot.tsx`, `bridge/index.ts` and the route match `m3`; `access.ts` and `moss-modules.d.ts` merge cleanly. Not built or run | Unchanged |
+| `m8` | The same; the merge is clean. Not built or run | Unchanged |
+| `m9` | The same five files, after T9.53 is in `m9` | Their `m9` form: the sign-in control is "Sign in", and the history check forbids any other note in the address |
+
 ## Follow-ups (P2)
 
 Parked from the M0 checker and critic passes, each with the task that owns it.
