@@ -10,7 +10,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { request, type BrowserType, type Page, type TestInfo } from '@playwright/test';
-import { Actors, recordsScreens } from '../lib/actors.ts';
+import { type Actor, Actors, recordsScreens } from '../lib/actors.ts';
 import { ALLOWLIST, expiredEntries, isAllowed, type AllowEntry } from '../lib/allowlist.ts';
 import { authHeadroom, paceAuth, recordAuth } from '../lib/auth-pace.ts';
 import { RequestBudget } from '../lib/budget.ts';
@@ -19,7 +19,7 @@ import { probeSocket } from '../lib/doc-client.ts';
 import { browserLog, closeBrowserTimed } from '../lib/engine.ts';
 import { inductionProblems, ownerProbe } from '../lib/hibernate.ts';
 import {
-  browserCrashIn, classifyInfra, closeEachConnection, engineFaultIn, engineFaultNamed, engineFaultOf, InfraBlocked, isInfraBlocked, LIBSOUP_CHECK,
+  browserCrashIn, classifyInfra, closeEachConnection, engineFaultIn, engineFaultNamed, engineFaultOf, GLIB_ABORT, InfraBlocked, isInfraBlocked, LIBSOUP_CHECK,
 } from '../lib/infra.ts';
 import { awaitingRecovery, errorProblems, socketProblems, typedFindings, type ActorView } from '../lib/invariants.ts';
 import { budgetProblem, latencyRows, Measure, percentile } from '../lib/measure.ts';
@@ -39,6 +39,25 @@ const typed = (text: string, author = 'ada', ordered = true): Typed => ({ docId:
 // matched text: it goes into the worker's shared log, and a later failed WebKit selftest attaches it.
 const LIBSOUP_QUEUED = "2026-11-24T08:41:15.182Z [pid=3403][err] (process:4180): libsoup-CRITICAL **: 08:41:15.182: soup_session_feature_request_queued: assertion 'SOUP_IS_SESSION_FEATURE (feature)' failed";
 const LIBSOUP_UNQUEUED = "2026-11-25T12:30:25.183Z [pid=3848][err] (process:3865): libsoup-CRITICAL **: 12:30:25.180: soup_session_feature_request_unqueued: assertion 'SOUP_IS_SESSION_FEATURE (feature)' failed";
+// GLib's abort in the page process as Save as PDF opens its tab (T9.55g), with the test's own times: when it began,
+// when its 10 s wait for the tab gave up (its teardown began just after) and when the engine reported the page crashed.
+const GLIB_SEEN = [
+  {
+    job: '138405073928 (m9)',
+    line: '2026-11-24T11:40:40.449Z [pid=3590][err] GLib:ERROR:../../../glib/gmain.c:3993:g_main_context_check_unlocked: assertion failed: (i <= 0 || fds[i - 1].fd < fds[i].fd)',
+    began: '2026-11-24T11:40:34.406Z', gaveUp: '2026-11-24T11:40:48.357Z', crashed: { label: 'cy', at: '2026-11-24T11:41:00.544Z' },
+  },
+  {
+    job: '138404718281 (t/T9.50)',
+    line: '2026-11-24T11:37:26.647Z [pid=3408][err] GLib:ERROR:../../../glib/gmain.c:3993:g_main_context_check_unlocked: assertion failed: (i <= 0 || fds[i - 1].fd < fds[i].fd)',
+    began: '2026-11-24T11:37:20.626Z', gaveUp: '2026-11-24T11:37:34.500Z', crashed: { label: 'cy', at: '2026-11-24T11:37:44.358Z' },
+  },
+  {
+    job: '139221432621 (x/stack-m9)',
+    line: '2026-11-25T13:20:51.621Z [pid=3390][err] GLib:ERROR:../../../glib/gmain.c:3993:g_main_context_check_unlocked: assertion failed: (i <= 0 || fds[i - 1].fd < fds[i].fd)',
+    began: '2026-11-25T13:20:47.609Z', gaveUp: '2026-11-25T13:20:59.687Z', crashed: { label: 'ada', at: '2026-11-25T13:21:23.411Z' },
+  },
+];
 const SELFTEST_MARK = ' (written by a selftest, not the engine)';
 /** What the browser itself wrote, without the log's stamp and Playwright's prefix, marked as a selftest's. */
 const asWritten = (line: string) => `${line.replace(/^\S+ \[pid=\d+\]\[err\] /, '')}${SELFTEST_MARK}`;
@@ -617,6 +636,33 @@ test.describe('infrastructure classification', () => {
     const repeated = await summarize([{ title: 'j09 reload', errors: [reason(1)] }, { title: 'j09 reload', errors: [reason(2)] }], 10);
     expect(repeated, 'at repeat 10 two rows are what chance gives').toContain('0 failed, 2 blocked');
   });
+  test("GLib's main-loop abort is named from the browser's stderr only", () => {
+    for (const { line } of GLIB_SEEN) expect(engineFaultIn(line), line).toBe(GLIB_ABORT);
+    expect(engineFaultIn(`[pid=3590][err] ${asWritten(GLIB_SEEN[0].line)}`), 'a marked selftest line').toBe(GLIB_ABORT);
+    const bailOut = '2026-11-24T11:40:40.450Z [pid=3590][out] Bail out! GLib:ERROR:../../../glib/gmain.c:3993:g_main_context_check_unlocked: assertion failed: (i <= 0 || fds[i - 1].fd < fds[i].fd)';
+    // The network process's line in T9.48g's reproduction (its text as PROGRESS.md records it, in the log's form).
+    const refCount = "2026-11-22T10:05:31.204Z [pid=3112][err] (process:3290): GLib-CRITICAL **: 10:05:31.204: g_atomic_ref_count_dec: assertion 'old_value > 0' failed";
+    const bare = GLIB_SEEN[0].line.replace(/^\S+ \[pid=\d+\]\[err\] /, '');
+    for (const line of [bailOut, refCount, 'page.evaluate: Target crashed', bare]) expect(engineFaultIn(line), line).toBeNull();
+    expect(classifyInfra(GLIB_SEEN[0].line)).toBeNull();
+  });
+  test("a failed test is labelled by GLib's abort only when a person's page crashed after it, within the test", () => {
+    for (const seen of GLIB_SEEN) {
+      const at = Date.parse(seen.line.slice(0, 24));
+      const crash = Date.parse(seen.crashed.at);
+      const pages = ['ada', 'cy'].map((label) => ({ label, crashes: label === seen.crashed.label ? [crash] : [] }));
+      const failing = { failed: true, madeAt: Date.parse(seen.began), teardownAt: Date.parse(seen.gaveUp), noted: [{ at, name: GLIB_ABORT }], pages };
+      const reason = engineFaultOf(failing);
+      expect(reason?.startsWith(`${GLIB_ABORT}: [${seen.crashed.label}] `), `${seen.job}: ${reason}`).toBe(true);
+      expect(reason, 'the seconds from abort to crash report').toContain(`${((crash - at) / 1000).toFixed(1)} s`);
+      expect(engineFaultOf({ ...failing, failed: false }), 'a passing test').toBeNull();
+      expect(engineFaultOf({ ...failing, pages: pages.map((page) => ({ ...page, crashes: [] })) }), 'the line with no crash').toBeNull();
+      expect(engineFaultOf({ ...failing, pages: pages.map((page) => ({ ...page, crashes: page.crashes.map(() => at - 1) })) }), 'a crash stamped before the line').toBeNull();
+      expect(engineFaultOf({ ...failing, madeAt: at + 1 }), 'a line before the test began').toBeNull();
+      expect(engineFaultOf({ ...failing, teardownAt: at }), 'a line noted after the teardown began').toBeNull();
+      expect(engineFaultOf({ ...failing, noted: [] }), 'a crash with no line').toBeNull();
+    }
+  });
   test('a journey failure whose page logged the crash is reported BLOCKED, with its census attached', async ({ actors, server }) => {
     const actor = await actors.anonymous(`${server.url}/clean.html`, { label: 'crashed' });
     await actor.page.evaluate((line) => console.error(line), WORKSPACE_CRASH);
@@ -720,7 +766,7 @@ test.describe('engine evidence', () => {
     expect(probe.freshContext).toMatchObject({ value: 200 });
     expect(probe.node).toMatchObject({ value: 200 });
     const system = evidence.system;
-    for (const key of ['ps', 'networkProcesses', 'ulimitN', 'meminfo', 'shm', 'dmesg']) expect(system, key).toHaveProperty(key);
+    for (const key of ['ps', 'networkProcesses', 'ulimitN', 'meminfo', 'shm', 'dmesg', 'ulimitC', 'corePattern']) expect(system, key).toHaveProperty(key);
     if (process.platform === 'linux') {
       expect(system.ps).toMatch(/NetworkProcess/);
       expect(system.networkProcesses.length, 'the network process is found').toBeGreaterThan(0);
@@ -730,6 +776,8 @@ test.describe('engine evidence', () => {
       expect(system.ulimitN).toMatch(/^\d+|unlimited/);
       expect(system.meminfo).toMatch(/MemAvailable/);
       expect(system.shm).toMatch(/\/dev\/shm/);
+      expect(system.ulimitC, 'whether a core could be written').toMatch(/^\d+|unlimited/);
+      expect(system.corePattern).not.toMatch(/^unavailable/);
     }
   });
 
@@ -779,6 +827,83 @@ test.describe('engine evidence', () => {
   });
 });
 
+// The label of T9.55g on the real teardown: GLib's line, then a real page crash. The test writes the line on its
+// trigger and kills the page processes of the browser it launched (found from the wrapper's pid, never by name: the
+// worker's own browser is alive beside it). A killed process is reported at once, where the real abort was reported
+// 18 to 32 s later; the check against the real fault is a dispatch of the reproduction.
+test.describe('engine evidence: a page process abort', () => {
+  test("a failed teardown is BLOCKED by GLib's abort only with a crash of the person's page after it, within the test", async ({ playwright, server, browserName }) => {
+    test.skip(browserName !== 'webkit' || process.platform !== 'linux', "Linux WebKit's page processes");
+    test.setTimeout(180_000);
+    const engine = await wrappedWebKit(playwright.webkit, asWritten(GLIB_SEEN[0].line));
+    const open = async (info: TestInfo) => {
+      const own = new Actors(engine.browser, info, { stack: null, runToken: 'selftest' });
+      own.solo('fixture pages have no principals; the guard has its own selftest');
+      const actor = await own.anonymous(`${server.url}/clean.html`, { label: 'ada' });
+      await ui.waitLive(actor, 'doc-a');
+      return { own, actor };
+    };
+    const crash = async (actor: Actor) => {
+      expect((await engine.killPages()).length, "the browser's page processes").toBeGreaterThan(0);
+      await expect.poll(() => actor.telemetry.crashes.length, { timeout: 30_000, message: "Playwright's crash event" }).toBe(1);
+    };
+    const settled = (own: Actors) => own.settle().then(() => null, (e: Error) => e);
+    // As Playwright reports a thrown error: its name, then its message.
+    const row = async (error: Error | null) => {
+      const summary = await summarize([{ title: 'export', errors: [error ? `${error.name}: ${error.message}` : 'TimeoutError: waiting for event "page"'] }]);
+      return summary.split('\n').find((line) => line.includes('› export |')) ?? '';
+    };
+    try {
+      // The line, then the person's page crashes, both within the test: BLOCKED with the fixed name.
+      const mark = test.info().attachments.length;
+      const labelled = await open(bodyFailed());
+      await engine.write();
+      await crash(labelled.actor);
+      const error = await settled(labelled.own);
+      expect(isInfraBlocked(error?.message), String(error?.message)).toBe(true);
+      expect(engineFaultNamed(`InfraBlocked: ${error?.message}`)).toBe(GLIB_ABORT);
+      expect(error?.message, 'the person, and the teardown error beneath').toMatch(/\[ada\][^\n]*\n[\s\S]*Target crashed/);
+      expect(await row(error)).toContain(`| BLOCKED: ${GLIB_ABORT} |`);
+      const evidence = test.info().attachments.slice(mark).find((a) => a.name === 'engine.json');
+      expect(JSON.parse(String(evidence?.body)).pages[0].crashes, 'engine.json is attached as before').toHaveLength(1);
+
+      // Controls that stay FAILED. The same kill with no line:
+      const killed = await open(bodyFailed());
+      await crash(killed.actor);
+      const plain = await settled(killed.own);
+      expect(plain?.message).toContain('Target crashed');
+      expect(isInfraBlocked(plain?.message)).toBe(false);
+      expect(await row(plain)).toContain('| failed |');
+
+      // The line with no crash, in a test whose body failed waiting for a tab:
+      const waiting = await open(bodyFailed());
+      await engine.write();
+      const waited = await waiting.actor.context.waitForEvent('page', { timeout: 1_000 }).then(() => null, (e: Error) => e);
+      expect(waited?.message).toContain('Timeout');
+      expect(await settled(waiting.own), 'no crash, no label').toBeNull();
+
+      // The line noted before the test's Actors was made:
+      await engine.write();
+      await new Promise((done) => setTimeout(done, 5));
+      const late = await open(bodyFailed());
+      await crash(late.actor);
+      const earlier = await settled(late.own);
+      expect(earlier?.message).toContain('Target crashed');
+      expect(isInfraBlocked(earlier?.message)).toBe(false);
+
+      // A crash stamped before the line:
+      const first = await open(bodyFailed());
+      await crash(first.actor);
+      await engine.write();
+      const crashFirst = await settled(first.own);
+      expect(crashFirst?.message).toContain('Target crashed');
+      expect(isInfraBlocked(crashFirst?.message)).toBe(false);
+    } finally {
+      await engine.close();
+    }
+  });
+});
+
 /**
  * WebKit launched through a wrapper that records the browser's pid and, at each `write()`, makes the browser process
  * write `line` to its own stderr, then waits until the worker's browser log holds it.
@@ -801,12 +926,32 @@ async function wrappedWebKit(browserType: BrowserType, line: string) {
   const count = () => browserLog().filter((logged) => logged.includes(line)).length;
   return {
     browser,
-    pid: () => Number(readFileSync(pidPath, 'utf8').trim()),
     async write(): Promise<void> {
       const seen = count();
       writes += 1;
       writeFileSync(join(dir, `write.${writes}`), '');
       await expect.poll(count, { timeout: 15_000 }).toBeGreaterThan(seen);
+    },
+    /** Kills this browser's page processes, found among the descendants of the wrapper's pid. */
+    async killPages(): Promise<number[]> {
+      const { stdout } = await promisify(execFile)('ps', ['-eo', 'pid=,ppid=,args=']);
+      const rows = stdout.split('\n').flatMap((row) => {
+        const match = /^\s*(\d+)\s+(\d+)\s+(.*)$/.exec(row);
+        return match ? [{ pid: Number(match[1]), ppid: Number(match[2]), args: match[3] }] : [];
+      });
+      const tree = new Set([Number(readFileSync(pidPath, 'utf8').trim())]);
+      for (let grew = true; grew;) {
+        grew = false;
+        for (const row of rows) {
+          if (!tree.has(row.pid) && tree.has(row.ppid)) {
+            tree.add(row.pid);
+            grew = true;
+          }
+        }
+      }
+      const pages = rows.filter((row) => tree.has(row.pid) && /WebProcess\b/.test(row.args)).map((row) => row.pid);
+      for (const pid of pages) process.kill(pid, 'SIGKILL');
+      return pages;
     },
     async close(): Promise<void> {
       await browser.close().catch(() => undefined);

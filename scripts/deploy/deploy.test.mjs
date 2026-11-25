@@ -1017,6 +1017,10 @@ describe('the staging retry gate (T8.2)', () => {
     const libsoup = "InfraBlocked: InfraBlocked: WebKit's network process failed a libsoup check: the browser's stderr carried it at 2026-11-24T08:41:15.182Z";
     expect(retryClass(failed(libsoup))).toBeNull();
     expect(retryClass(failed(`${libsoup}\n  the teardown's error: InfraBlocked: GET /api/docs: the stack is unreachable`))).toBeNull();
+    // Nor is the page process's abort in GLib (T9.55g), whose body failed on a timeout first.
+    const glib = "InfraBlocked: InfraBlocked: WebKit's page process aborted in GLib's main loop: [cy] the browser's stderr carried it at 2026-11-24T11:40:40.449Z, and the page's crash was reported 20.1 s later\n  the teardown's error: page.evaluate: Target crashed";
+    expect(retryClass(failed(glib))).toBeNull();
+    expect(retryClass([{ message: 'TimeoutError: browserContext.waitForEvent: Timeout 10000ms exceeded while waiting for event "page"', stack: '' }, ...failed(glib)])).toBeNull();
     const outputDir = mkdtempSync(join(os.tmpdir(), 'retry-gate-'));
     try {
       // A provenance mismatch on the first attempt fails the run even if the retry would pass.

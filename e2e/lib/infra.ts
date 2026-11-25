@@ -47,6 +47,7 @@ export function browserCrashIn(texts: string[]): string | null {
  * text (`pid=` is Playwright's launcher, `(process:N)` names no program), so only its text is matched.
  */
 export const LIBSOUP_CHECK = "WebKit's network process failed a libsoup check";
+export const GLIB_ABORT = "WebKit's page process aborted in GLib's main loop";
 export const ENGINE_FAULTS: readonly string[] = [LIBSOUP_CHECK];
 
 // A browser-log line: the time engine.ts kept it at (optional), then Playwright's mark for the browser's stderr.
