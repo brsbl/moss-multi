@@ -20,6 +20,12 @@ describe('connection truth', () => {
   it.each([[4401, 'session-ended'], [4402, 'session-ended'], [4404, 'unavailable'], [4410, 'deleted'], [4426, 'outdated'], [4429, 'conn-limit']] as const)(
     'stops designed refusal %s', (code, reason) => expect(closeAction(code)).toEqual({ kind: 'terminal', reason }),
   );
+  it('a suggestion cooldown is its own terminal reason, which ends by itself; any other 4429 is the connection limit (T5.S16)', () => {
+    const withReason = closeAction as (code: number, reason?: string) => ReturnType<typeof closeAction>;
+    expect(withReason(4429, 'suggest-cooldown')).toEqual({ kind: 'terminal', reason: 'suggest-cooldown' });
+    expect(withReason(4429, 'refused')).toEqual({ kind: 'terminal', reason: 'conn-limit' });
+    expect(withReason(4429)).toEqual({ kind: 'terminal', reason: 'conn-limit' });
+  });
   it('rechecks a changed grant and rebinds a refused write', () => {
     expect(closeAction(4403)).toEqual({ kind: 'reask' });
     expect(closeAction(4409)).toEqual({ kind: 'refused' });
