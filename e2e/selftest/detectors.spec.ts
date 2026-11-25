@@ -30,9 +30,9 @@ const CASES: Case[] = [
   { fixture: 'marker-leak', invariant: 6 },
   { fixture: 'dropped-keystroke', invariant: 7 },
   { fixture: 'reordered', invariant: 7 },
-  { fixture: 'duplicated', invariant: 7, act: (page) => page.locator('html[data-echoed]').waitFor({ state: 'attached' }) },
+  { fixture: 'duplicated', invariant: 7, act: (page) => page.evaluate(() => (window as unknown as { echo: () => void }).echo()) },
   // macOS WebKit stalls 0.7-1.0 s between two keys of a short string in most runs (T9.55): the duplicate must not depend on the pace of typing.
-  { fixture: 'duplicated', invariant: 7, variant: 'when the typing stalls', stallAfter: 5, act: (page) => page.locator('html[data-echoed]').waitFor({ state: 'attached' }) },
+  { fixture: 'duplicated', invariant: 7, variant: 'when the typing stalls', stallAfter: 5, act: (page) => page.evaluate(() => (window as unknown as { echo: () => void }).echo()) },
   { fixture: 'editable-unbound', invariant: 9 },
   { fixture: 'read-only-separator', invariant: 9 },
 ];
