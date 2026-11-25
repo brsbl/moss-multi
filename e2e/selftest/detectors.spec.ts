@@ -14,6 +14,8 @@ interface Case {
   invariant: number;
   variant?: string;
   act?: (page: Page) => Promise<unknown>;
+  /** Type this many characters, wait 300 ms, then type the rest. */
+  stallAfter?: number;
 }
 
 const CASES: Case[] = [
@@ -29,15 +31,27 @@ const CASES: Case[] = [
   { fixture: 'dropped-keystroke', invariant: 7 },
   { fixture: 'reordered', invariant: 7 },
   { fixture: 'duplicated', invariant: 7, act: (page) => page.locator('html[data-echoed]').waitFor({ state: 'attached' }) },
+  // macOS WebKit stalls 0.7-1.0 s between two keys of a short string in most runs (T9.55): the duplicate must not depend on the pace of typing.
+  { fixture: 'duplicated', invariant: 7, variant: 'when the typing stalls', stallAfter: 5, act: (page) => page.locator('html[data-echoed]').waitFor({ state: 'attached' }) },
   { fixture: 'editable-unbound', invariant: 9 },
   { fixture: 'read-only-separator', invariant: 9 },
 ];
 
 /** The same user path on every fixture: observe the editor, then type into the body (the title may be unbound). */
-async function exercise(actor: Actor): Promise<void> {
+async function exercise(actor: Actor, stallAfter = 0): Promise<void> {
   await expect(ui.body(actor, DOC)).toHaveAttribute(BODY_BINDING_ATTR, 'live');
   await actor.observeEditor(DOC);
-  await ui.typeBody(actor, DOC, TYPED);
+  if (!stallAfter) {
+    await ui.typeBody(actor, DOC, TYPED);
+    return;
+  }
+  // The pause is the input under test, a person stopping mid-word, not a wait for the page.
+  await ui.body(actor, DOC).click();
+  await actor.page.keyboard.press(ui.toEnd);
+  await actor.page.keyboard.type(TYPED.slice(0, stallAfter));
+  await actor.page.waitForTimeout(300);
+  await actor.page.keyboard.type(TYPED.slice(stallAfter));
+  actor.typed({ docId: DOC, field: 'body', text: TYPED, ordered: true });
 }
 
 test('the clean fixture yields no findings', async ({ actors, server }) => {
@@ -50,7 +64,7 @@ test('the clean fixture yields no findings', async ({ actors, server }) => {
 for (const c of CASES) {
   test(`${c.fixture}${c.variant ? ` ${c.variant}` : ''} is flagged by invariant ${c.invariant} alone`, async ({ actors, server }) => {
     const actor = await actors.anonymous(`${server.url}/${c.fixture}.html`, { label: c.fixture });
-    await exercise(actor);
+    await exercise(actor, c.stallAfter);
     await c.act?.(actor.page);
     const findings = await actors.findings();
     test.info().annotations.push({ type: 'findings', description: JSON.stringify(findings) });
