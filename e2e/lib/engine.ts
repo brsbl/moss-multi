@@ -1,7 +1,7 @@
 // Engine evidence for a failed WebKit test (T9.48g): the browser's stderr, page crashes and browser disconnects, the
 // browser's age and context count, the runner's process, descriptor, memory and shared-memory state, how long each
 // close took, and a probe of what still answers. Evidence only, with one exception: the engine-fault lines the browser
-// writes to its stderr are also noted, with their times, for Actors.settle to label a failed test (T9.55c). Nothing
+// writes to its stderr are also noted, with their times, for Actors.settle to label a failed test (T9.55c, g). Nothing
 // here retries a test.
 import { execFile } from 'node:child_process';
 import { appendFileSync, mkdirSync, readdirSync, readFileSync } from 'node:fs';
@@ -171,6 +171,9 @@ export async function systemSnapshot(): Promise<Record<string, unknown>> {
     ps: ps.startsWith('unavailable') ? ps : [header, ...webkit].join('\n'),
     networkProcesses: network,
     ulimitN: await shell('sh', ['-c', 'ulimit -n']),
+    // Whether an aborted process could leave a core: no backtrace exists for any abort so far (T9.55g).
+    ulimitC: await shell('sh', ['-c', 'ulimit -c']),
+    corePattern: read('/proc/sys/kernel/core_pattern'),
     meminfo: read('/proc/meminfo'),
     shm: await shell('df', ['-k', '/dev/shm']),
     dmesg: await shell('sh', ['-c', 'dmesg 2>&1 | tail -n 40']),

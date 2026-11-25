@@ -41,14 +41,14 @@ export function browserCrashIn(texts: string[]): string | null {
 }
 
 /**
- * Engine faults read from the browser's own stderr, never from page text (T9.55c): page console text does not reach
+ * Engine faults read from the browser's own stderr, never from page text (T9.55c, g): page console text does not reach
  * it, and these patterns are not in SIGNATURES, which run over response bodies and error text a page can write. Each
  * is a fixed name, the only text of the fault a run summary prints. A line cannot be tied to one WebKit process by its
  * text (`pid=` is Playwright's launcher, `(process:N)` names no program), so only its text is matched.
  */
 export const LIBSOUP_CHECK = "WebKit's network process failed a libsoup check";
 export const GLIB_ABORT = "WebKit's page process aborted in GLib's main loop";
-export const ENGINE_FAULTS: readonly string[] = [LIBSOUP_CHECK];
+export const ENGINE_FAULTS: readonly string[] = [LIBSOUP_CHECK, GLIB_ABORT];
 
 // A browser-log line: the time engine.ts kept it at (optional), then Playwright's mark for the browser's stderr.
 const STDERR = String.raw`^(?:\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z )?\[pid=\d+\]\[err\] `;
@@ -58,6 +58,8 @@ const ENGINE_LINES: [RegExp, string][] = [
     new RegExp(`${STDERR}(?:\\(process:\\d+\\): )?libsoup-CRITICAL \\*\\*: [\\d:.]+: soup_session_feature_request_(?:queued|unqueued): assertion 'SOUP_IS_SESSION_FEATURE \\(feature\\)' failed`),
     LIBSOUP_CHECK,
   ],
+  // GLib's assertion on its loop's sorted descriptors, then abort(); the `[out] Bail out!` copy alone does not match.
+  [new RegExp(`${STDERR}GLib:ERROR:[^\\s:]*gmain\\.c:\\d+:g_main_context_check_unlocked: assertion failed`), GLIB_ABORT],
 ];
 
 /** The engine fault one line of the browser log carries, or null. */
@@ -73,11 +75,24 @@ export interface NotedFault { at: number; name: string }
  * the test's Actors was made, `teardownAt` when its teardown began, `noted` the fault lines the worker's browsers
  * wrote. A libsoup line at or after `madeAt` labels the failure. The check keys on time, not on context: with two
  * people, a fault in one page's network labels a failure in the other's page; the job is red either way.
+ *
+ * GLib's abort labels it only with a crash of one person's page reported at or after a GLib line noted from `madeAt`
+ * to before `teardownAt`: a page crash alone stays FAILED (a page that runs out of memory can be the product's doing,
+ * T9.48g), as does the line alone, an earlier test's line, or a crash before the line. An export that fails with its
+ * page alive has no crash, so it is never labelled.
  */
 export function engineFaultOf(test: { failed: boolean; madeAt: number; teardownAt: number; noted: NotedFault[]; pages: { label: string; crashes: number[] }[] }): string | null {
   if (!test.failed) return null;
   const libsoup = test.noted.find((line) => line.name === LIBSOUP_CHECK && line.at >= test.madeAt);
   if (libsoup) return `${LIBSOUP_CHECK}: the browser's stderr carried it at ${new Date(libsoup.at).toISOString()}`;
+  for (const line of test.noted) {
+    if (line.name !== GLIB_ABORT || line.at < test.madeAt || line.at >= test.teardownAt) continue;
+    for (const page of test.pages) {
+      const crash = page.crashes.find((at) => at >= line.at);
+      if (crash === undefined) continue;
+      return `${GLIB_ABORT}: [${page.label}] the browser's stderr carried it at ${new Date(line.at).toISOString()}, and the page's crash was reported ${((crash - line.at) / 1000).toFixed(1)} s later`;
+    }
+  }
   return null;
 }
 

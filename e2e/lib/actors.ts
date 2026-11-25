@@ -404,7 +404,9 @@ export class Actors {
    * test, whether its body or the invariants failed, carries the engine evidence (T9.48g). It is reported BLOCKED when
    * the browser's stderr names an engine fault in its window (engineFaultOf, T9.55c), with the invariants' own message
    * kept beneath. Label only, never a retry, and the test still fails its job. A passing test whose window holds such a
-   * line only records the count, as an `engine-fault-survived` annotation.
+   * line only records the count, as an `engine-fault-survived` annotation. A page crash is known here because the
+   * invariants' evaluate on the dead page waits for the engine's report (T9.55g); `settle({ assert: false })` runs no
+   * such wait, so it cannot label a page process abort.
    */
   async settle({ assert = true } = {}): Promise<void> {
     const teardownAt = Date.now();
