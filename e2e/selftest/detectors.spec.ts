@@ -62,12 +62,27 @@ for (const c of CASES) {
   });
 }
 
-test('invariant 7 waits for a rebinding field and then reads its text', async ({ actors, server }) => {
-  const actor = await actors.anonymous(`${server.url}/rebind-keeps-text.html`, { label: 'rebind' });
-  await exercise(actor);
-  await actor.page.locator('html[data-unbound]').waitFor({ state: 'attached' });
-  expect(await actors.findings()).toEqual([]);
-});
+/** Types the body like `exercise`, with a 300 ms pause (a person stopping mid-word) after `stallAfter` characters. */
+async function exerciseStalled(actor: Actor, stallAfter: number): Promise<void> {
+  await expect(ui.body(actor, DOC)).toHaveAttribute(BODY_BINDING_ATTR, 'live');
+  await actor.observeEditor(DOC);
+  await ui.body(actor, DOC).click();
+  await actor.page.keyboard.press(ui.toEnd);
+  await actor.page.keyboard.type(TYPED.slice(0, stallAfter));
+  await actor.page.waitForTimeout(300);
+  await actor.page.keyboard.type(TYPED.slice(stallAfter));
+  actor.typed({ docId: DOC, field: 'body', text: TYPED, ordered: true });
+}
+
+// macOS WebKit can stall most of a second between two keys (T9.55h): the rebind must not depend on the pace of typing.
+for (const [variant, typing] of [['', exercise], [' when the typing stalls', (actor: Actor) => exerciseStalled(actor, 5)]] as const) {
+  test(`invariant 7 waits for a rebinding field and then reads its text${variant}`, async ({ actors, server }) => {
+    const actor = await actors.anonymous(`${server.url}/rebind-keeps-text.html`, { label: 'rebind' });
+    await typing(actor);
+    await actor.page.locator('html[data-unbound]').waitFor({ state: 'attached' });
+    expect(await actors.findings()).toEqual([]);
+  });
+}
 
 test('a read-only body\'s tab, focused in its tablist, is not a finding (T3.B17)', async ({ actors, server }) => {
   const actor = await actors.anonymous(`${server.url}/read-only-tab.html`, { label: 'read-only-tab' });

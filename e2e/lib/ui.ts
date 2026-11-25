@@ -240,7 +240,8 @@ export async function openNote(actor: Actor, docId: string): Promise<void> {
   await actor.declareRemount(docId);
 }
 
-const toEnd = process.platform === 'darwin' ? 'Meta+ArrowDown' : 'Control+End';
+/** The key that moves the caret to the end of a field. */
+export const toEnd = process.platform === 'darwin' ? 'Meta+ArrowDown' : 'Control+End';
 
 /** Types at the end of the title. With `enter`, presses Enter so focus moves to the body. */
 export async function typeTitle(actor: Actor, docId: string, text: string, { enter = false } = {}): Promise<void> {
