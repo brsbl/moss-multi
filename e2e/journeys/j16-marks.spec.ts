@@ -1,7 +1,8 @@
 // j16-marks (T5.B3; docs/design/suggestions.md §5, §7): an Edit-mode wedge at a block's edge takes the hover and the
 // click over moss's gap cursor, and a multi-word preview reads as a line, inside the viewport (B305); a formula typed
 // while suggesting commits on Space and on Enter, is recorded, leaves the note alone until an accept, and idling sends
-// nothing (B306); a click on a wedge survives a repaint, and a standing mark keeps its element (T9.55d).
+// nothing (B306); a click on a wedge survives a repaint, a standing mark keeps its element, and the preview under a
+// resting pointer stays open with the current text while the suggestion grows (T9.55d).
 import type { Locator } from '@playwright/test';
 import type { Actor } from '../lib/actors.ts';
 import {
@@ -128,7 +129,7 @@ async function repaintNote(actors: Actors) {
   await expect(wedge, "ada's wedge reads the whole suggestion").toHaveCount(1, { timeout: BIND_TIMEOUT });
   const record = await wedge.getAttribute(SUGGESTION_ID_ATTR);
   expect(record).toBeTruthy();
-  return { ada, cara, docId, wedge, record: record! };
+  return { ada, ben, cara, docId, wedge, record: record! };
 }
 
 test('j16-marks: a click on a mark survives a repaint, and a standing mark keeps its element: a co-editor types between press and release @p:mean-2 @p:R17', async ({ actors }) => {
@@ -162,4 +163,32 @@ test('j16-marks: a click on a mark survives a repaint, and a standing mark keeps
     }, record);
     expect(kept, `after key ${i + 1} the wedge is the same element, the only one for its suggestion`).toEqual({ connected: true, only: true });
   }
+});
+
+test('j16-marks: a click on a mark survives a repaint, and a standing mark keeps its element: the preview under a resting pointer stays open while the suggestion grows @p:mean-2 @p:R17', async ({ actors }) => {
+  const { ada, ben, wedge, record } = await repaintNote(actors);
+  await wedge.hover({ timeout: 5_000 });
+  await expect(wedge.locator('[data-suggest-preview]'), 'hovering shows the preview').toBeVisible();
+  const held = (await wedge.elementHandle())!;
+  const mark = ada.page.locator(`[${SUGGEST_MARK_ATTR}="insert"][${SUGGESTION_ID_ATTR}="${record}"]`);
+  // Ben's caret is still at the end of his suggestion; the pointer stays where the hover left it.
+  let text = 'plus';
+  for (const [i, key] of [...'abcdefghij'].entries()) {
+    await ben.page.keyboard.type(key);
+    text += key;
+    await expect(mark, `key ${i + 1} reaches ada`).toHaveAttribute('aria-label', `Suggested insert: ${text}`, { timeout: BIND_TIMEOUT });
+    await frames(ada);
+    // One read, no retry: the preview is shown now, with the text now.
+    const seen = await held.evaluate((element) => {
+      const preview = element.querySelector<HTMLElement>('[data-suggest-preview]');
+      const box = preview?.getBoundingClientRect();
+      return { connected: element.isConnected, shown: !!preview && getComputedStyle(preview).display !== 'none' && !!box && box.width > 0, text: preview?.textContent ?? '' };
+    });
+    expect(seen, `after key ${i + 1} the preview is shown and reads the current text`).toEqual({ connected: true, shown: true, text });
+  }
+  const kept = await held.evaluate((element, id) => {
+    const wedges = [...document.querySelectorAll(`[data-suggest-mark="insert"][data-suggestion-id="${id}"]`)];
+    return wedges.length === 1 && wedges[0] === element;
+  }, record);
+  expect(kept, 'at the end the wedge is the same element, the only one for its suggestion').toBe(true);
 });
