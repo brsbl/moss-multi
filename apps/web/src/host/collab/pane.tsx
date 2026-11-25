@@ -53,7 +53,7 @@ import { showActionFeedback, withdrawActionFeedback } from './feedback.ts';
 import { settleRefusal } from '../refusal.ts';
 import { RoleBand, watchRefusedTyping } from './RoleBand.tsx';
 import { RefusalAnnouncer } from '../surfaces/RefusalAnnouncer.tsx';
-import { BOTTOM_REGION, REGION_BOTTOM_PX, REGION_GAP_PX, useToolbarHeight } from './bottom-row.ts';
+import { BOTTOM_REGION, keepCaretInNote, REGION_BOTTOM_PX, REGION_GAP_PX, useToolbarHeight } from './bottom-row.ts';
 
 /**
  * A paste rolled back (T3.B32): the note shows where the pane was when the paste began, not where the paste had
@@ -834,7 +834,7 @@ function BottomRegion({ docId, children }: { docId: string; children: ReactNode 
   const trashed = useTerminal(docId) === 'deleted';
   const bottom = toolbar ? REGION_BOTTOM_PX + toolbar + REGION_GAP_PX : trashed ? TRASH_NOTICE_BOTTOM_PX : null;
   return (
-    <div {...{ [BOTTOM_REGION_ATTR]: '' }} className={BOTTOM_REGION} style={bottom === null ? undefined : { bottom }}>
+    <div {...{ [BOTTOM_REGION_ATTR]: '' }} className={BOTTOM_REGION} style={bottom === null ? undefined : { bottom }} onMouseDown={keepCaretInNote}>
       {children}
     </div>
   );
