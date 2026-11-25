@@ -6,6 +6,7 @@ import {
   DOC_SOCKET_PATH, SUGGEST_UNSAVED_ATTR, SUGGESTION_CARD_ATTR, SUGGESTION_STATUS_ATTR, SUGGESTIONS_BUTTON_ATTR, SUGGESTIONS_PANEL_ATTR,
 } from '../lib/contract.ts';
 import { CUSTOM_PREFIX } from '../../packages/protocol/src/sync.ts';
+import { PROTOCOL_QUERY } from '../lib/doc-client.ts';
 import { BIND_TIMEOUT, content } from '../lib/suggest.ts';
 import {
   begin, caretEnd, draftLines, firstLine, freshPage, KEY_DELAY, pause, START, until, type Probe,
@@ -27,8 +28,9 @@ async function refusedElsewhere(probe: Probe, count: number): Promise<void> {
   const fresh = await freshPage(probe);
   try {
     await fresh.page.goto(`${new URL(probe.ben.page.url()).origin}/api/version`);
-    await fresh.page.evaluate(async ({ path, frames }) => {
-      const socket = new WebSocket(`${location.origin.replace(/^http/, 'ws')}${path}?_pk=${crypto.randomUUID()}`);
+    // The protocol query, as the app sends it: a socket without it is refused as outdated.
+    await fresh.page.evaluate(async ({ path, query, frames }) => {
+      const socket = new WebSocket(`${location.origin.replace(/^http/, 'ws')}${path}?${query}&_pk=${crypto.randomUUID()}`);
       await new Promise((done, fail) => {
         socket.addEventListener('open', done, { once: true });
         socket.addEventListener('error', fail, { once: true });
@@ -37,7 +39,7 @@ async function refusedElsewhere(probe: Probe, count: number): Promise<void> {
       await new Promise((done) => setTimeout(done, 1_500));
       for (const frame of frames) socket.send(frame);
       await new Promise((done) => setTimeout(done, 1_000));
-    }, { path: `${DOC_SOCKET_PATH}${probe.docId}`, frames: Array.from({ length: count }, (_, i) => forged(i)) });
+    }, { path: `${DOC_SOCKET_PATH}${probe.docId}`, query: PROTOCOL_QUERY, frames: Array.from({ length: count }, (_, i) => forged(i)) });
   } finally {
     await fresh.close().catch(() => undefined);
   }
