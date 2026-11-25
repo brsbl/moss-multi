@@ -79,6 +79,7 @@ for (const [variant, typing] of [['', exercise], [' when the typing stalls', (ac
   test(`invariant 7 waits for a rebinding field and then reads its text${variant}`, async ({ actors, server }) => {
     const actor = await actors.anonymous(`${server.url}/rebind-keeps-text.html`, { label: 'rebind' });
     await typing(actor);
+    await actor.page.evaluate(() => (window as unknown as { rebind: () => void }).rebind());
     await actor.page.locator('html[data-unbound]').waitFor({ state: 'attached' });
     expect(await actors.findings()).toEqual([]);
   });
