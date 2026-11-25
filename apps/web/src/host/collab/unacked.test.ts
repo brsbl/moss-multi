@@ -28,6 +28,20 @@ it('text offered back after a closed suggestion holds the unload guard until it 
   dismissUnsaved('doc-full');
 });
 
+it('a note with two offered-back payloads holds the unload guard until the last one is dismissed (T5.S16)', async () => {
+  const { dismissUnsaved, offerUnsaved, unsavedOf } = await import('./suggest/mode.ts');
+  offerUnsaved('doc-two', ['First closed suggestion. Tp1']);
+  offerUnsaved('doc-two', ['Second closed suggestion. Tp2']);
+  const [first, second] = unsavedOf('doc-two');
+  expect(second, 'each closed suggestion is its own payload').toBeDefined();
+  dismissUnsaved('doc-two', first.id);
+  expect(unsavedOf('doc-two').map((entry) => entry.id)).toEqual([second.id]);
+  expect(unloadAsks(), 'the second payload still lives only in this window').toBe(true);
+  dismissUnsaved('doc-two', second.id);
+  expect(unsavedOf('doc-two')).toEqual([]);
+  expect(unloadAsks(), 'nothing offered back is left').toBe(false);
+});
+
 it('a sign-out or an in-app leave with offered-back text undismissed asks first or stays (T5.S16)', async () => {
   const { answerSignOut, needsSignOutConfirmation, prepareSignOut } = await import('../sign-out-guard.ts');
   const { departTo, LEAVE_UNSYNCED } = await import('../navigation.ts');
