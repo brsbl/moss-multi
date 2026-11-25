@@ -118,6 +118,11 @@ describe('shard budget', () => {
     expect(countLegs("test('a', () => {});\n  test.slow('b', () => {});")).toBe(2);
   });
 
+  it('takes the legs a spec states when its legs are made in loops', () => {
+    const text = ['// journey-legs: 6', "for (const role of ROLES) for (const drop of DROPS) test(`one ${role} ${drop}`, async () => {});"].join('\n');
+    expect(countLegs(text)).toBe(6);
+  });
+
   it("estimates a group as the shard's fixed cost plus its files, scaled by legs declared since they were measured", () => {
     const files = ['j00-shell.spec.ts', 'j07-auth.spec.ts'];
     expect(shardEstimates([journey(files[0], 8), journey(files[1], 1)], minutes)).toEqual([

@@ -2,6 +2,7 @@
 // with text typed while down; two windows where the first drops again and again; and one window that drops twice
 // between moves to a new group, three times a minute. Nothing honest is refused and every token is on the server
 // once. The probe is e2e/lib/suggest-drop.ts.
+// journey-legs: 11 (the shard budget counts them; scripts/ci/journeys.mjs)
 import { begin, caretEnd, pause, resumeReply, ROLES, START, until, type LineKey } from '../lib/suggest-drop.ts';
 import { expect, test } from '../lib/test.ts';
 

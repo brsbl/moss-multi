@@ -1,6 +1,7 @@
 // j16-suggest-drop, one window: text acknowledged, stored with its reply lost, in flight and typed while down is on
 // the server once after one cut, two cuts or cuts inside a burst, and so are a strike, an undelete, a paste and a new
 // block across a cut. The probe is e2e/lib/suggest-drop.ts.
+// journey-legs: 12 (the shard budget counts them; scripts/ci/journeys.mjs)
 import { pastePlain } from '../lib/paste.ts';
 import { caret, content } from '../lib/suggest.ts';
 import { begin, caretEnd, DROPS, KEY_DELAY, pause, ROLES, START, typeAcrossCut, until } from '../lib/suggest-drop.ts';

@@ -2,6 +2,7 @@
 // idle or a typed cut while a suggestion is in flight, and a third idle Suggest window. Nothing honest is refused, and
 // the window the person's others leave no room for shows the note read-only and says why. The probe is
 // e2e/lib/suggest-drop.ts.
+// journey-legs: 11 (the shard budget counts them; scripts/ci/journeys.mjs)
 import { CONNECTION_BANNER_ATTR } from '../lib/contract.ts';
 import { begin, caretEnd, draftLines, pause, ROLES, START, typeAcrossCut, until } from '../lib/suggest-drop.ts';
 import { expect, test, ui } from '../lib/test.ts';

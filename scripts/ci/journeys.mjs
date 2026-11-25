@@ -143,11 +143,16 @@ export function groupOf(file, groups = GROUPS) {
 
 /**
  * Leg declarations in a spec's source: `test(` or `test.only|fixme|fail|slow(` with a literal title. A leg declared in
- * a loop counts once, so the count tracks added declarations, not runtime legs.
+ * a loop counts once, so the count tracks added declarations, not runtime legs. A spec whose legs are made in loops
+ * states the legs it runs in a line `// journey-legs: N`, and that number is its count.
  * @param {string} text
  * @returns {number}
  */
-export const countLegs = (text) => (text.match(/^[^\S\n\r\u2028\u2029]*test(?:\.(?:only|fixme|fail|slow))?\(\s*[`'"]/gm) ?? []).length;
+export const countLegs = (text) => {
+  const stated = /^\/\/ journey-legs: (\d+)\b/m.exec(text);
+  if (stated) return Number(stated[1]);
+  return (text.match(/^[^\S\n\r\u2028\u2029]*test(?:\.(?:only|fixme|fail|slow))?\(\s*[`'"]/gm) ?? []).length;
+};
 
 /**
  * The journey spec files in `dir`, each with its group, whether any leg is tagged @slow, and its leg declarations.

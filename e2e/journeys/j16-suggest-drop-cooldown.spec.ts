@@ -2,6 +2,7 @@
 // delivers it, whether the refused frames went out on the window's own socket or on another of the person's; and text
 // offered back after a closed suggestion holds the leave-site guard until dismissed. The probe is
 // e2e/lib/suggest-drop.ts.
+// journey-legs: 4 (the shard budget counts them; scripts/ci/journeys.mjs)
 import {
   DOC_SOCKET_PATH, SUGGEST_UNSAVED_ATTR, SUGGESTION_CARD_ATTR, SUGGESTION_STATUS_ATTR, SUGGESTIONS_BUTTON_ATTR, SUGGESTIONS_PANEL_ATTR,
 } from '../lib/contract.ts';

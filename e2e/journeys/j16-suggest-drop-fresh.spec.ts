@@ -1,6 +1,7 @@
 // j16-suggest-drop, other windows after a drop: a fresh page of the person's session opens the note after an idle or a
 // typed reconnect, and a stalled socket's frames arrive after its replacement resumed. The probe is
 // e2e/lib/suggest-drop.ts; the cooldown's net is in j16-suggest-drop-cooldown.
+// journey-legs: 5 (the shard budget counts them; scripts/ci/journeys.mjs)
 import {
   begin, caretEnd, draftLines, firstLine, freshPage, pause, paneOf, START, until, type Probe,
 } from '../lib/suggest-drop.ts';
