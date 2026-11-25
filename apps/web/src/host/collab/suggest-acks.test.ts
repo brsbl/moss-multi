@@ -27,3 +27,20 @@ describe('T5.2 suggest acks drive data-sync-unacked @p:tech-7', () => {
     expect(ledger.unacked).toBe(false);
   });
 });
+
+describe('T5.S16 a reply to a frame this window never sent settles nothing', () => {
+  it('a refusal, an ack or a grant answering another request leaves the oldest one unacked', () => {
+    const ledger = new SuggestLedger();
+    ledger.sent(ops('a'));
+    expect(ledger.replied({ t: 'suggest-refused', record: 'unknown-0', reason: 'record' })).toBeUndefined();
+    expect(ledger.replied({ t: 'suggest-ack', record: 'z', requested: 'z', doc: 'body', sv: {}, parts: [] })).toBeUndefined();
+    expect(ledger.replied({ t: 'suggest-leased', leases: [] })).toBeUndefined();
+    expect(ledger.replied({ t: 'suggest-refused', record: null, reason: 'malformed' })).toBeUndefined();
+    expect(ledger.unacked, 'a is still in flight').toBe(true);
+    expect(ledger.replied({ t: 'suggest-ack', record: 'a2', requested: 'a', doc: 'body', sv: {}, parts: [] })).toEqual(ops('a'));
+    expect(ledger.unacked).toBe(false);
+    const lease: SuggestRequest = { t: 'suggest-lease', fork: 'fork-0001' };
+    ledger.sent(lease);
+    expect(ledger.replied({ t: 'suggest-refused', record: null, reason: 'lease-cap' }), 'a lease is refused naming no record').toEqual(lease);
+  });
+});
