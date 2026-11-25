@@ -446,7 +446,8 @@ export class Probe {
     const shows = (lines: string[]) => (windows === 'lines' ? same(draftLines(lines)) : this.tokens.every((token) => occurrences(lines.join('\n'), token) === 1));
     const acked = await until(() => this.pane(ben), (shown) => shown.unacked === '0' || shown.terminal !== null, waitMs ? 20_000 : 0, 100);
     const working = await until(() => content(ada, docId, 'working').catch((error: unknown) => `ERROR ${firstLine(error)}`), (text) => same(exportLines(text)), waitMs, 500);
-    const mode = review ? await this.ownerReview() : 'not asked';
+    // Review is offered only while a suggestion is open (T9.1): with nothing typed, the owner's window is read in Edit.
+    const mode = !review ? 'not asked' : this.tokens.length === 0 ? 'edit: no suggestion to review' : await this.ownerReview();
     const owner = await until(() => this.pane(ada), (shown) => shows(shown.lines), waitMs, 500);
     const person = await until(() => this.pane(ben), (shown) => shows(shown.lines), waitMs, 500);
     const others = [];
@@ -482,10 +483,10 @@ export class Probe {
     for (const token of this.tokens) expect.soft(occurrences(working.value, token), `${name}: "${token}" is in the working export once`).toBe(1);
     expect.soft(note, `${name}: no suggestion wrote the note`).toBe(this.before);
     if (windows === 'lines') {
-      if (review) expect.soft(draftLines(owner.value.lines), `${name}: the owner's Review window shows every typed character once`).toEqual(want);
+      if (review) expect.soft(draftLines(owner.value.lines), `${name}: the owner's ${mode === 'review' ? 'Review ' : ''}window shows every typed character once`).toEqual(want);
       expect.soft(draftLines(person.value.lines), `${name}: the person's window shows every typed character once`).toEqual(want);
     } else {
-      if (review) expect.soft(owner.ok, `${name}: the owner's Review window shows every typed token once`).toBe(true);
+      if (review) expect.soft(owner.ok, `${name}: the owner's ${mode === 'review' ? 'Review ' : ''}window shows every typed token once`).toBe(true);
       expect.soft(person.ok, `${name}: the person's window shows every typed token once`).toBe(true);
     }
     expect.soft(refusals, `${name}: the DocDO refused nothing`).toEqual([]);
