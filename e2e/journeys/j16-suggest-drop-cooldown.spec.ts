@@ -135,10 +135,7 @@ test('j16-suggest-drop halted-card suggester: text offered back after the owner 
     expect.soft(await card.isVisible().catch(() => false), 'staying on the page keeps the card').toBe(true);
     // Once dismissed, nothing holds the page.
     if (await card.isVisible().catch(() => false)) {
-      // From the keyboard: on this layer a pointer press on a card button while the rebuilt note holds the caret
-      // moves focus first, the bottom region drops, and the click lands beside the button.
-      await card.getByRole('button', { name: 'Dismiss', exact: true }).focus();
-      await ben.page.keyboard.press('Enter');
+      await card.getByRole('button', { name: 'Dismiss', exact: true }).click();
       await expect(card).toBeHidden();
       const after = probe.dialogs.length;
       await ben.page.reload();

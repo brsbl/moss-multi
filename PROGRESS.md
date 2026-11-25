@@ -431,7 +431,7 @@ T9.51 fixed only the first press on the card's buttons with the caret in the not
 Ways the card can still cost a person their text:
 
 1. Dismiss does not ask and cannot be undone, and it works before any copy has (`UnsavedCard.tsx`, `suggest/mode.ts`). A product question for the owner.
-2. A reload drops the card with no browser question (`suggest/mode.ts`, `unacked.ts`); T5.S16 holds the leave-site question while text is waiting. The app's own full loads do the same: sign-out, Sign in on an ended session, Reload from the update notice and the app menu, the stale-chunk reload.
+2. Corrected once T5.S16 is under it: a reload no longer drops the card unasked. While offered-back text waits, the browser asks before the page leaves (`unacked.ts`), and so does every full load the app starts through `navigation.ts`, such as Sign in on an ended session; sign-out and Reload from the update notice and the app menu ask first with their own confirm, and the stale-chunk reload waits. The text is still lost once the person chooses to leave, since it lives only in that window.
 3. A paragraph identical to another unsaved one is kept once (`packages/sync/src/suggest/client.ts`, a `Set`).
 4. An empty paragraph typed while offline is left out (the same line).
 5. Markdown punctuation comes back escaped, such as `snake\_case`, `5 \* 3` and `back\\slash` (`suggest/mounts.ts` exports Markdown), though the card's comment says "as typed". Whether pasting into Moss restores the characters is not known. Items 3 to 5 are in `client.ts`, the same file on m5 to m9, so their fix belongs on m5.
