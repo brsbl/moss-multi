@@ -299,6 +299,17 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-11-21 — T8.V verified: staging and the pilot now carry m3's text, structure and storage limits, the lean stored layout, in-place export and paste rollback, and an outdated protocol-1 web bundle is refused on its doc socket (4426) and REST writes (426) before it can write the old layout.
 - 2026-11-23 — T8.F verified: the full journey suite, the security sweep (52 of 52) and the demo pass on staging on commit 7b55f7a, with each recovered connection drop listed in the run summary and a run failing past 2 recovered drops or on any unrecovered one.
 
+## T9.55 on m8: the recording control and the rebind fixture
+
+**The recording control (T9.55f).** `selftest/recording.spec.ts`'s control ("against a loopback target, the checkpoint and its failure capture the page") failed about 1 run in 350 in Chromium (23 of 8,041 executions from 2026-11-13 to 11-25; 26 in about 10,044 since the selftest arrived) with `page.screenshot: Protocol error (Page.captureScreenshot): Unable to capture screenshot`, and as a selftest it then stopped its shard's journeys (288 legs in 12 days).
+- Cause: the selftest checks only whether the harness asks for a capture, yet its wrapper passed each call through to Chromium. Chromium refused the first capture, asked 10 to 20 ms after `goto`, when the image it got was empty; that the page had not yet painted its first frame is inferred from one live refusal.
+- Untested lead for why the control's place is about 50 times likelier than the same steps elsewhere: it runs straight after two tests that load the same page, and Playwright captures that page when their context closes.
+- With `screenshot: 'only-on-failure'`, Playwright calls `page.screenshot` on every page at each `context.close()`, pass or fail, and swallows any refusal. That call reaches the selftest's wrapper too; the wrapper writes no file, so a recording selftest that fails for another reason has no Playwright failure screenshot.
+- Now the wrapper counts the call and returns a fixed buffer. The three tests keep every assertion. The control's time fell to that of the two no-capture tests (Chromium 96 ms beside 94 and 88 ms; before, about 430 to 580 ms beside about 200).
+- No selftest now sends a real capture through `Actors`. Once the checkpoint's capture guard is carried up from `m3`, a refusal in a journey shows only as a `capture-skipped` annotation on the test, and the count of those is the number to watch.
+
+**The `rebind-keeps-text` fixture (T9.55h).** The positive control for invariant 7's wait on a rebinding field rebound after 200 ms with no input. A pause between two keys (macOS WebKit stalls 0.7 to 1.0 s between keys in most typings) fired it mid-typing: the body unbound, the rest of the keys went nowhere, and the selftest read `"Quick fox, wörld… é!" appears 0 time(s), typed 1`. A stall case (five characters, 300 ms, the rest) was red on the old fixture in both Linux engines with that message. The fixture now rebinds when the selftest calls `window.rebind()` after typing. `rebind-loses-text` and `stuck-unbound` keep their timers: they expect a finding, so a stall cannot fail them.
+
 ## Follow-ups (P2)
 
 Parked from the M0 checker and critic passes, each with the task that owns it.
