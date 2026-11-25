@@ -10,7 +10,7 @@ import {
   SUGGESTION_STATUS_ATTR, SUGGESTIONS_BUTTON_ATTR, SUGGESTIONS_PANEL_ATTR, SYNC_UNACKED_ATTR,
 } from '../lib/contract.ts';
 import { grantDoc } from '../lib/grants.ts';
-import { BIND_TIMEOUT, caret, content, mod, openIn, painted, settled as acked } from '../lib/suggest.ts';
+import { BIND_TIMEOUT, caret, content, frames, mod, openIn, painted, settled as acked } from '../lib/suggest.ts';
 import { expect, test, ui } from '../lib/test.ts';
 
 const NOTE = 'Keep every original word.\n\nSecond paragraph here.';
@@ -132,6 +132,53 @@ test("j16-review: the peer's panel lists a suggestion; an editor's accept from t
   const exported = await content(ada, docId);
   expect(exported).toContain('Second paragraph here.');
   expect(exported).not.toContain('extra');
+});
+
+test('j16-review: a click on a mark survives a repaint, and a standing mark keeps its element @p:mean-2 @p:R17', async ({ actors }) => {
+  const { ada, ben, docId } = await sharedNote(actors);
+  const caraPrincipal = await actors.principal('cara');
+  await grantDoc(ada, docId, caraPrincipal, 'editor');
+  const cara = await actors.session(caraPrincipal);
+  await openIn(ben, docId, 'suggest');
+  await openIn(cara, docId, 'edit');
+  await openIn(ada, docId, 'edit');
+  await actors.requireDistinct(3);
+
+  await suggestText(ben, docId, 'original word', 8, ' plus');
+  const wedge = ada.page.locator(`[${SUGGEST_MARK_ATTR}="insert"][aria-label="Suggested insert: plus"]`);
+  await expect(wedge, "ada's wedge reads the whole suggestion").toHaveCount(1, { timeout: BIND_TIMEOUT });
+  const recordId = await wedge.getAttribute(SUGGESTION_ID_ATTR);
+  expect(recordId).toBeTruthy();
+
+  // Case 1: a co-editor's key lands in the owner's note, and the owner's note repaints, between press and release.
+  await caret(cara, docId, 'Second paragraph here.', 6);
+  const box = (await wedge.boundingBox())!;
+  await ada.page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await ada.page.mouse.down();
+  await cara.page.keyboard.type('Q');
+  await expect(ui.body(ada, docId), "cara's key reaches ada").toContainText('SecondQ paragraph here.', { timeout: BIND_TIMEOUT });
+  await frames(ada);
+  await expect(wedge.locator('[data-suggest-preview]'), 'the preview under the pointer is this suggestion').toHaveText('plus');
+  await ada.page.mouse.up();
+  const active = panel(ada).locator(`[${SUGGESTION_CARD_ATTR}][${SUGGESTION_ACTIVE_ATTR}]`);
+  await expect(active, 'the press and release open the suggestion').toHaveCount(1);
+  await expect(active).toHaveAttribute(SUGGESTION_ID_ATTR, recordId!);
+  await closePanel(ada);
+
+  // Case 2: typing earlier in the wedge's own paragraph moves its place on every key; its element stays.
+  const held = await wedge.elementHandle();
+  await caret(cara, docId, 'Keep every', 4);
+  for (const [i, key] of [...'abcde'].entries()) {
+    await cara.page.keyboard.type(key);
+    await expect(ui.body(ada, docId), `key ${i + 1} reaches ada`).toContainText(`Keep${'abcde'.slice(0, i + 1)} every original word.`, { timeout: BIND_TIMEOUT });
+    await frames(ada);
+    const kept = await held!.evaluate((element, id) => {
+      const overlay = element.parentElement;
+      const wedges = overlay ? [...overlay.querySelectorAll(`[data-suggest-mark="insert"][data-suggestion-id="${id}"]`)] : [];
+      return { connected: element.isConnected, only: wedges.length === 1 && wedges[0] === element };
+    }, recordId!);
+    expect(kept, `after key ${i + 1} the wedge is the same element, the only one for its suggestion`).toEqual({ connected: true, only: true });
+  }
 });
 
 test('j16-review: withdraw removes the inserted text from every view while the note stays byte-identical @p:mean-2 @p:R16 @p:R17', async ({ actors }) => {
