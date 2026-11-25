@@ -1,5 +1,6 @@
-// One living suite (A§20; S-test §3.2). CI runs `--project=selftest-<engine> --project=<engine>`: the selftests
-// always run first (journeys depend on them), and a --grep that matches no test fails with "No tests found".
+// One living suite (A§20; S-test §3.2). The e2e shards run `--project=selftest-<engine> --project=<engine>`: the
+// selftests always run first (journeys depend on them), and a --grep that matches no test fails with "No tests found".
+// The macos job is the exception: it runs the @macos selftests, then the @macos legs with --no-deps (T9.55).
 // E2E_GROUP narrows the journey projects to one shard's group (scripts/ci/journeys.mjs); `all` or unset runs every
 // journey.
 import { existsSync, readFileSync } from 'node:fs';
