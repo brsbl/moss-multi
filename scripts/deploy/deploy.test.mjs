@@ -1013,6 +1013,10 @@ describe('the staging retry gate (T8.2)', () => {
     expect(retryClass(failed('InfraBlocked: /api/version answered malformed JSON: Unexpected token < in JSON'))).toBeNull();
     expect(retryClass(failed(`InfraBlocked: /api/version unreachable at ${URL_STAGING}: The operation was aborted due to timeout`))).toBeNull();
     expect(retryClass(failed('InfraBlocked: the suite password MOSS_SUITE_PASSWORD is not set'))).toBeNull();
+    // An engine fault named from the browser's own stderr (e2e/lib/infra.ts, T9.55c) is a label, never a retry.
+    const libsoup = "InfraBlocked: InfraBlocked: WebKit's network process failed a libsoup check: the browser's stderr carried it at 2026-11-24T08:41:15.182Z";
+    expect(retryClass(failed(libsoup))).toBeNull();
+    expect(retryClass(failed(`${libsoup}\n  the teardown's error: InfraBlocked: GET /api/docs: the stack is unreachable`))).toBeNull();
     const outputDir = mkdtempSync(join(os.tmpdir(), 'retry-gate-'));
     try {
       // A provenance mismatch on the first attempt fails the run even if the retry would pass.

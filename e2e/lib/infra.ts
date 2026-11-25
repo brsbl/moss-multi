@@ -40,6 +40,31 @@ export function browserCrashIn(texts: string[]): string | null {
   return texts.some((text) => classifyInfra(text) === NETWORK_PROCESS_CRASHED) ? NETWORK_PROCESS_CRASHED : null;
 }
 
+/** An engine fault read from the browser's own stderr, never from page text (T9.55c). Each is a fixed name. */
+export const LIBSOUP_CHECK = "WebKit's network process failed a libsoup check";
+export const ENGINE_FAULTS: readonly string[] = [LIBSOUP_CHECK];
+
+/** The engine fault one line of the browser log carries, or null. */
+export function engineFaultIn(line: string): string | null {
+  void line;
+  return null;
+}
+
+/** A line of an engine fault, noted when the browser log received it. */
+export interface NotedFault { at: number; name: string }
+
+/** The engine fault that labels a failed test, as the start of an InfraBlocked reason, or null. */
+export function engineFaultOf(test: { failed: boolean; madeAt: number; teardownAt: number; noted: NotedFault[]; pages: { label: string; crashes: number[] }[] }): string | null {
+  void test;
+  return null;
+}
+
+/** The fixed engine fault name an InfraBlocked error names, or null. */
+export function engineFaultNamed(message: string | undefined): string | null {
+  void message;
+  return null;
+}
+
 /** Throws InfraBlocked when `text` carries an infrastructure signature. */
 export function assertNotInfra(text: string, where: string): void {
   const signature = classifyInfra(text);

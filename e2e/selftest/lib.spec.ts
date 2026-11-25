@@ -2,13 +2,14 @@
 // (invariant 8), the hibernation proof, infra classification, phase-clock budgets and percentiles, the shard guard,
 // the sever, the reach sweep and the UI verbs.
 import { execFile } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
 import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
-import { request, type Page, type TestInfo } from '@playwright/test';
+import { request, type BrowserType, type Page, type TestInfo } from '@playwright/test';
 import { Actors, recordsScreens } from '../lib/actors.ts';
 import { ALLOWLIST, expiredEntries, isAllowed, type AllowEntry } from '../lib/allowlist.ts';
 import { authHeadroom, paceAuth, recordAuth } from '../lib/auth-pace.ts';
@@ -17,7 +18,9 @@ import { BODY_BINDING_ATTR, DOC_ID_ATTR, EDITOR_PANE_ATTR, TITLE_BINDING_ATTR } 
 import { probeSocket } from '../lib/doc-client.ts';
 import { browserLog, closeBrowserTimed } from '../lib/engine.ts';
 import { inductionProblems, ownerProbe } from '../lib/hibernate.ts';
-import { browserCrashIn, classifyInfra, closeEachConnection, InfraBlocked, isInfraBlocked } from '../lib/infra.ts';
+import {
+  browserCrashIn, classifyInfra, closeEachConnection, engineFaultIn, engineFaultNamed, engineFaultOf, InfraBlocked, isInfraBlocked, LIBSOUP_CHECK,
+} from '../lib/infra.ts';
 import { awaitingRecovery, errorProblems, socketProblems, typedFindings, type ActorView } from '../lib/invariants.ts';
 import { budgetProblem, latencyRows, Measure, percentile } from '../lib/measure.ts';
 import { assertTestEmail, parseSetCookie, principalProblems, signIn } from '../lib/principals.ts';
@@ -31,6 +34,43 @@ import * as ui from '../lib/ui.ts';
 import { expect, test } from './fixtures.ts';
 
 const typed = (text: string, author = 'ada', ordered = true): Typed => ({ docId: 'd', field: 'body', text, author, ordered });
+
+// Engine-fault lines as the browser log kept them (T9.55c). A selftest's own line carries SELFTEST_MARK after the
+// matched text: it goes into the worker's shared log, and a later failed WebKit selftest attaches it.
+const LIBSOUP_QUEUED = "2026-11-24T08:41:15.182Z [pid=3403][err] (process:4180): libsoup-CRITICAL **: 08:41:15.182: soup_session_feature_request_queued: assertion 'SOUP_IS_SESSION_FEATURE (feature)' failed";
+const LIBSOUP_UNQUEUED = "2026-11-25T12:30:25.183Z [pid=3848][err] (process:3865): libsoup-CRITICAL **: 12:30:25.180: soup_session_feature_request_unqueued: assertion 'SOUP_IS_SESSION_FEATURE (feature)' failed";
+const SELFTEST_MARK = ' (written by a selftest, not the engine)';
+/** What the browser itself wrote, without the log's stamp and Playwright's prefix, marked as a selftest's. */
+const asWritten = (line: string) => `${line.replace(/^\S+ \[pid=\d+\]\[err\] /, '')}${SELFTEST_MARK}`;
+
+/** The run summary MossReporter writes for failed WebKit rows with these errors, at `repeatEach`. */
+async function summarize(rows: { title: string; errors: (string | undefined)[] }[], repeatEach = 1): Promise<string> {
+  const outputDir = test.info().outputPath(`summary-${randomBytes(3).toString('hex')}`);
+  const env = { summary: process.env.GITHUB_STEP_SUMMARY, state: process.env.STACK_STATE, group: process.env.E2E_GROUP };
+  delete process.env.GITHUB_STEP_SUMMARY;
+  delete process.env.STACK_STATE;
+  delete process.env.E2E_GROUP;
+  try {
+    const reporter = new MossReporter();
+    reporter.onBegin({ projects: [{ outputDir, repeatEach }], rootDir: outputDir } as never, { suites: [] } as never);
+    for (const row of rows) {
+      const testCase = { parent: { project: () => ({ name: 'webkit' }) }, titlePath: () => ['', 'webkit', 'j09-revoke-live.spec.ts', row.title], timeout: 120_000 };
+      reporter.onTestEnd(testCase as never, { status: 'failed', duration: 34_000, annotations: [], errors: row.errors.map((message) => ({ message })) } as never);
+    }
+    await reporter.onEnd({ status: 'failed' } as never);
+    return readFileSync(`${outputDir}/summary.md`, 'utf8');
+  } finally {
+    for (const [key, value] of [['GITHUB_STEP_SUMMARY', env.summary], ['STACK_STATE', env.state], ['E2E_GROUP', env.group]] as const) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+}
+
+/** A view of this test's info that reports its body failed, as a fixture's teardown reads it. */
+function bodyFailed(info: TestInfo = test.info()): TestInfo {
+  return { file: info.file, tags: info.tags, annotations: info.annotations, status: 'failed', expectedStatus: 'passed', attach: info.attach.bind(info) } as unknown as TestInfo;
+}
 
 test.describe('exact bytes (invariant 7)', () => {
   test('a string typed once and in order passes', () => {
@@ -537,6 +577,46 @@ test.describe('infrastructure classification', () => {
       expect(browserCrashIn([text]), text).toBeNull();
     }
   });
+  // The libsoup check as the browser log kept it, stamp and prefix included (T9.55c): job 138317559276 (run
+  // 45356828517, the j09 reload leg) and job 139204215736 (run 45613593203, its reproduction).
+  test("WebKit's failed libsoup check is named from the browser's stderr only", () => {
+    expect(engineFaultIn(LIBSOUP_QUEUED)).toBe(LIBSOUP_CHECK);
+    expect(engineFaultIn(LIBSOUP_UNQUEUED)).toBe(LIBSOUP_CHECK);
+    expect(engineFaultIn(`[pid=3403][err] ${asWritten(LIBSOUP_QUEUED)}`), 'a marked selftest line').toBe(LIBSOUP_CHECK);
+    const internal = '2026-11-24T08:41:17.956Z [pid=3403][err] ERROR: WebKit encountered an internal error. This is a WebKit bug.';
+    const consoleText = 'Failed to load resource: WebKit encountered an internal error (http://127.0.0.1:8850/assets/index.js)';
+    const bare = LIBSOUP_QUEUED.replace(/^\S+ \[pid=\d+\]\[err\] /, '');
+    const out = LIBSOUP_QUEUED.replace('[err]', '[out]');
+    const otherGlib = "2026-11-25T12:30:25.179Z [pid=3848][err] (process:3865): GLib-CRITICAL **: 12:30:25.179: g_atomic_rc_box_release_full: assertion 'real_box->magic == G_BOX_MAGIC' failed";
+    for (const line of [internal, consoleText, bare, out, otherGlib]) expect(engineFaultIn(line), line).toBeNull();
+    // Nor is it a signature of page text: console and response text never carry the browser's stderr.
+    expect(classifyInfra(LIBSOUP_QUEUED)).toBeNull();
+  });
+  test('a failed test is labelled by a libsoup line noted since its Actors was made; a passing one, or an earlier line, is not', () => {
+    const at = Date.parse(LIBSOUP_QUEUED.slice(0, 24));
+    // The leg's own times: its test began at 08:41:11.470 and its 30 s wait gave up at 08:41:45.
+    const failing = { failed: true, madeAt: Date.parse('2026-11-24T08:41:11.470Z'), teardownAt: at + 30_000, noted: [{ at, name: LIBSOUP_CHECK }], pages: [{ label: 'ada', crashes: [] }] };
+    expect(engineFaultOf(failing)?.startsWith(`${LIBSOUP_CHECK}: `)).toBe(true);
+    expect(engineFaultOf({ ...failing, failed: false })).toBeNull();
+    expect(engineFaultOf({ ...failing, madeAt: at + 1 })).toBeNull();
+    expect(engineFaultOf({ ...failing, noted: [] })).toBeNull();
+  });
+  test('a BLOCKED row prints the fixed name only; two rows of one name in a job at repeat 1 read FAILED', async () => {
+    const reason = (n: number) => `InfraBlocked: InfraBlocked: ${LIBSOUP_CHECK}: the browser's stderr carried it at 2026-11-24T08:41:15.182Z\n  the teardown's error: invariants: 1 finding(s)\n  invariant 1 [ada] console error: page-written text ${n}`;
+    expect(engineFaultNamed(reason(1))).toBe(LIBSOUP_CHECK);
+    expect(engineFaultNamed('Error: invariants: 1 finding(s)')).toBeNull();
+    const one = await summarize([{ title: 'j09 reload', errors: [reason(1)] }]);
+    expect(one).toContain('### e2e: BLOCKED (infra)');
+    expect(one).toContain(`| webkit | j09-revoke-live.spec.ts › j09 reload | BLOCKED: ${LIBSOUP_CHECK} |`);
+    expect(one, 'no error text in the summary').not.toContain('page-written text');
+    const two = await summarize([{ title: 'j09 reload', errors: [reason(1)] }, { title: 'j09 other', errors: [reason(2)] }]);
+    expect(two).toContain('### e2e: FAILED');
+    expect(two).toContain(`| webkit | j09-revoke-live.spec.ts › j09 reload | FAILED: ${LIBSOUP_CHECK} |`);
+    expect(two).toContain(`| webkit | j09-revoke-live.spec.ts › j09 other | FAILED: ${LIBSOUP_CHECK} |`);
+    expect(two).toContain('2 tests, 2 failed, 0 blocked');
+    const repeated = await summarize([{ title: 'j09 reload', errors: [reason(1)] }, { title: 'j09 reload', errors: [reason(2)] }], 10);
+    expect(repeated, 'at repeat 10 two rows are what chance gives').toContain('0 failed, 2 blocked');
+  });
   test('a journey failure whose page logged the crash is reported BLOCKED, with its census attached', async ({ actors, server }) => {
     const actor = await actors.anonymous(`${server.url}/clean.html`, { label: 'crashed' });
     await actor.page.evaluate((line) => console.error(line), WORKSPACE_CRASH);
@@ -652,7 +732,88 @@ test.describe('engine evidence', () => {
       expect(system.shm).toMatch(/\/dev\/shm/);
     }
   });
+
+  // The label of T9.55c on the real teardown. The line must come after the Actors is made, so the browser writes it
+  // on a trigger the test controls, and the test waits until the browser log holds it.
+  test("a failed teardown is BLOCKED by a libsoup line its test's browser wrote after the Actors was made, never before; a passing one is not", async ({ playwright, server, browserName }) => {
+    test.skip(browserName !== 'webkit', 'the WebKit projects carry the engine evidence');
+    test.setTimeout(120_000);
+    const engine = await wrappedWebKit(playwright.webkit, asWritten(LIBSOUP_QUEUED));
+    let mark = test.info().attachments.length;
+    const engineFiles = () => test.info().attachments.slice(mark).filter((a) => a.name.startsWith('engine'));
+    const open = async (info: TestInfo) => {
+      const own = new Actors(engine.browser, info, { stack: null, runToken: 'selftest' });
+      own.solo('fixture pages have no principals; the guard has its own selftest');
+      await ui.waitLive(await own.anonymous(`${server.url}/clean.html`, { label: 'ada' }), 'doc-a');
+      return own;
+    };
+    try {
+      // Written before the Actors is made: FAILED, as before.
+      await engine.write();
+      await new Promise((done) => setTimeout(done, 5));
+      const before = await open(bodyFailed());
+      expect(await before.settle().then(() => null, (e: Error) => e), 'an earlier line labels nothing').toBeNull();
+      expect(engineFiles().map((a) => a.name), 'the failed body still carries the evidence').toEqual(['engine.json', 'engine-closes.json']);
+      mark = test.info().attachments.length;
+
+      // Written after: BLOCKED, with the fault's fixed name, the evidence attached first.
+      const after = await open(bodyFailed());
+      await engine.write();
+      const error = await after.settle().then(() => null, (e: Error) => e);
+      expect(isInfraBlocked(error?.message), String(error?.message)).toBe(true);
+      expect(engineFaultNamed(`InfraBlocked: ${error?.message}`)).toBe(LIBSOUP_CHECK);
+      expect(engineFiles().map((a) => a.name)).toEqual(['engine.json', 'engine-closes.json']);
+      const summary = await summarize([{ title: 'j09 reload', errors: [`InfraBlocked: ${error?.message}`] }]);
+      expect(summary).toContain(`| BLOCKED: ${LIBSOUP_CHECK} |`);
+      mark = test.info().attachments.length;
+
+      // A passing test with the line in its window: nothing attached, nothing thrown, one annotation with the count.
+      const passing = await open(test.info());
+      await engine.write();
+      expect(await passing.settle().then(() => null, (e: Error) => e)).toBeNull();
+      expect(engineFiles()).toEqual([]);
+      expect(test.info().annotations.filter((a) => a.type === 'engine-fault-survived')).toEqual([{ type: 'engine-fault-survived', description: `1 × ${LIBSOUP_CHECK}` }]);
+    } finally {
+      await engine.close();
+    }
+  });
 });
+
+/**
+ * WebKit launched through a wrapper that records the browser's pid and, at each `write()`, makes the browser process
+ * write `line` to its own stderr, then waits until the worker's browser log holds it.
+ */
+async function wrappedWebKit(browserType: BrowserType, line: string) {
+  const dir = mkdtempSync(join(tmpdir(), 'engine-line-'));
+  const [linePath, pidPath, wrapper] = ['line', 'pid', 'webkit.sh'].map((name) => join(dir, name));
+  writeFileSync(linePath, `${line}\n`);
+  // The loop runs in the browser's process tree, so its stderr is the browser's: it writes once per trigger file.
+  writeFileSync(wrapper, [
+    '#!/bin/sh',
+    `echo $$ > '${pidPath}'`,
+    `( n=1; i=0; while [ $i -lt 3000 ]; do if [ -f '${dir}/write.'$n ]; then cat '${linePath}' >&2; n=$((n+1)); else sleep 0.05; i=$((i+1)); fi; done ) &`,
+    `exec '${browserType.executablePath()}' "$@"`,
+    '',
+  ].join('\n'));
+  chmodSync(wrapper, 0o755);
+  const browser = await browserType.launch({ executablePath: wrapper });
+  let writes = 0;
+  const count = () => browserLog().filter((logged) => logged.includes(line)).length;
+  return {
+    browser,
+    pid: () => Number(readFileSync(pidPath, 'utf8').trim()),
+    async write(): Promise<void> {
+      const seen = count();
+      writes += 1;
+      writeFileSync(join(dir, `write.${writes}`), '');
+      await expect.poll(count, { timeout: 15_000 }).toBeGreaterThan(seen);
+    },
+    async close(): Promise<void> {
+      await browser.close().catch(() => undefined);
+      rmSync(dir, { recursive: true, force: true });
+    },
+  };
+}
 
 test.describe('phase clocks', () => {
   test('a latency over its budget fails', () => {
