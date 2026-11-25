@@ -35,14 +35,15 @@ async function revealLandingFolder(bridge: Bridge): Promise<void> {
  * gate has already read the note with the tab's token, so before moss mounts that answer goes into moss's note store
  * (not its list: the note gets no sidebar row) as the note the tab is on, and startup selection keeps it. A note the
  * listing carries is left to moss. Nothing here grants access: the gate's answer is the server's, and the pane's
- * socket and every later request present the token again.
+ * socket and every later request present the token again. A listing read that fails concludes nothing (R10), so the
+ * gate's answer is used all the same, and a later listing that carries the note replaces the record and the role.
  */
 async function openLinkedNote(bridge: Bridge): Promise<void> {
   const docId = docIdFromPath(window.location.pathname);
   const opened = docId ? takeGateAnswer(docId) : null;
   if (!docId || !opened || !new URLSearchParams(window.location.search).has('share') || auth.get().status !== 'signed-in') return;
   const listed = await bridge.notes.getAll().catch(() => null);
-  if (!listed || listed.some((note) => note.id === docId)) return;
+  if (listed?.some((note) => note.id === docId)) return;
   bridge[WORKSPACE].admit(opened.doc);
   const record = await bridge.notes.getById(docId).catch(() => undefined);
   if (!record) return;
