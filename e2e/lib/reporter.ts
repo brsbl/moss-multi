@@ -6,7 +6,7 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } fr
 import { join } from 'node:path';
 import type { FullConfig, FullResult, Reporter, Suite, TestCase, TestResult } from '@playwright/test/reporter';
 import { recordVerdict } from '../../scripts/deploy/retry-gate.mjs';
-import { isInfraBlocked } from './infra.ts';
+import { engineFaultNamed, isInfraBlocked } from './infra.ts';
 import { latencyRows, type LatencyRow, type LatencySample } from './measure.ts';
 
 interface Row {
@@ -18,6 +18,8 @@ interface Row {
   latencies: LatencySample[];
   findings: number | null;
   blocked: boolean;
+  /** The fixed name of the engine fault that labelled a BLOCKED row (infra.ts), never its error text. */
+  engine: string | null;
 }
 
 const SLOW_MS = 90_000;
@@ -53,6 +55,7 @@ export default class MossReporter implements Reporter {
   private browsers = new Map<string, string>();
   private outputDir = 'test-results';
   private plannedJourneys = 0;
+  private repeatEach = 1;
 
   printsToStdio(): boolean {
     return false;
@@ -60,6 +63,7 @@ export default class MossReporter implements Reporter {
 
   onBegin(config: FullConfig, suite: Suite): void {
     this.outputDir = config.projects[0]?.outputDir ?? join(config.rootDir, 'test-results');
+    this.repeatEach = Math.max(1, ...config.projects.map((project) => project.repeatEach ?? 1));
     this.plannedJourneys = suite.suites
       .filter((project) => isJourneyProject(project.project()?.name ?? ''))
       .reduce((sum, project) => sum + project.allTests().length, 0);
@@ -78,6 +82,7 @@ export default class MossReporter implements Reporter {
       .filter((a) => a.type === 'latency')
       .map((a) => ({ project, ...(JSON.parse(a.description ?? '{}') as Omit<LatencySample, 'project'>) }));
     const invariants = annotations.find((a) => a.type === 'invariants')?.description;
+    const blocked = result.status !== 'passed' && result.status !== 'skipped' && result.errors.some((e) => isInfraBlocked(e.message));
     this.rows.push({
       project,
       title: test.titlePath().slice(2).join(' › '),
@@ -86,12 +91,22 @@ export default class MossReporter implements Reporter {
       timeoutMs: test.timeout,
       latencies,
       findings: invariants ? (JSON.parse(invariants) as { findings: number }).findings : null,
-      blocked: result.status !== 'passed' && result.status !== 'skipped' && result.errors.some((e) => isInfraBlocked(e.message)),
+      blocked,
+      engine: blocked ? (result.errors.map((e) => engineFaultNamed(e.message)).find((name) => name !== null) ?? null) : null,
     });
   }
 
   async onEnd(result: FullResult): Promise<{ status?: FullResult['status'] } | undefined> {
     const group = process.env.E2E_GROUP;
+    // At repeat 1, two rows of one job with the same engine fault are far rarer by chance than one, and the sign that
+    // something made the fault common: they read FAILED (T9.55c).
+    const common = new Set<string>();
+    if (this.repeatEach === 1) {
+      const counts = new Map<string, number>();
+      for (const r of this.rows) if (r.blocked && r.engine) counts.set(r.engine, (counts.get(r.engine) ?? 0) + 1);
+      for (const [name, n] of counts) if (n >= 2) common.add(name);
+    }
+    for (const r of this.rows) if (r.blocked && r.engine && common.has(r.engine)) r.blocked = false;
     const blocked = this.rows.filter((r) => r.blocked);
     const failed = this.rows.filter((r) => !r.blocked && (r.status === 'failed' || r.status === 'timedOut'));
     const shardProblem = emptyShardProblem(group, this.plannedJourneys);
@@ -123,7 +138,7 @@ export default class MossReporter implements Reporter {
       '| Project | Test | Status | Time | Latencies | Invariant findings |',
       '|---|---|---|---|---|---|',
       ...this.rows.map((r) =>
-        `| ${r.project} | ${r.title.replace(/\|/g, '\\|')} | ${r.blocked ? 'BLOCKED' : r.status} | ${seconds(r.ms)}${r.ms > SLOW_MS ? ' (slow)' : ''} | ${r.latencies.map((l) => `${l.name} ${l.ms} ms${l.budgetMs ? ` / ${l.budgetMs}` : ''}`).join('; ')} | ${r.findings ?? ''} |`,
+        `| ${r.project} | ${r.title.replace(/\|/g, '\\|')} | ${r.blocked ? `BLOCKED${r.engine ? `: ${r.engine}` : ''}` : r.engine ? `FAILED: ${r.engine}` : r.status} | ${seconds(r.ms)}${r.ms > SLOW_MS ? ' (slow)' : ''} | ${r.latencies.map((l) => `${l.name} ${l.ms} ms${l.budgetMs ? ` / ${l.budgetMs}` : ''}`).join('; ')} | ${r.findings ?? ''} |`,
       ),
       '',
       ...percentileTable('Latency percentiles', 'Latency', latencyRows(ran.flatMap((r) => r.latencies)), millis),
