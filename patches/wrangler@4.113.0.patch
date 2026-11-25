@@ -2,7 +2,7 @@ diff --git a/wrangler-dist/ProxyWorker.js b/wrangler-dist/ProxyWorker.js
 index 274b5d17..52cc7006 100644
 --- a/wrangler-dist/ProxyWorker.js
 +++ b/wrangler-dist/ProxyWorker.js
-@@ -49,6 +49,25 @@ var ProxyWorker_default = {
+@@ -49,6 +49,25 @@
      return inspectorProxy.fetch(req);
    }
  };
@@ -28,7 +28,7 @@ index 274b5d17..52cc7006 100644
  var ProxyWorker = class {
    constructor(state, env) {
      this.state = state;
-@@ -59,6 +78,12 @@ var ProxyWorker = class {
+@@ -59,6 +78,12 @@
    proxyData;
    requestQueue = /* @__PURE__ */ new Map();
    requestRetryQueue = /* @__PURE__ */ new Map();
@@ -41,7 +41,7 @@ index 274b5d17..52cc7006 100644
    fetch(request) {
      if (isRequestForLiveReloadWebsocket(request)) {
        return this.handleLiveReloadWebSocket(request);
-@@ -131,7 +156,29 @@ var ProxyWorker = class {
+@@ -131,7 +156,30 @@
            headers.set(key, value);
          }
        }
@@ -51,12 +51,13 @@ index 274b5d17..52cc7006 100644
 +      // the bare origin, so a lost GET waited in requestRetryQueue for the next request and a lost POST got a 503.
 +      // Replay a lost GET or HEAD at once, from an unread clone, while the Worker is unchanged. Any other method gets
 +      // one attempt, since a POST lost after the Worker committed it would otherwise be applied twice; it avoids the
-+      // race instead, waiting while the connection it would take is about to be closed (takeIdle).
++      // race instead, waiting while the connection it would take is about to be closed (takeIdle). A replay waits the
++      // same way: the Worker closes the connections of one burst together, so the next one in the pool is closing too.
 +      const idle = this.idlePool(userWorkerUrl.origin);
 +      const replayable = request.method === "GET" || request.method === "HEAD";
 +      let spare = request.clone();
-+      const send = async (replays) => {
-+        await takeIdle(idle, !replayable);
++      const send = async (replays, replaying = false) => {
++        await takeIdle(idle, !replayable || replaying);
 +        const source = spare;
 +        if (replays > 0) spare = source.clone();
 +        return fetch(userWorkerUrl, new Request(source, { headers })).then((res) => {
@@ -64,7 +65,7 @@ index 274b5d17..52cc7006 100644
 +          return res;
 +        }, (error) => {
 +          const current = this.proxyData && urlFromParts(this.proxyData.userWorkerUrl);
-+          if (replays > 0 && current?.origin === userWorkerUrl.origin) return send(replays - 1);
++          if (replays > 0 && current?.origin === userWorkerUrl.origin) return send(replays - 1, true);
 +          throw error;
 +        });
 +      };
