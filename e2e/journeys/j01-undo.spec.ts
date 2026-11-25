@@ -69,6 +69,20 @@ async function pressUntil(ada: Actor, ben: Actor, id: string, key: string, want:
 /** The caret at the end of the paragraph starting with `start`, then `left` characters back. */
 async function caretAtEnd(actor: Actor, id: string, start: string, left = 0) {
   await paragraph(actor, id, start).click();
+  // Lexical marks a pointer press and takes the next selectionchange as the click's own (lexical 0.48.0, onPointerDown
+  // and onDocumentSelectionChange). A character handled before that event is followed by a selection-only update, and
+  // Moss's history (T9.13) then starts a new step at the second character. No person types within 30 ms of a click, so
+  // the helper waits until the editor has taken the click. A click that moves nothing fires no event: the wait then
+  // ends at its bound.
+  await ui.body(actor, id).evaluate((element) => new Promise<void>((done) => {
+    const editor = (element as HTMLElement & { __lexicalEditor: { _inputState: { isSelectionChangeFromMouseDown: boolean } } }).__lexicalEditor;
+    const until = performance.now() + 500;
+    const check = () => {
+      if (!editor._inputState.isSelectionChangeFromMouseDown || performance.now() >= until) done();
+      else setTimeout(check, 5);
+    };
+    check();
+  }));
   const caretIn = () => actor.page.evaluate(() => {
     const node = window.getSelection()?.anchorNode;
     return (node instanceof Element ? node : node?.parentElement)?.closest('p')?.textContent ?? '';
