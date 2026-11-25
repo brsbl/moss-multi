@@ -7,7 +7,7 @@ import type { Page, TestInfo } from '@playwright/test';
 import type { Actor, Actors } from './actors.ts';
 import {
   APP_STATE_ATTR, BODY_BINDING_ATTR, CONNECTION_BANNER_ATTR, DOC_SOCKET_PATH, DOC_STATE_ATTR, EDIT_MODE_ATTR, SUGGEST_REFUSED_ATTR, SUGGEST_SENT_ATTR,
-  SUGGEST_TOGGLE_ATTR, SUGGEST_UNSAVED_ATTR, SYNC_UNACKED_ATTR, TERMINAL_REASON_ATTR, paneSelector,
+  SUGGEST_UNSAVED_ATTR, SYNC_UNACKED_ATTR, TERMINAL_REASON_ATTR, paneSelector,
 } from './contract.ts';
 import { grantDoc } from './grants.ts';
 import { suggestFrame, type Sever, type TapEvent } from './sever.ts';
@@ -129,30 +129,9 @@ export async function caretEnd(actor: Actor, docId: string, text: string): Promi
   await frames(actor);
 }
 
-/** A real click just inside the right edge of the last character of the block holding `text`. */
-export async function clickEnd(actor: Actor, docId: string, text: string): Promise<void> {
-  const point = await ui.body(actor, docId).evaluate((root, text) => {
-    const block = [...root.children].find((el) => (el.textContent ?? '').includes(text));
-    if (!block) throw new Error(`no block holding "${text}"`);
-    const walker = document.createTreeWalker(block, NodeFilter.SHOW_TEXT);
-    let last: Node | null = null;
-    for (let node = walker.nextNode(); node; node = walker.nextNode()) if ((node.textContent ?? '').length > 0) last = node;
-    if (!last) throw new Error(`no text in the block holding "${text}"`);
-    const range = document.createRange();
-    const end = (last.textContent ?? '').length;
-    range.setStart(last, end - 1);
-    range.setEnd(last, end);
-    const rect = range.getBoundingClientRect();
-    return { x: rect.right - 1, y: rect.top + rect.height / 2 };
-  }, text);
-  await actor.page.mouse.click(point.x, point.y);
-  await frames(actor);
-}
-
-/** An editor's Suggest changes, in the docked toolbar a real click in the body shows. */
-async function suggestToggle(actor: Actor, docId: string): Promise<void> {
-  await clickEnd(actor, docId, START.one);
-  await actor.page.locator(`[${SUGGEST_TOGGLE_ATTR}]`).first().click({ timeout: 10_000 });
+/** An editor's Suggest changes, in the note's More actions (T9.30), as j16-suggest starts it. */
+async function suggestChanges(actor: Actor, docId: string): Promise<void> {
+  await (await ui.openNoteMenu(actor, docId)).getByRole('menuitem', { name: 'Suggest changes', exact: true }).click();
 }
 
 /** The resume a fork sent on a socket opened after `since`, with the DocDO's reply to it once it has one of `fates`. */
@@ -324,7 +303,7 @@ export class Probe {
       // An editor's window opens in Edit; Suggest is theirs to turn on, in More actions.
       await expect(pane, `${actor.label}: opens in Edit`).toHaveAttribute(EDIT_MODE_ATTR, 'edit', { timeout: BIND_TIMEOUT });
       await expect(body, `${actor.label}: Edit is live`).toHaveAttribute(BODY_BINDING_ATTR, 'live', { timeout: BIND_TIMEOUT });
-      await suggestToggle(actor, docId);
+      await suggestChanges(actor, docId);
     }
     await expect(pane, `${actor.label}: in Suggest`).toHaveAttribute(EDIT_MODE_ATTR, 'suggest', { timeout: BIND_TIMEOUT });
     await expect(body, `${actor.label}: Suggest is live`).toHaveAttribute(BODY_BINDING_ATTR, 'live', { timeout: BIND_TIMEOUT });
@@ -349,9 +328,9 @@ export class Probe {
     this.note(`${actor.label} in Edit`);
   }
 
-  /** Suggest changes, in the docked toolbar; returns once it is chosen, not once Suggest is live. */
+  /** Suggest changes, from More actions; returns once it is chosen, not once Suggest is live. */
   async suggestOn(actor: Actor): Promise<void> {
-    await suggestToggle(actor, this.docId);
+    await suggestChanges(actor, this.docId);
     this.note(`${actor.label} chose Suggest changes`);
   }
 

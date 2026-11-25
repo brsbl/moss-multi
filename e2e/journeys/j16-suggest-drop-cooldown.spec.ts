@@ -7,7 +7,7 @@ import {
 } from '../lib/contract.ts';
 import { CUSTOM_PREFIX } from '../../packages/protocol/src/sync.ts';
 import { PROTOCOL_QUERY } from '../lib/doc-client.ts';
-import { BIND_TIMEOUT, content } from '../lib/suggest.ts';
+import { BIND_TIMEOUT, confirmClose, content } from '../lib/suggest.ts';
 import {
   begin, caretEnd, draftLines, firstLine, freshPage, KEY_DELAY, pause, START, until, type Probe,
 } from '../lib/suggest-drop.ts';
@@ -116,7 +116,7 @@ test('j16-suggest-drop halted-card suggester: text offered back after the owner 
     if (!(await panel.isVisible())) await ada.page.locator(`[${SUGGESTIONS_BUTTON_ATTR}]`).first().click();
     const open = panel.locator(`[${SUGGESTION_CARD_ATTR}][${SUGGESTION_STATUS_ATTR}="open"]`).first();
     await expect(open).toContainText('Aa1', { timeout: BIND_TIMEOUT });
-    await open.getByRole('button', { name: 'Reject' }).click();
+    await confirmClose(ada, open, 'Reject');
     await expect(panel.locator(`[${SUGGESTION_CARD_ATTR}][${SUGGESTION_STATUS_ATTR}="rejected"]`)).toHaveCount(1, { timeout: BIND_TIMEOUT });
     await ada.page.keyboard.press('Escape');
     probe.note('the owner rejected the suggestion');
@@ -160,7 +160,7 @@ test('j16-suggest-drop halted-card-sign-out suggester: "Sign out anyway" with of
     if (!(await panel.isVisible())) await ada.page.locator(`[${SUGGESTIONS_BUTTON_ATTR}]`).first().click();
     const open = panel.locator(`[${SUGGESTION_CARD_ATTR}][${SUGGESTION_STATUS_ATTR}="open"]`).first();
     await expect(open).toContainText('Aa1', { timeout: BIND_TIMEOUT });
-    await open.getByRole('button', { name: 'Reject' }).click();
+    await confirmClose(ada, open, 'Reject');
     await expect(panel.locator(`[${SUGGESTION_CARD_ATTR}][${SUGGESTION_STATUS_ATTR}="rejected"]`)).toHaveCount(1, { timeout: BIND_TIMEOUT });
     await ada.page.keyboard.press('Escape');
     probe.up();
