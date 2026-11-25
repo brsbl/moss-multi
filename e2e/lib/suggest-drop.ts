@@ -11,7 +11,7 @@ import {
 } from './contract.ts';
 import { grantDoc } from './grants.ts';
 import { suggestFrame, type Sever, type TapEvent } from './sever.ts';
-import { BIND_TIMEOUT, BOOT_TIMEOUT, content, frames, openIn } from './suggest.ts';
+import { BIND_TIMEOUT, BOOT_TIMEOUT, closePanel, content, frames, openIn, openPanel, reviewSwitch } from './suggest.ts';
 import { expect, ui } from './test.ts';
 import { occurrences } from './text.ts';
 
@@ -355,19 +355,25 @@ export class Probe {
     return closed;
   }
 
-  /** Puts the owner's window in Review when a suggestion is open; says where it is otherwise. */
+  /**
+   * Puts the owner's window in Review through the Suggestions panel's switch; a suggestion is open whenever this is
+   * asked. A window that cannot enter Review fails the leg, and the record says why.
+   */
   async ownerReview(): Promise<string> {
     const { ada, docId } = this;
     const pane = ui.pane(ada, docId);
     if ((await pane.getAttribute(EDIT_MODE_ATTR, { timeout: 5_000 }).catch(() => null)) === 'review') return 'review';
+    let mode = 'review';
     try {
-      await ada.page.getByRole('button', { name: 'Review suggestions', exact: true }).first().click({ timeout: 4_000 });
+      await reviewSwitch(await openPanel(ada)).click({ timeout: 4_000 });
       await expect(pane).toHaveAttribute(EDIT_MODE_ATTR, 'review', { timeout: BIND_TIMEOUT });
       await expect(ui.body(ada, docId)).toHaveAttribute(BODY_BINDING_ATTR, 'readonly', { timeout: BIND_TIMEOUT });
-      return 'review';
     } catch (error) {
-      return `not in Review: ${firstLine(error)}`;
+      await closePanel(ada).catch(() => undefined);
+      mode = `not in Review: ${firstLine(error)}`;
     }
+    expect.soft(mode, "the owner's window enters Review").toBe('review');
+    return mode;
   }
 
   async type(actor: Actor, token: string, line: LineKey = 'one', { counted = true } = {}): Promise<void> {
@@ -476,10 +482,10 @@ export class Probe {
     for (const token of this.tokens) expect.soft(occurrences(working.value, token), `${name}: "${token}" is in the working export once`).toBe(1);
     expect.soft(note, `${name}: no suggestion wrote the note`).toBe(this.before);
     if (windows === 'lines') {
-      if (mode === 'review') expect.soft(draftLines(owner.value.lines), `${name}: the owner's Review window shows every typed character once`).toEqual(want);
+      if (review) expect.soft(draftLines(owner.value.lines), `${name}: the owner's Review window shows every typed character once`).toEqual(want);
       expect.soft(draftLines(person.value.lines), `${name}: the person's window shows every typed character once`).toEqual(want);
     } else {
-      if (mode === 'review') expect.soft(owner.ok, `${name}: the owner's Review window shows every typed token once`).toBe(true);
+      if (review) expect.soft(owner.ok, `${name}: the owner's Review window shows every typed token once`).toBe(true);
       expect.soft(person.ok, `${name}: the person's window shows every typed token once`).toBe(true);
     }
     expect.soft(refusals, `${name}: the DocDO refused nothing`).toEqual([]);
