@@ -95,7 +95,7 @@ test("j16-review: the peer's panel lists a suggestion; an editor's accept from t
   // Accept, reached from the painted insert mark in Edit mode.
   const mark = ada.page.locator(`[${SUGGEST_MARK_ATTR}="insert"][${SUGGESTION_ID_ATTR}]`).first();
   await expect(mark).toBeAttached({ timeout: BIND_TIMEOUT });
-  await mark.click({ force: true });
+  await mark.click();
   const active = panel(ada).locator(`[${SUGGESTION_CARD_ATTR}][${SUGGESTION_ACTIVE_ATTR}]`);
   await expect(active, 'the painted mark opens its card').toHaveCount(1);
   await active.getByRole('button', { name: 'Accept' }).click();
@@ -140,15 +140,8 @@ test('j16-review: two clicks on a marker never reject; Reject asks first, Cancel
   // A double click on the marker, fast and slow: the second click at worst opens the confirmation, on Cancel.
   for (const gap of [250, 700]) {
     await closePanel(ada);
-    // A repaint replaces the wedge, so its centre is read in one step, once it is laid out.
-    let point = { x: 0, y: 0 };
-    await expect.poll(async () => {
-      point = await ada.page.evaluate((selector) => {
-        const rect = document.querySelector(selector)?.getBoundingClientRect();
-        return rect && rect.width > 0 ? { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 } : { x: 0, y: 0 };
-      }, `[${SUGGEST_MARK_ATTR}="insert"][${SUGGESTION_ID_ATTR}]`);
-      return point.x > 0;
-    }, { timeout: BIND_TIMEOUT }).toBe(true);
+    const box = (await mark.boundingBox())!;
+    const point = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
     const first = Date.now();
     await ada.page.mouse.click(point.x, point.y);
     await expect(panel(ada)).toBeVisible();
@@ -609,19 +602,18 @@ test("j16-review proposals (T9.34): marks keep the note's ink, a mark opens its 
   // Edit mode: the insert stays a mark; its preview is Moss's tooltip material above the line, not over the next.
   const mark = ada.page.locator(`[${SUGGEST_MARK_ATTR}="insert"][${SUGGESTION_ID_ATTR}]`).first();
   await expect(mark).toBeAttached({ timeout: BIND_TIMEOUT });
-  await mark.hover({ force: true });
+  await mark.hover();
   const preview = mark.locator('[data-suggest-preview]');
   await expect(preview).toBeVisible();
-  // A repaint can swap the wedge mid-read (WebKit then reports an empty style): read it again until it is attached.
-  const readTip = () => preview.evaluate((element) => {
+  const tip = await preview.evaluate((element) => {
     const style = getComputedStyle(element);
     const wedge = element.parentElement!.getBoundingClientRect();
     return { fontSize: style.fontSize, radius: style.borderTopLeftRadius, above: element.getBoundingClientRect().bottom < wedge.top };
   });
-  await expect.poll(readTip, { message: "Moss's tooltip material, above the marked line" }).toEqual({ fontSize: '10px', radius: '6px', above: true });
+  expect(tip, "Moss's tooltip material, above the marked line").toEqual({ fontSize: '10px', radius: '6px', above: true });
 
   // A click on the mark opens that one suggestion at the mark, as Moss's comment thread opens at its text.
-  await mark.click({ force: true });
+  await mark.click();
   const surface = panel(ada);
   await expect(surface.locator(`[${SUGGESTION_CARD_ATTR}][${SUGGESTION_ACTIVE_ATTR}]`)).toHaveCount(1, { timeout: BIND_TIMEOUT });
   await expect(surface.locator(`[${SUGGESTION_CARD_ATTR}]`), 'only the clicked suggestion').toHaveCount(1);
@@ -678,7 +670,7 @@ test("j16-review proposals (T9.34): marks keep the note's ink, a mark opens its 
     return 0;
   };
   const scrolled = await ui.body(ada, docId).evaluate(scroller);
-  await mark.click({ force: true });
+  await mark.click();
   await expect(surface.locator(`[${SUGGESTION_CARD_ATTR}][${SUGGESTION_ACTIVE_ATTR}]`)).toHaveCount(1, { timeout: BIND_TIMEOUT });
   const back = surface.getByRole('button', { name: 'Back to note', exact: true });
   await expect(back).toBeVisible();
@@ -707,7 +699,7 @@ test('j16-review proposals (T9.34): a mark in a full-width paragraph opens the S
   const before = await edge();
   const mark = ada.page.locator(`[${SUGGEST_MARK_ATTR}="insert"][${SUGGESTION_ID_ATTR}]`).first();
   await expect(mark).toBeAttached({ timeout: BIND_TIMEOUT });
-  await mark.click({ force: true });
+  await mark.click();
   const surface = panel(ada);
   await expect(surface.locator(`[${SUGGESTION_CARD_ATTR}][${SUGGESTION_ACTIVE_ATTR}]`)).toHaveCount(1, { timeout: BIND_TIMEOUT });
   await expect(surface, 'the wrapped lines leave no margin: it opens as the panel').toHaveAttribute('data-suggestion-place', 'docked');

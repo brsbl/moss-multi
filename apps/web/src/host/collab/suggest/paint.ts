@@ -130,6 +130,8 @@ function outsideUnchanged(doc: Y.Doc, client: number, clock: number, len: number
 
 interface Mark {
   kind: 'insert' | 'attribute';
+  /** Who the mark is, unmoved by unrelated text: its record and the Yjs id of the character or block it stands at. */
+  id: string;
   place: CharPlace;
   /** After the anchor character rather than at it. */
   after: boolean;
@@ -178,7 +180,7 @@ export function editMarks(body: Y.Doc, built: Built, binding: Binding): Mark[] {
     const key = `${place.key}:${place.offset}:${record}`;
     const held = marks.get(key);
     if (held) held.text += text;
-    else marks.set(key, { kind: 'insert', place, after: after && place.offset >= 0, text, record });
+    else marks.set(key, { kind: 'insert', id: `insert:${idKey(anchor!)}:${record}`, place, after: after && place.offset >= 0, text, record });
   };
   for (const [client, record] of built.clients) {
     for (const struct of built.doc.store.clients.get(client) ?? []) {
@@ -241,14 +243,14 @@ export function editMarks(body: Y.Doc, built: Built, binding: Binding): Mark[] {
           break;
         }
       }
-      if (place) marks.set(`attr:${place.key}`, { kind: 'attribute', place, after: false, text: '', record });
+      if (place) marks.set(`attr:${place.key}`, { kind: 'attribute', id: `attribute:${idKey(id)}:${record}`, place, after: false, text: '', record });
     }
   };
   visit(built.doc.get('root', Y.XmlText));
   for (const [id, record] of payloads) {
     for (const type of refs.get(id) ?? []) {
       const place = type._item && index.get(idKey(type._item.id));
-      if (place) marks.set(`reg:${place.key}`, { kind: 'insert', place, after: false, text: payloadPreview(built.payloads.get(id)), record });
+      if (place) marks.set(`reg:${place.key}`, { kind: 'insert', id: `payload:${idKey(type._item!.id)}:${record}`, place, after: false, text: payloadPreview(built.payloads.get(id)), record });
     }
   }
   return [...marks.values()];
@@ -299,101 +301,170 @@ function openPreview(wedge: HTMLElement, preview: HTMLElement): void {
   if (shift !== 0) preview.style.left = `${parseFloat(getComputedStyle(preview).left) + shift}px`;
 }
 
+/** Where each drawn element's mark stood at the last repaint: its text node and offset. */
+const placeKeys = new WeakMap<HTMLElement, string>();
+
 /**
- * Where a clicked mark is now: the element itself, or after a repaint replaced it, the overlay's mark of the same kind
- * for the same record. Null when none is left.
+ * Where a clicked mark is now: the element itself while its mark stands; once it is replaced, the overlay's mark of the
+ * same kind for the same record at the place it last stood, else the first such mark. Null when none is left.
  */
 export function markPlace(overlay: HTMLElement, element: HTMLElement): () => DOMRect | null {
   const kind = element.getAttribute(SUGGEST_MARK_ATTR) ?? '';
   const record = element.dataset.suggestionId ?? '';
-  const key = element.dataset.markKey;
   return () => {
     if (element.isConnected) return element.getBoundingClientRect();
     const same = [...overlay.querySelectorAll<HTMLElement>(`[${SUGGEST_MARK_ATTR}="${kind}"]`)].filter((mark) => mark.dataset.suggestionId === record);
-    const found = same.find((mark) => key !== undefined && mark.dataset.markKey === key) ?? same[0];
+    const where = placeKeys.get(element);
+    const found = same.find((mark) => where !== undefined && placeKeys.get(mark) === where) ?? same[0];
     return found ? found.getBoundingClientRect() : null;
   };
 }
 
-/** Draws Edit-mode marks into `overlay` (pointer-transparent; wedges and gutter bars take hover and a click). */
+/** Each overlay's drawn elements by mark id, and the latest `onOpen` their click handlers call. */
+const drawn = new WeakMap<HTMLElement, { elements: Map<string, HTMLElement>; onOpen?: (record: string, at: () => DOMRect | null) => void }>();
+/** A stable name for each block element a gutter bar stands beside. */
+const blockIds = new WeakMap<HTMLElement, number>();
+let nextBlockId = 0;
+
+/**
+ * Draws Edit-mode marks into `overlay` (pointer-transparent; wedges and gutter bars take hover and a click). A repaint
+ * (an edit, a resize) keeps the element of every mark that still stands and updates its place, label and preview, so
+ * a press on it still ends as its click and an open preview stays open; only a mark that is gone loses its element.
+ */
 export function drawMarks(editor: LexicalEditor, overlay: HTMLElement, marks: Mark[], onOpen?: (record: string, at: () => DOMRect | null) => void): void {
-  // A repaint (an edit, a resize) replaces the wedges; the one whose preview is open stays open.
-  const open = overlay.querySelector<HTMLElement>('.moss-suggest-wedge[data-open]')?.dataset.markKey;
-  overlay.replaceChildren();
+  const state = drawn.get(overlay) ?? { elements: new Map<string, HTMLElement>() };
+  drawn.set(overlay, state);
+  state.onOpen = onOpen;
+  const held = state.elements;
+  const open = (record: string, element: HTMLElement) => () => drawn.get(overlay)?.onOpen?.(record, markPlace(overlay, element));
+  const order: HTMLElement[] = [];
+  /** The element for `id`, made by `make` only when this overlay holds none; `where` is its mark's place now. */
+  const slot = (id: string, where: string, make: () => HTMLElement): HTMLElement => {
+    let element = held.get(id);
+    if (!element || element.parentNode !== overlay) {
+      element = make();
+      held.set(id, element);
+    }
+    order.push(element);
+    placeKeys.set(element, where);
+    return element;
+  };
   const host = overlay.getBoundingClientRect();
   const gutters = new Set<HTMLElement>();
-  const reopen: [HTMLElement, HTMLElement][] = [];
+  const seen = new Map<string, number>();
   for (const mark of marks) {
     const rect = rectOf(editor, mark);
     if (!rect) continue;
+    // Two marks never share an element.
+    const count = seen.get(mark.id) ?? 0;
+    seen.set(mark.id, count + 1);
+    const id = count ? `${mark.id}#${count}` : mark.id;
     const block = blockElement(editor, mark.place.key);
+    const where = `${mark.place.key}:${mark.place.offset}`;
     if (mark.kind === 'attribute') {
-      const dot = document.createElement('span');
-      dot.setAttribute(SUGGEST_MARK_ATTR, 'attribute');
-      dot.className = 'moss-suggest-dot';
+      const dot = slot(id, where, () => {
+        const made = document.createElement('span');
+        made.setAttribute(SUGGEST_MARK_ATTR, 'attribute');
+        made.className = 'moss-suggest-dot';
+        if (mark.record) {
+          made.dataset.suggestionId = mark.record;
+          made.setAttribute('aria-label', 'Suggested change to this block');
+          made.addEventListener('click', open(mark.record, made));
+        }
+        return made;
+      });
       dot.style.left = `${rect.left - host.left - 14}px`;
       dot.style.top = `${rect.top - host.top + 6}px`;
-      if (mark.record) {
-        dot.dataset.suggestionId = mark.record;
-        dot.setAttribute('aria-label', 'Suggested change to this block');
-        if (onOpen) dot.addEventListener('click', () => onOpen(mark.record, markPlace(overlay, dot)));
-      }
-      overlay.appendChild(dot);
       continue;
     }
-    const wedge = document.createElement('span');
-    wedge.setAttribute(SUGGEST_MARK_ATTR, 'insert');
-    wedge.className = 'moss-suggest-wedge';
-    wedge.dataset.suggestionId = mark.record;
-    wedge.dataset.markKey = `${mark.place.key}:${mark.place.offset}:${mark.record}`;
-    wedge.setAttribute('aria-label', `Suggested insert: ${mark.text.trim()}`);
+    const wedge = slot(id, where, () => {
+      const made = document.createElement('span');
+      made.setAttribute(SUGGEST_MARK_ATTR, 'insert');
+      made.className = 'moss-suggest-wedge';
+      made.dataset.suggestionId = mark.record;
+      if (mark.record) made.addEventListener('click', open(mark.record, made));
+      const preview = document.createElement('span');
+      preview.setAttribute(OVERLAY_SURFACE_ATTR, '');
+      preview.dataset.suggestPreview = '';
+      preview.className = 'moss-suggest-preview';
+      made.appendChild(preview);
+      made.addEventListener('pointerenter', () => openPreview(made, preview));
+      made.addEventListener('pointerleave', () => {
+        delete made.dataset.open;
+        preview.style.left = '';
+      });
+      return made;
+    });
+    const label = `Suggested insert: ${mark.text.trim()}`;
+    if (wedge.getAttribute('aria-label') !== label) wedge.setAttribute('aria-label', label);
     wedge.style.left = `${(mark.after ? rect.right : rect.left) - host.left - 4}px`;
     wedge.style.top = `${rect.bottom - host.top - 2}px`;
-    if (onOpen && mark.record) wedge.addEventListener('click', () => onOpen(mark.record, markPlace(overlay, wedge)));
     // The preview stands above the marked line, clear of the line being read below it.
     wedge.style.setProperty('--mark-line', `${rect.height}px`);
-    const preview = document.createElement('span');
-    preview.setAttribute(OVERLAY_SURFACE_ATTR, '');
-    preview.dataset.suggestPreview = '';
-    preview.className = 'moss-suggest-preview';
-    preview.textContent = mark.text.trim() || '(new block)';
-    wedge.appendChild(preview);
-    if (open !== undefined && wedge.dataset.markKey === open) reopen.push([wedge, preview]);
-    wedge.addEventListener('pointerenter', () => openPreview(wedge, preview));
-    wedge.addEventListener('pointerleave', () => {
-      delete wedge.dataset.open;
-      preview.style.left = '';
-    });
-    overlay.appendChild(wedge);
+    const preview = wedge.firstElementChild as HTMLElement;
+    const text = mark.text.trim() || '(new block)';
+    if (preview.textContent !== text) preview.textContent = text;
+    // An open preview stays inside the viewport as its text and place change.
+    if (wedge.dataset.open !== undefined) openPreview(wedge, preview);
     if (block && !gutters.has(block)) {
       gutters.add(block);
+      const blockId = blockIds.get(block) ?? nextBlockId++;
+      blockIds.set(block, blockId);
       const box = block.getBoundingClientRect();
-      const bar = document.createElement('span');
-      bar.setAttribute(SUGGEST_MARK_ATTR, 'gutter');
-      bar.className = 'moss-suggest-gutter';
+      const bar = slot(`gutter:${blockId}:${mark.record}`, where, () => {
+        const made = document.createElement('span');
+        made.setAttribute(SUGGEST_MARK_ATTR, 'gutter');
+        made.className = 'moss-suggest-gutter';
+        if (mark.record) {
+          made.dataset.suggestionId = mark.record;
+          made.addEventListener('click', open(mark.record, made));
+        }
+        return made;
+      });
       bar.style.left = `${box.left - host.left - 10}px`;
       bar.style.top = `${box.top - host.top}px`;
       bar.style.height = `${box.height}px`;
-      if (mark.record) bar.dataset.suggestionId = mark.record;
-      if (onOpen && mark.record) bar.addEventListener('click', () => onOpen(mark.record, markPlace(overlay, bar)));
-      overlay.appendChild(bar);
     }
   }
-  for (const [wedge, preview] of reopen) {
-    openPreview(wedge, preview);
-    // The pointer never entered the new wedge, so no pointerleave closes it: the next move off it and its preview
-    // does (by position: the move a layout change makes may name another target).
-    const off = (event: PointerEvent) => {
-      const over = (element: Element) => {
-        const box = element.getBoundingClientRect();
-        return event.clientX >= box.left && event.clientX <= box.right && event.clientY >= box.top && event.clientY <= box.bottom;
-      };
-      if (wedge.isConnected && (over(wedge) || over(preview))) return;
-      document.removeEventListener('pointermove', off, true);
-      delete wedge.dataset.open;
-      preview.style.left = '';
-    };
-    document.addEventListener('pointermove', off, true);
+  const used = new Set<Element>(order);
+  for (const [id, element] of held) {
+    if (used.has(element)) continue;
+    held.delete(id);
+    element.remove();
+  }
+  for (const child of [...overlay.children]) if (!used.has(child)) child.remove();
+  placeInOrder(overlay, order);
+}
+
+/**
+ * Puts `overlay`'s children (each one in `order`) in `order`, moving only those outside the longest run already in
+ * order: a kept element moves only when its order changes.
+ */
+function placeInOrder(overlay: HTMLElement, order: readonly HTMLElement[]): void {
+  const at = new Map<Element, number>([...overlay.children].map((child, i) => [child, i]));
+  // The longest run of elements whose positions already increase (patience sorting).
+  const tails: number[] = [];
+  const before: number[] = order.map(() => -1);
+  for (let i = 0; i < order.length; i += 1) {
+    const position = at.get(order[i]!);
+    if (position === undefined) continue;
+    let low = 0;
+    let high = tails.length;
+    while (low < high) {
+      const mid = (low + high) >> 1;
+      if (at.get(order[tails[mid]!]!)! < position) low = mid + 1;
+      else high = mid;
+    }
+    if (low > 0) before[i] = tails[low - 1]!;
+    tails[low] = i;
+  }
+  const stay = new Set<number>();
+  for (let i = tails.at(-1) ?? -1; i >= 0; i = before[i]!) stay.add(i);
+  let next: HTMLElement | null = null;
+  for (let i = order.length - 1; i >= 0; i -= 1) {
+    const element = order[i]!;
+    if (!stay.has(i)) overlay.insertBefore(element, next);
+    next = element;
   }
 }
 

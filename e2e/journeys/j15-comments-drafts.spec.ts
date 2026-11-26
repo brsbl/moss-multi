@@ -627,17 +627,17 @@ test('j15-comments: Cmd+Shift+A on a selected code block opens a block composer 
   expect(key, 'the note renders a code block').not.toBe('');
   const code = ui.body(ada, id).locator(`[data-block-decorator-key="${key}"]`).first();
   await code.scrollIntoViewIfNeeded();
-  // A click beside the code (its line numbers) selects the block itself; the code's own textarea keeps Cmd+A.
-  // The first comment's composer hands its text selection back to the editor as it closes, and a gutter click that
-  // lands first is undone by it: Cmd+Shift+A then opens nothing. Click and press again until the composer opens; the
-  // stored anchor below still proves it opened on the block.
-  const composer = ada.page.getByRole('dialog', { name: 'Add comment' });
+  // ArrowDown from the end of the paragraph above selects the block itself (a click beside it does not keep it
+  // selected, as in Moss at the pin; e2e/parity/block-click.spec.ts).
+  const above = 'A second line for the peer.';
+  await ui.body(ada, id).locator('p', { hasText: above }).click();
+  await select(ada, id, above, above.length);
+  await ada.page.keyboard.press('ArrowDown');
+  await expect(code.locator('.editor-block-selection-outline'), 'ArrowDown from the paragraph above selects the block').toBeVisible();
   modes.POST = 'fail';
-  await expect(async () => {
-    await code.locator('.moss-codeblock-gutter').first().click();
-    await ada.page.keyboard.press(COMMENT_KEY);
-    await expect(composer.getByRole('textbox').first()).toBeFocused({ timeout: 2_000 });
-  }, 'Cmd+Shift+A on the selected code block opens the composer').toPass({ timeout: PEER_TIMEOUT });
+  await ada.page.keyboard.press(COMMENT_KEY);
+  const composer = ada.page.getByRole('dialog', { name: 'Add comment' });
+  await expect(composer.getByRole('textbox').first()).toBeFocused();
   await ada.page.keyboard.type('On the code');
   await ada.page.keyboard.press(SUBMIT);
   await expect(ada.page.getByText(/couldn't be saved/).first(), 'the failure is announced').toBeVisible({ timeout: PEER_TIMEOUT });

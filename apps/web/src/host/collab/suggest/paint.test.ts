@@ -2,9 +2,10 @@
 // T5.B3 (B283, B287): Edit-mode marks never throw on a stored BigInt and see a `__proto__` attribute; strike membership
 // (the fork's isStruck and the paint over a binding) grows near-linearly as characters and strike spans double, and
 // what paints follows a withdrawn part.
+import { SUGGEST_MARK_ATTR, SUGGESTION_ID_ATTR } from '@moss-multi/protocol/dom-contract';
 import { STATE_CAP_BYTES } from '@moss-multi/protocol/limits';
 import type { IdSpan, SuggestReply, SuggestRequest } from '@moss-multi/protocol/suggest';
-import { createEditor, type LexicalEditor } from 'lexical';
+import { $createParagraphNode, $createTextNode, $getRoot, createEditor, type LexicalEditor } from 'lexical';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import * as Y from 'yjs';
 import { MARKDOWN_EDITOR_NODES } from '../../../../../../packages/sync/src/converter/index.ts';
@@ -12,10 +13,11 @@ import { handleSuggest, SuggestIngest } from '../../../../../../packages/sync/sr
 import { payloadDocsFor } from '../../../../../../packages/sync/src/payload-docs.ts';
 import { Composite, destroyView, spanWork, SuggestFork } from '../../../../../../packages/sync/src/suggest/client.ts';
 import { bindEditor } from '../../../../../../packages/sync/src/suggest/fork-shim.ts';
+import { closeRecord, createRecord, opsOf, partsOf, patchMeta, writeSuggestions } from '../../../../../../packages/sync/src/suggest/records.ts';
 import { nodeRegistry } from '../../../../../../packages/sync/src/suggest/review.ts';
-import { deterministicIds, forgeRecord, opOn, OTHER_SUGGESTER, seededBody, SUGGESTER } from '../../../../../../packages/sync/src/suggest/test-support.ts';
+import { deterministicIds, forgeRecord, opOn, OTHER_SUGGESTER, seededBody, SUGGESTER, textNode } from '../../../../../../packages/sync/src/suggest/test-support.ts';
 import { textIds } from './chars.ts';
-import { clearPaint, editMarks, paintBound } from './paint.ts';
+import { clearPaint, drawMarks, editMarks, paintBound } from './paint.ts';
 
 let restore: () => void = () => {};
 beforeEach(() => {
@@ -208,6 +210,187 @@ describe('T5.B3 strike membership cost (B287) @p:mean-2 @p:R17', () => {
     } finally {
       clearPaint(owner);
       note.dispose();
+    }
+  });
+});
+
+describe('T9.55d a repaint keeps the element of every standing mark @p:mean-2 @p:R17', () => {
+  const CLIENT_ONE = 0x7fff1001;
+  const CLIENT_TWO = 0x7fff1002;
+  /** A co-editor whose client sorts before the suggesters', so a character it retypes stands left of their text. */
+  const CO_EDITOR = 7;
+
+  /** One op holding what `write` does under `client` to a copy of `live`, `before` applied to the copy first. */
+  function opAs(live: Y.Doc, client: number, write: (copy: Y.Doc) => void, before: Uint8Array[] = []) {
+    const copy = new Y.Doc({ gc: false });
+    Y.applyUpdate(copy, Y.encodeStateAsUpdate(live));
+    for (const update of before) Y.applyUpdate(copy, update);
+    copy.clientID = client;
+    const updates: Uint8Array[] = [];
+    copy.on('update', (update: Uint8Array) => updates.push(update));
+    write(copy);
+    copy.destroy();
+    return { doc: 'body', update: Y.mergeUpdates(updates) };
+  }
+
+  /** An open record by the suggester, made at `createdAt`, writing under `client`. */
+  function suggest(live: Y.Doc, id: string, client: number, createdAt: number, op: ReturnType<typeof opAs>) {
+    writeSuggestions(live, () => {
+      createRecord(live, { v: 2, id, author: SUGGESTER.id, authorName: SUGGESTER.name, source: 'live', createdAt, updatedAt: createdAt, status: 'open', clients: [client] });
+      opsOf(live, id).push([op]);
+      partsOf(live, id).push([]);
+    });
+  }
+
+  /** Inserts `text` into the `n`th paragraph after its first `at` characters (past the text node's map). */
+  const insertIn = (n: number, at: number, text: string) => (doc: Y.Doc) =>
+    (blocks(doc).filter((block) => block instanceof Y.XmlText)[n] as Y.XmlText).insert(1 + at, text);
+
+  /** The owner's Edit mode: an editor bound to B itself, rendering into the page, and the overlay its marks go in. */
+  function ownerView() {
+    const live = new Y.Doc();
+    const root = document.createElement('div');
+    root.contentEditable = 'true';
+    document.body.appendChild(root);
+    const overlay = document.createElement('div');
+    document.body.appendChild(overlay);
+    const editor = createEditor({ namespace: 'paint-test', nodes: MARKDOWN_EDITOR_NODES, onError: (error) => { throw error; } });
+    editor.setRootElement(root);
+    const bound = bindEditor(live, editor);
+    Y.applyUpdate(live, Y.encodeStateAsUpdate(seededBody('Keep every original word.\n\nSecond paragraph here.')));
+    editor.update(() => {}, { discrete: true });
+    const opened: string[] = [];
+    const places: (() => DOMRect | null)[] = [];
+    const draw = () => {
+      editor.update(() => {}, { discrete: true });
+      const built = new Composite(live).build();
+      try {
+        expect(built.valid.length, 'every open record is valid').toBe(openCount(live));
+        drawMarks(editor, overlay, editMarks(live, built, bound.binding), (record, at) => {
+          opened.push(record);
+          places.push(at);
+        });
+      } finally {
+        destroyView(built);
+      }
+    };
+    const marks = (kind: string, record: string) => [...overlay.querySelectorAll<HTMLElement>(`[${SUGGEST_MARK_ATTR}="${kind}"][${SUGGESTION_ID_ATTR}="${record}"]`)];
+    return {
+      live, overlay, opened, places, draw,
+      edit: (step: () => void) => editor.update(step, { discrete: true }),
+      wedge: (record: string) => marks('insert', record),
+      gutter: (record: string) => marks('gutter', record),
+      dispose: () => {
+        bound.dispose();
+        root.remove();
+        overlay.remove();
+      },
+    };
+  }
+  const openCount = (live: Y.Doc) => [...live.getMap('suggestions').values()].filter((map) => (map as Y.Map<string>).get('meta')?.includes('"status":"open"')).length;
+
+  it('two standing suggestions keep their elements, each acting for its own record, while their places and order change; a closed one leaves', () => {
+    const view = ownerView();
+    try {
+      const plus = opAs(view.live, CLIENT_ONE, insertIn(0, 'Keep every original'.length, ' plus'));
+      suggest(view.live, 'r1', CLIENT_ONE, 10, plus);
+      suggest(view.live, 'r2', CLIENT_TWO, 20, opAs(view.live, CLIENT_TWO, insertIn(1, 'Second'.length, ' extra')));
+      view.draw();
+      for (const record of ['r1', 'r2']) {
+        expect(view.wedge(record), `one wedge for ${record}`).toHaveLength(1);
+        expect(view.gutter(record), `one gutter bar for ${record}`).toHaveLength(1);
+      }
+      const [wedgeOne, barOne, wedgeTwo, barTwo] = [view.wedge('r1')[0]!, view.gutter('r1')[0]!, view.wedge('r2')[0]!, view.gutter('r2')[0]!];
+      const same = (found: HTMLElement[], element: HTMLElement) => found.length === 1 && found[0] === element;
+      const holds = (step: string, order: HTMLElement[]) => {
+        expect(same(view.wedge('r1'), wedgeOne), `${step}: r1 keeps its wedge element`).toBe(true);
+        expect(same(view.gutter('r1'), barOne), `${step}: r1 keeps its gutter bar element`).toBe(true);
+        expect(same(view.wedge('r2'), wedgeTwo), `${step}: r2 keeps its wedge element`).toBe(true);
+        expect(same(view.gutter('r2'), barTwo), `${step}: r2 keeps its gutter bar element`).toBe(true);
+        const children = [...view.overlay.children];
+        expect(children.length === order.length && children.every((child, i) => child === order[i]), `${step}: the overlay holds the marks in mark order`).toBe(true);
+        view.opened.length = 0;
+        for (const element of [wedgeOne, barOne, wedgeTwo, barTwo]) element.click();
+        expect(view.opened, `${step}: each element opens its own suggestion`).toEqual(['r1', 'r1', 'r2', 'r2']);
+        expect(wedgeOne.querySelector('[data-suggest-preview]')?.textContent, `${step}: r1 previews its own text`).toMatch(/^plus/);
+        expect(wedgeTwo.querySelector('[data-suggest-preview]')?.textContent, `${step}: r2 previews its own text`).toBe('extra');
+      };
+      const inOrder = [wedgeOne, barOne, wedgeTwo, barTwo];
+      const swapped = [wedgeTwo, barTwo, wedgeOne, barOne];
+
+      view.draw();
+      holds('drawn again with nothing changed', inOrder);
+
+      // Someone types earlier in r1's own paragraph: the anchor's offset in its text node moves on every key.
+      for (const [i, key] of [...'Ahead '].entries()) {
+        view.edit(() => textNode(i ? 'Ahead '.slice(0, i) : 'Keep').spliceText(i, 0, key, false));
+        view.draw();
+        holds(`after "${key}" typed earlier in the same paragraph`, inOrder);
+      }
+      expect(wedgeOne.getAttribute('aria-label')).toBe('Suggested insert: plus');
+
+      // A paragraph added above both: every block's index moves.
+      view.edit(() => $getRoot().getFirstChildOrThrow().insertBefore($createParagraphNode().append($createTextNode('A new first block.'))));
+      view.draw();
+      holds('after a block is added above', inOrder);
+
+      // r2 now comes first: the order of the marks changes while both stand.
+      writeSuggestions(view.live, () => patchMeta(view.live, 'r2', { createdAt: 5 }));
+      view.draw();
+      holds('after the order changes', swapped);
+
+      // r1 grows: its wedge reads and previews the longer text.
+      writeSuggestions(view.live, () => opsOf(view.live, 'r1').push([opAs(view.live, CLIENT_ONE, insertIn(1, 'Ahead Keep every original plus'.length, ' more'), [plus.update])]));
+      view.draw();
+      holds('after r1 grows', swapped);
+      expect(wedgeOne.getAttribute('aria-label')).toBe('Suggested insert: plus more');
+      expect(wedgeOne.querySelector('[data-suggest-preview]')?.textContent).toBe('plus more');
+
+      // r1 is withdrawn: its elements leave, r2's stay.
+      closeRecord(view.live, 'r1', { status: 'withdrawn' });
+      view.draw();
+      expect(view.wedge('r1'), 'a closed suggestion has no wedge').toHaveLength(0);
+      expect(view.gutter('r1'), 'nor a gutter bar').toHaveLength(0);
+      expect(wedgeOne.isConnected || barOne.isConnected, 'its elements left the page').toBe(false);
+      expect(same(view.wedge('r2'), wedgeTwo) && same(view.gutter('r2'), barTwo), "r2's elements stay").toBe(true);
+      expect(view.overlay.children.length, 'nothing else is drawn').toBe(2);
+    } finally {
+      view.dispose();
+    }
+  });
+
+  it("a card opened from a suggestion's second wedge stays beside that wedge when the wedge's element is replaced", () => {
+    const view = ownerView();
+    try {
+      suggest(view.live, 'r1', CLIENT_ONE, 10, opAs(view.live, CLIENT_ONE, (doc) => {
+        insertIn(0, 'Keep every original'.length, ' plus')(doc);
+        insertIn(1, 'Second'.length, ' extra')(doc);
+      }));
+      view.draw();
+      const previewing = (text: string) => view.wedge('r1').filter((wedge) => wedge.querySelector('[data-suggest-preview]')?.textContent === text);
+      expect(view.wedge('r1'), 'one suggestion, two wedges').toHaveLength(2);
+      const second = previewing('extra')[0]!;
+      second.click();
+      expect(view.opened, 'the click opens the suggestion').toEqual(['r1']);
+      const at = view.places.at(-1)!;
+      // A co-editor deletes the character before the second wedge and types it again: the wedge stands at the same
+      // place, at a new character.
+      const retype = opAs(view.live, CO_EDITOR, (doc) => {
+        const text = blocks(doc).filter((block) => block instanceof Y.XmlText)[1] as Y.XmlText;
+        text.delete(1 + 'Secon'.length, 1);
+        text.insert(1 + 'Secon'.length, 'd');
+      });
+      Y.applyUpdate(view.live, retype.update);
+      view.draw();
+      const [first, moved] = [previewing('plus'), previewing('extra')];
+      expect(first.length === 1 && moved.length === 1, 'still two wedges').toBe(true);
+      expect(second.isConnected, "the second wedge's element was replaced: its anchor changed").toBe(false);
+      // jsdom lays nothing out: give each wedge its own box.
+      first[0]!.getBoundingClientRect = () => ({ left: 10, top: 100, width: 8, height: 8 }) as DOMRect;
+      moved[0]!.getBoundingClientRect = () => ({ left: 20, top: 300, width: 8, height: 8 }) as DOMRect;
+      expect(at()?.top, "the card's place is the second wedge's new place, not the first wedge's").toBe(300);
+    } finally {
+      view.dispose();
     }
   });
 });

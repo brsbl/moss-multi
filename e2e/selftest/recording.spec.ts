@@ -18,11 +18,12 @@ async function capturing(browser: Browser, testInfo: TestInfo, server: FixtureSe
   actors.solo('fixture pages have no principals');
   // floating.html breaks invariant 5, so the checkpoint fails.
   const actor = await actors.anonymous(`${server.url}/floating.html`, { label: 'shot' });
+  // The policy under test is whether the harness asks for a capture; Chromium's pixels are not. Playwright's own capture
+  // at context close comes through here too and writes no file: do not pass a `path` call through.
   let shots = 0;
-  const screenshot = actor.page.screenshot.bind(actor.page);
-  actor.page.screenshot = (async (options?: Parameters<Page['screenshot']>[0]) => {
+  actor.page.screenshot = (async () => {
     shots += 1;
-    return screenshot(options);
+    return Buffer.from('png');
   }) as Page['screenshot'];
   return { actors, attached, shots: () => shots };
 }

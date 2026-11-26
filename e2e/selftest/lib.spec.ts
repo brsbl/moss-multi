@@ -823,3 +823,34 @@ test.describe('reach', () => {
     await page.close();
   });
 });
+
+test.describe('evidence captures', () => {
+  // A screenshot is evidence, never a result (T9.55): Chromium sometimes refuses one ("Unable to capture screenshot").
+  test('a capture the browser refuses does not replace the checkpoint findings', async ({ browser, server }, testInfo) => {
+    const attached: string[] = [];
+    const annotations: { type: string; description?: string }[] = [];
+    const info = {
+      file: testInfo.file,
+      tags: ['@evidence'],
+      annotations,
+      attach: async (name: string) => { attached.push(name); },
+    } as unknown as TestInfo;
+    const actors = new Actors(browser, info, { stack: { baseUrl: server.url } as unknown as Stack, runToken: 'selftest' });
+    actors.solo('fixture pages have no principals');
+    try {
+      // floating.html breaks invariant 5, so the checkpoint fails.
+      const actor = await actors.anonymous(`${server.url}/floating.html`, { label: 'shot' });
+      actor.page.screenshot = (async () => {
+        throw new Error('page.screenshot: Protocol error (Page.captureScreenshot): Unable to capture screenshot');
+      }) as Page['screenshot'];
+      await expect(actors.checkpoint('mid-test')).rejects.toThrow(/invariant 5/);
+      expect(attached, 'only the census').toEqual(['checkpoint mid-test-census.json']);
+      const skipped = annotations.filter((a) => a.type === 'capture-skipped').map((a) => a.description ?? '');
+      expect(skipped).toHaveLength(2);
+      expect(skipped[0]).toMatch(/^mid-test-shot\.png: /);
+      expect(skipped[1]).toMatch(/^checkpoint mid-test-shot\.png: /);
+    } finally {
+      await actors.dispose();
+    }
+  });
+});

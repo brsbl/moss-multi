@@ -85,6 +85,25 @@ export function askDocAccess(docId: string, fetcher: typeof fetch = (input, init
   return pending;
 }
 
+type OpenAnswer = Extract<DocAnswer, { kind: 'open' }>;
+
+/** The route gate's open answer for the note this document loaded on, until moss's boot takes it (T9.54). */
+let gateAnswer: { docId: string; answer: OpenAnswer } | null = null;
+
+/** The route gate's ask (routes/d.$docId.tsx): an open answer is kept for moss's boot, which starts right behind it. */
+export async function askDocAccessAtGate(docId: string): Promise<DocAnswer> {
+  const answer = await askDocAccess(docId);
+  gateAnswer = answer.kind === 'open' ? { docId, answer } : null;
+  return answer;
+}
+
+/** The gate's open answer for `docId`, once: the server's answer of this document load and never an older one. */
+export function takeGateAnswer(docId: string): OpenAnswer | null {
+  const kept = gateAnswer?.docId === docId ? gateAnswer.answer : null;
+  gateAnswer = null;
+  return kept;
+}
+
 const ACCESS_TIMEOUT_MS = 10_000;
 
 /** Held while the page leaves and asked again if it stays, so a reload never cuts it off (leave.ts). */

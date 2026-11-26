@@ -27,6 +27,8 @@ export class Projections {
   #titleError: unknown = null;
   #retryMs = TITLE_RETRY_MS;
   #touchedAt = Number.NEGATIVE_INFINITY;
+  /** When the last edit that touched came in; the trailing touch stamps it. */
+  #editedAt = 0;
   #touchTimer: ReturnType<typeof setTimeout> | null = null;
 
   /** `projected`: the title D1 last took, as the DO recorded it; `onProjected` records each one that lands. */
@@ -53,9 +55,10 @@ export class Projections {
     if (value && value !== this.#projected) this.title(value);
   }
 
-  /** A principal edited the doc: updated_at now, then at most every 5 s, with a trailing touch. */
+  /** A principal edited the doc: updated_at now, then at most every 5 s, with a trailing touch that stamps the last edit. */
   touch(): void {
     const now = Date.now();
+    this.#editedAt = now;
     if (now - this.#touchedAt >= TOUCH_INTERVAL_MS) {
       this.#touchedAt = now;
       this.#run(() => this.target.touch(this.docId, now));
@@ -64,7 +67,10 @@ export class Projections {
     if (this.#touchTimer !== null) return;
     this.#touchTimer = setTimeout(() => {
       this.#touchTimer = null;
-      this.touch();
+      // The trailing write carries the last edit's time, not the time its timer fired.
+      const at = this.#editedAt;
+      this.#touchedAt = Date.now();
+      this.#run(() => this.target.touch(this.docId, at));
     }, TOUCH_INTERVAL_MS - (now - this.#touchedAt));
   }
 

@@ -701,7 +701,7 @@ async function expectStill(actor: Actor, docId: string): Promise<void> {
   expect(pageSockets(actor.telemetry.sockets).map((s) => s.docId), `${actor.label}: one doc socket, on that note`).toEqual([docId]);
 }
 
-/** An edit's trailing `updated_at` write lands 5 s after its first (TOUCH_INTERVAL_MS). */
+/** An edit's trailing `updated_at` write lands 5 s after its first (TOUCH_INTERVAL_MS), stamped with the last edit. */
 const TRAILING_TOUCH_MS = 15_000;
 
 test('j06-folders: a window with no note chosen keeps the note it shows while a collaborator creates and edits another @p:note-4', async ({ actors }) => {
@@ -719,7 +719,8 @@ test('j06-folders: a window with no note chosen keeps the note it shows while a 
   await ui.waitLive(ada, first);
   await expect(ada.page, 'the address follows the note on screen').toHaveURL(new RegExp(`/d/${first}$`));
 
-  // Ben creates a second note and types its title: a create, a first touch and, 5 s later, a trailing touch.
+  // Ben creates a second note and types its title: a create, a first touch and, 5 s later, a trailing touch that
+  // stamps his last keystroke, a little later than the first.
   await ui.switchVault(ben.page, 'Home Can edit');
   // Ben chose nothing in Ada's vault either: his window shows its one note before he makes another.
   await ui.waitLive(ben, first);

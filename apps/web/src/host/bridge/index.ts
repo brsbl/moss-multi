@@ -791,6 +791,15 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
         return { ...record(note), content: '' };
       },
       getSnapshot: () => workspaceSnapshot,
+      /**
+       * A note the route's gate opened with the tab's token that the listing does not carry (T9.54): known to this tab
+       * from that answer, as `byId` would learn it from a second read of the same route.
+       */
+      admit: (doc: ApiDoc) => {
+        if (known.has(doc.id)) return;
+        known.set(doc.id, toNoteMetadata(doc));
+        admitted.add(doc.id);
+      },
       subscribe: (listener: () => void) => {
         workspaceListeners.add(listener);
         return () => { workspaceListeners.delete(listener); };
