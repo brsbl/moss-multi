@@ -321,7 +321,22 @@ class PaneBinding implements SuggestPane {
   #mountChanged(): void {
     const suggesting = this.#mount instanceof SuggestMount ? this.#mount : null;
     this.set({ suggestSent: suggesting?.fork.sent ?? 0, suggestRefused: suggesting?.refusals ?? 0 });
+    this.#readouts();
     for (const listener of [...this.#mountListeners]) listener();
+  }
+
+  /**
+   * The suggest readouts, written in the tick `data-sync-unacked` is, so they are current whenever it reads "0"; the
+   * render's props give the first value and remove them when the pane leaves Suggest. A pane leaving Suggest keeps
+   * its mount until reset, so the mode gates the write.
+   */
+  #readouts(): void {
+    if (this.#mode !== 'suggest') return;
+    const pane = this.#editor?.getRootElement()?.closest(`[${EDITOR_PANE_ATTR}]`);
+    if (!pane) return;
+    const suggesting = this.#mount instanceof SuggestMount ? this.#mount : null;
+    pane.setAttribute(SUGGEST_SENT_ATTR, String(suggesting?.fork.sent ?? 0));
+    pane.setAttribute(SUGGEST_REFUSED_ATTR, String(suggesting?.refusals ?? 0));
   }
 
   /**
@@ -528,6 +543,7 @@ class PaneBinding implements SuggestPane {
     const bodyState: BindingState = terminal ? 'terminal' : !state.synced || state.resync || !this.#role || !this.#mountReady ? 'unbound' : writes && !state.writePaused ? 'live' : 'readonly';
     editor.setEditable(bodyState === 'live');
     closeRoot(editor.getRootElement(), bodyState);
+    this.#readouts();
     editor.getRootElement()?.closest(`[${EDITOR_PANE_ATTR}]`)?.setAttribute(SYNC_UNACKED_ATTR, state.unacked || isLanding(editor) ? '1' : '0');
     const session = this.#session;
     if (session && state.synced && !state.resync) this.#fields?.bind(session.docId, session.doc, () => this.#state.bodyState === 'live' && this.#mode === 'edit');
@@ -769,6 +785,9 @@ export function useMossMultiPane(note: { id: string; trashedAt?: number | null }
   useLayoutEffect(() => binding?.attachFields(fields), [binding, fields]);
   useLayoutEffect(() => fields.title.setOpen(titleLive), [fields, titleLive]);
   const gone = trashed || terminal === 'deleted';
+  // Where the notices stand follows Moss's own record, which draws its Trash notice in the bottom slot: until it does,
+  // the pane's card stays there, so a note trashed under its owner always holds one notice (T9.50a).
+  const mossNotice = note?.trashedAt != null;
   if (docId && trashView) {
     return {
       bound: false,
@@ -791,11 +810,11 @@ export function useMossMultiPane(note: { id: string; trashedAt?: number | null }
   return {
     bound: true,
     readOnly: !live,
-    noticeBand: <NoticeBand docId={docId} refusals={docId === null || trashed} trashed={docId && trashed ? docId : null} />,
+    noticeBand: <NoticeBand docId={docId} refusals={docId === null || mossNotice} trashed={docId && mossNotice ? docId : null} />,
     bottomBand: docId ? (
       <BottomRegion docId={docId}>
         {/* Moss shows its Trash notice in this slot instead, so a trashed note's refusals and notices float from the band. */}
-        {trashed ? null : <><RefusalAnnouncer /><NoticeStack docId={docId} /></>}
+        {mossNotice ? null : <><RefusalAnnouncer /><NoticeStack docId={docId} /></>}
         {historyOpen ? null : <><RoleBand docId={docId} /><ReviewBand docId={docId} /><SuggestBand docId={docId} /></>}
       </BottomRegion>
     ) : null,

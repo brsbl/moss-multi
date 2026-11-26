@@ -89,9 +89,9 @@ const STALE_CONNECTION = new Set(['UND_ERR_SOCKET', 'UND_ERR_CLOSED', 'ECONNRESE
 
 /**
  * Node's fetch for setup requests off the browser. Its keep-alive pool can send a request on a connection the far end
- * is closing (Cloudflare's edge, like the dev proxy closeEachConnection guards against): "fetch failed" before any
- * answer. Such a request is sent once more on a new connection, and the resend recorded; any other failure, or a
- * second close, is thrown. `resent` hears the resend, for a caller whose first request may have been applied.
+ * is closing (Cloudflare's edge): "fetch failed" before any answer. Such a request is sent once more on a new
+ * connection, and the resend recorded; any other failure, or a second close, is thrown. `resent` hears the resend,
+ * for a caller whose first request may have been applied.
  */
 export async function setupFetch(kind: AuthKind | 'setup', url: string, init: RequestInit, resent?: () => void): Promise<Response> {
   try {

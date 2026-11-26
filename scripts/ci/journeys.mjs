@@ -103,9 +103,10 @@ export const GROUPS = {
   reviewStrikes: ['j16-review-strikes'],
   // A review racing its card's preview (T8.2), apart so the review shard fits its budget.
   reviewRace: ['j16-review-race'],
-  // Edit-mode wedges over the gap cursor and their previews; formulas committed while suggesting; the card that offers
-  // back what a closed suggestion could not keep (suggest's WebKit shard is full).
-  suggestMarks: ['j16-marks', 'j16-suggest-unsaved'],
+  // Edit-mode wedges over the gap cursor and their previews; formulas committed while suggesting; the Suggest pane's
+  // readouts when it settles; the card that offers back what a closed suggestion could not keep (suggest's WebKit
+  // shard is full).
+  suggestMarks: ['j16-marks', 'j16-readouts', 'j16-suggest-unsaved'],
   // The strike census: every block kind on each side of a boundary, every edge key and strike position.
   censusBlocks: ['j16-census-blocks'],
   censusNested: ['j16-census-nested'],

@@ -1073,16 +1073,20 @@ test('j08 compact: Share names the note, folder or vault in its first visible li
     const triggers = dialog.getByRole('button', { name: /^(Access|Link access|Access for .+)$/ });
     for (const text of await triggers.allInnerTexts()) expect(WORDS, `a role trigger reads "${text.trim()}"`).toContain(text.trim());
     await triggers.first().click();
+    // A mouse press opens the menu on the next frame; an Escape before it closes the dialog instead.
     const menu = ui.openRoleMenu(dialog);
-    for (const text of await menu.getByRole('menuitemradio').allInnerTexts()) expect(WORDS, `a role menu row reads "${text.trim()}"`).toContain(text.trim());
+    await expect(menu, 'the role menu opens').toBeVisible();
+    await expect(menu.getByRole('menuitemradio'), 'the role menu reads the product’s role words').toHaveText(WORDS);
     await ada.page.keyboard.press('Escape');
     await expect(menu).toHaveCount(0);
+    await expect(dialog, 'Escape closed the menu alone').toBeVisible();
   };
 
   await ada.goto(`/d/${docId}`);
   await ui.waitOpen(ada, docId, 'live');
   const noteDialog = await ui.openShare(ada, docId);
   await expect.poll(() => firstVisibleLine(noteDialog), { message: 'the first visible line names the note' }).toBe('Note “Packing list”');
+  await expect(ui.pendingInvites(noteDialog), 'declared setup: the invites are listed').toHaveCount(6);
   await rolesRead(noteDialog);
   await nameStaysWhileScrolling(noteDialog, 'Packing list');
   await ada.page.keyboard.press('Escape');
@@ -1103,4 +1107,134 @@ test('j08 compact: Share names the note, folder or vault in its first visible li
   await expect.poll(() => firstVisibleLine(vaultDialog), { message: 'the first visible line names the vault' }).toBe('Vault “Home”');
   await nameOutsideScroll(vaultDialog, 'Home');
   await ada.page.keyboard.press('Escape');
+});
+
+test('j08 compact: Share names a note from its first frame, while its lists load and when one fails; an untitled note reads "Note" alone (T9.50b) @p:ppl-2@2', async ({ actors, stack }) => {
+  const ada = await openShell(actors, 'ada');
+  actors.solo('one owner reads her own Share dialogs');
+  const made = async (data: { title?: string }) => {
+    const note = await ada.context.request.post('/api/docs', { headers: { origin: stack.baseUrl }, data });
+    expect(note.status(), 'declared setup: a note').toBe(201);
+    return ((await note.json()) as { doc: { id: string } }).doc.id;
+  };
+  const titled = await made({ title: 'Packing list' });
+  const untitled = await made({});
+  const header = (dialog: Locator) => dialog.locator('p:not(.sr-only)').first();
+  /** Opens Share on `docId` with its three reads (members, links, invites) held unanswered; `release` answers them. */
+  const openHeld = async (docId: string) => {
+    const held: Route[] = [];
+    let holding = true;
+    for (const list of ['members', 'links', 'invites']) {
+      await ada.page.route(`**/api/docs/${docId}/${list}`, async (route) => {
+        if (holding && route.request().method() === 'GET') held.push(route);
+        else await route.fallback();
+      });
+    }
+    const dialog = await ui.openShare(ada, docId);
+    await expect.poll(() => held.length, { message: 'the three reads are held' }).toBe(3);
+    const release = async (answer: (route: Route) => Promise<void>) => {
+      holding = false;
+      for (const route of held) await answer(route);
+    };
+    return { dialog, release };
+  };
+
+  await ada.goto(`/d/${titled}`);
+  await ui.waitOpen(ada, titled, 'live');
+  const named = await openHeld(titled);
+  await expect(header(named.dialog), 'the note is named while its lists load').toHaveText('Note “Packing list”');
+  ada.expectHttp(403, `/api/docs/${titled}/links`);
+  await named.release((route) => (route.request().url().endsWith('/links')
+    ? route.fulfill({ status: 403, contentType: 'application/json', body: JSON.stringify({ error: 'forbidden' }) })
+    : route.fallback()));
+  await expect(named.dialog.getByText('Couldn’t load who has access. Close and open Share to try again.', { exact: true }), 'the load sentence shows')
+    .toBeVisible();
+  await expect(header(named.dialog), 'a failed read keeps the name').toHaveText('Note “Packing list”');
+  await ada.page.keyboard.press('Escape');
+  await expect(named.dialog).toBeHidden();
+
+  await ada.goto(`/d/${untitled}`);
+  await ui.waitOpen(ada, untitled, 'live');
+  const plain = await openHeld(untitled);
+  await expect(header(plain.dialog), 'an untitled note reads "Note" alone').toHaveText('Note');
+  await plain.release((route) => route.fallback());
+  await expect(plain.dialog.getByRole('list', { name: 'People with access' }), 'its lists load once answered').toBeVisible();
+  await expect(header(plain.dialog), 'still "Note" alone').toHaveText('Note');
+  await ada.page.keyboard.press('Escape');
+  await expect(plain.dialog).toBeHidden();
+});
+
+test('j08 compact: Share reopened on a note names it as it is now, after a rename while its lists load and when one fails, and once an untitled note has a title (T9.50b) @p:ppl-2@2', async ({ actors, stack }) => {
+  const ada = await openShell(actors, 'ada');
+  actors.solo('one owner reads her own Share dialogs');
+  const made = async (data: { title?: string }) => {
+    const note = await ada.context.request.post('/api/docs', { headers: { origin: stack.baseUrl }, data });
+    expect(note.status(), 'declared setup: a note').toBe(201);
+    return ((await note.json()) as { doc: { id: string } }).doc.id;
+  };
+  const header = (dialog: Locator) => dialog.locator('p:not(.sr-only)').first();
+  /** Opens Share, lets its reads answer, then closes it. */
+  const openAndClose = async (docId: string, line: string) => {
+    const dialog = await ui.openShare(ada, docId);
+    await expect(dialog.getByRole('list', { name: 'People with access' }), 'its lists load').toBeVisible();
+    await expect(header(dialog)).toHaveText(line);
+    await ada.page.keyboard.press('Escape');
+    await expect(dialog).toBeHidden();
+  };
+  /** Types `name` over the note's title, as a person does, and waits until the window's tab shows it. */
+  const retitle = async (docId: string, name: string) => {
+    await ui.title(ada, docId).click();
+    await ada.page.keyboard.press(process.platform === 'darwin' ? 'Meta+A' : 'Control+A');
+    await ada.page.keyboard.type(name);
+    ada.typed({ docId, field: 'title', text: name, ordered: true });
+    await ui.waitAcked(ada, docId);
+    await expect(ada.page, 'the window shows the new title').toHaveTitle(new RegExp(`^${name} — `));
+  };
+  /** Reopens Share on `docId` with its three reads (members, links, invites) held unanswered; `release` answers them. */
+  const reopenHeld = async (docId: string) => {
+    const held: Route[] = [];
+    let holding = true;
+    for (const list of ['members', 'links', 'invites']) {
+      await ada.page.route(`**/api/docs/${docId}/${list}`, async (route) => {
+        if (holding && route.request().method() === 'GET') held.push(route);
+        else await route.fallback();
+      });
+    }
+    const dialog = await ui.openShare(ada, docId);
+    await expect.poll(() => held.length, { message: 'the three reads are held' }).toBe(3);
+    const release = async (answer: (route: Route) => Promise<void>) => {
+      holding = false;
+      for (const route of held) await answer(route);
+    };
+    return { dialog, release };
+  };
+
+  const titled = await made({ title: 'Packing list' });
+  await ada.goto(`/d/${titled}`);
+  await ui.waitOpen(ada, titled, 'live');
+  await openAndClose(titled, 'Note “Packing list”');
+  await retitle(titled, 'Packing list for June');
+  const renamed = await reopenHeld(titled);
+  await expect(header(renamed.dialog), 'the reopened dialog names the new title while its lists load').toHaveText('Note “Packing list for June”');
+  ada.expectHttp(403, `/api/docs/${titled}/links`);
+  await renamed.release((route) => (route.request().url().endsWith('/links')
+    ? route.fulfill({ status: 403, contentType: 'application/json', body: JSON.stringify({ error: 'forbidden' }) })
+    : route.fallback()));
+  await expect(renamed.dialog.getByText('Couldn’t load who has access. Close and open Share to try again.', { exact: true }), 'the load sentence shows')
+    .toBeVisible();
+  await expect(header(renamed.dialog), 'a failed read keeps the new title').toHaveText('Note “Packing list for June”');
+  await ada.page.keyboard.press('Escape');
+  await expect(renamed.dialog).toBeHidden();
+
+  const untitled = await made({});
+  await ada.goto(`/d/${untitled}`);
+  await ui.waitOpen(ada, untitled, 'live');
+  await openAndClose(untitled, 'Note');
+  await retitle(untitled, 'Day trip');
+  const named = await reopenHeld(untitled);
+  await expect(header(named.dialog), 'the reopened dialog names the title the note has now').toHaveText('Note “Day trip”');
+  await named.release((route) => route.fallback());
+  await expect(named.dialog.getByRole('list', { name: 'People with access' }), 'its lists load once answered').toBeVisible();
+  await ada.page.keyboard.press('Escape');
+  await expect(named.dialog).toBeHidden();
 });

@@ -196,6 +196,13 @@ function workerdStats(rootPid) {
   return { cpuMs: workers.reduce((sum, row) => sum + row.cpuMs, 0), rssKb: workers.reduce((sum, row) => sum + row.rssKb, 0) };
 }
 
+/**
+ * Every HTTP request to the spawned workerd asks for its connection to close after it: workerd closes a kept-alive
+ * connection once 5 s have passed on its clock since the connection's last use, and that clock stands still while
+ * JavaScript runs, so after one long request the next could meet a pooled connection already closed.
+ */
+const send = (url, init = {}) => fetch(url, { ...init, headers: { ...init.headers, connection: 'close' } });
+
 async function timedRequest(server, path, init) {
   const before = workerdStats(server.child.pid);
   let peakRssKb = before.rssKb;
@@ -206,7 +213,7 @@ async function timedRequest(server, path, init) {
   let response;
   let body;
   try {
-    response = await fetch(`${server.origin}${path}`, init);
+    response = await send(`${server.origin}${path}`, init);
     body = await response.text();
   } catch (error) {
     throw new Error(`${path}: ${error.message} (${error.cause?.message ?? 'no cause'})\n${server.logs.value}`, { cause: error });
@@ -368,7 +375,7 @@ async function payloadSocket(server, docId, principal, prefix) {
 async function measurePayloadNote(server, blocks, Y, protocol) {
   const docId = `payloads-${blocks}`;
   const markdown = Array.from({ length: blocks }, (_, i) => `\`\`\`\nblock ${i}\n\`\`\``).join('\n\n');
-  const created = await fetch(`${server.origin}/create?doc=${docId}`, { method: 'POST', body: markdown });
+  const created = await send(`${server.origin}/create?doc=${docId}`, { method: 'POST', body: markdown });
   if (!created.ok) throw new Error(`create: HTTP ${created.status} ${await created.text()}\n${server.logs.value}`);
   const { ids } = await created.json();
   if (ids.length !== blocks) throw new Error(`the note names ${ids.length} payloads, expected ${blocks}`);
@@ -426,7 +433,7 @@ async function measurePayloadNote(server, blocks, Y, protocol) {
     clearInterval(sampler);
     for (const socket of sockets) socket.ws.close();
   }
-  const work = await (await fetch(`${server.origin}/work?doc=${docId}`)).json();
+  const work = await (await send(`${server.origin}/work?doc=${docId}`)).json();
   return {
     blocks,
     frames,
@@ -475,10 +482,10 @@ async function tableRequest(port, worker, path, markdown, exportPath) {
   const server = await startWorker(worker, port);
   let before = null;
   try {
-    const warm = await fetch(`${server.origin}${path}warm`, { method: 'POST', body: tableRows(8, `|${'a|'.repeat(8)}\n`, 8 * 1024) });
+    const warm = await send(`${server.origin}${path}warm`, { method: 'POST', body: tableRows(8, `|${'a|'.repeat(8)}\n`, 8 * 1024) });
     if (!warm.ok) throw new Error(`warm-up: HTTP ${warm.status} ${await warm.text()}`);
     before = workerdStats(server.child.pid);
-    const response = await fetch(`${server.origin}${path}note`, { method: 'POST', body: markdown, signal: AbortSignal.timeout(TABLE_TIMEOUT_MS) });
+    const response = await send(`${server.origin}${path}note`, { method: 'POST', body: markdown, signal: AbortSignal.timeout(TABLE_TIMEOUT_MS) });
     const text = await response.text();
     const cpuMs = workerdStats(server.child.pid).cpuMs - before.cpuMs;
     let answer = null;
@@ -490,7 +497,7 @@ async function tableRequest(port, worker, path, markdown, exportPath) {
     const ok = response.status === 200 || (response.status === 413 && answer?.error === 'doc-cap');
     if (!ok) return { cpuMs, status: response.status, answer, failed: `HTTP ${response.status} ${text.slice(0, 160)}` };
     // The export runs after the CPU is read: it only shows what landed.
-    const exported = response.status === 200 ? await (await fetch(`${server.origin}${exportPath}`, { signal: AbortSignal.timeout(TABLE_TIMEOUT_MS) })).json() : null;
+    const exported = response.status === 200 ? await (await send(`${server.origin}${exportPath}`, { signal: AbortSignal.timeout(TABLE_TIMEOUT_MS) })).json() : null;
     return { cpuMs, status: response.status, answer, hash: exported?.hash };
   } catch (error) {
     const timedOut = error.name === 'TimeoutError' || error.cause?.name === 'TimeoutError';

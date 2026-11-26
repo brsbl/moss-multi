@@ -17,8 +17,10 @@ import {
 } from '../lib/contract.ts';
 import { grant } from '../lib/grants.ts';
 import { pageSockets } from '../lib/invariants.ts';
+import { watchNotices } from '../lib/notice-watch.ts';
 import type { Principal } from '../lib/principals.ts';
 import { expect, test, ui } from '../lib/test.ts';
+import { TRASH_COPY } from '../../packages/protocol/src/retention.ts';
 
 const BOOT_TIMEOUT = 30_000;
 const BIND_TIMEOUT = 15_000;
@@ -123,6 +125,8 @@ test('j06-folders: from an empty workspace, create, nest, fill, rename and trash
   await expect(ui.folderRow(ben, 'Projects'), "Ben's sidebar shows Ada's folder").toBeVisible();
   expect(await ui.fieldText(ben, docId, 'body')).toBe(NOTE_TEXT);
 
+  // Ada's note holds one notice at every moment (T9.50a).
+  const watch = await watchNotices(ada.page);
   await ui.folderRow(ada, 'Projects').click({ button: 'right' });
   await ada.page.getByRole('menuitem', { name: 'Trash Folder', exact: true }).click();
   await ada.page.locator('[data-remote-web-surface-blocking-dialog]').getByRole('button', { name: 'Trash', exact: true }).click();
@@ -132,12 +136,16 @@ test('j06-folders: from an empty workspace, create, nest, fill, rename and trash
     await expect(ui.body(actor, docId)).toHaveAttribute(BODY_BINDING_ATTR, 'terminal');
     await expect(ui.body(actor, docId)).toHaveAttribute('contenteditable', 'false');
     await expect(ui.body(actor, docId), `${actor.label}: the content stays visible in place`).toHaveText(NOTE_TEXT);
-    await expect(actor.page.locator(`[${CONNECTION_BANNER_ATTR}="deleted"]`), `${actor.label}: the notice says why`).toBeVisible();
+    // The owner's lasting notice is Moss's Trash notice; the collaborator's card stays for Ben.
+    if (actor === ada) await expect(actor.page.locator(`[${NAMES.retentionNotice}]`), 'ada: the notice says why').toContainText(TRASH_COPY.trashedNote, { timeout: PEER_SIDEBAR_MS });
+    else await expect(actor.page.locator(`[${CONNECTION_BANNER_ATTR}="deleted"]`), 'ben: the notice says why').toHaveText(TRASH_COPY.peerTrashed, { timeout: PEER_SIDEBAR_MS });
+    await expect(actor.page.locator(`[${NAMES.retentionNotice}], [${CONNECTION_BANNER_ATTR}]`), `${actor.label}: one notice`).toHaveCount(1);
     await expect(ui.folderRow(actor, 'Projects'), `${actor.label}: the folder leaves the sidebar`).toHaveCount(0, { timeout: PEER_SIDEBAR_MS });
     await expect(ui.folderRow(actor, 'Drafts'), `${actor.label}: the subfolder goes with it`).toHaveCount(0, { timeout: PEER_SIDEBAR_MS });
     await expect(noteRow(actor, docId), `${actor.label}: the note leaves the sidebar`).toHaveCount(0, { timeout: PEER_SIDEBAR_MS });
     await expectNoCodedErrors(actor);
   }
+  expect(await watch.stop(), 'ada: one notice at every moment').toEqual([]);
   // Typing into the terminal note does nothing.
   await ui.body(ben, docId).click({ force: true });
   await ben.page.keyboard.type('zombie');

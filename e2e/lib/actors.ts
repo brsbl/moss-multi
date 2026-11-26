@@ -2,13 +2,13 @@
 // actor of a test and checks the 9 invariants on all of them at the end.
 import { randomBytes } from 'node:crypto';
 import { basename } from 'node:path';
-import type { APIRequestContext, Browser, BrowserContext, Page, TestInfo } from '@playwright/test';
+import type { Browser, BrowserContext, Page, TestInfo } from '@playwright/test';
 import { isLoopback, recordingFor } from '../../scripts/deploy/canary-artifacts.mjs';
 import { APP_STATE_ATTR, NAMES } from './contract.ts';
 import { authKind, recordAuth } from './auth-pace.ts';
 import { observeEditor, paneExport } from './detectors.js';
 import { browserLog, contextCreated, engineState, hangProbe, systemSnapshot } from './engine.ts';
-import { assertNotInfra, browserCrashIn, closeEachConnection, InfraBlocked } from './infra.ts';
+import { assertNotInfra, browserCrashIn, InfraBlocked } from './infra.ts';
 import {
   actorFindings, awaitingRecovery, domFindings, networkDrops, principalFindings, resyncedDocs, typedFindings, type ActorView, type DeclaredHttp, type Finding,
 } from './invariants.ts';
@@ -111,17 +111,6 @@ export function sameExport(replica: Shown, fresh: Shown): boolean {
   return replica.title === fresh.title && (replica.mode !== fresh.mode || replica.body === fresh.body);
 }
 
-/**
- * A declared-setup API request opens its own connection: a pooled keep-alive connection the server side closed while
- * idle fails the next request with "socket hang up", which the latency rehearsal hit on GETs and POSTs alike and the
- * hook stack hit in j18 (T8.2).
- */
-function freshConnections(request: APIRequestContext): void {
-  const send = request.fetch.bind(request);
-  request.fetch = ((input: Parameters<APIRequestContext['fetch']>[0], options: Parameters<APIRequestContext['fetch']>[1] = {}) =>
-    send(input, { ...options, headers: { connection: 'close', ...options.headers } })) as APIRequestContext['fetch'];
-}
-
 export class Actors {
   readonly list: Actor[] = [];
   readonly typed: Typed[] = [];
@@ -187,7 +176,6 @@ export class Actors {
       size ? { viewport: { width: size.width, height: size.height }, deviceScaleFactor: 2, isMobile: !!size.mobile, hasTouch: !!size.mobile } : {},
     );
     contextCreated();
-    closeEachConnection(context.request);
     let telemetry: Telemetry | null = null;
     // A routed page's doc sockets are counted by the proxy, which sees them open and close (Telemetry.install).
     const sever = options.severable
@@ -197,7 +185,6 @@ export class Actors {
         })
       : null;
     this.options.stack?.budget?.watch(context);
-    freshConnections(context.request);
     // The card's own sign-ins and sign-ups count against the auth limit setup paces under (auth-pace.ts).
     context.on('response', (response) => {
       const kind = authKind(response.url(), response.request().method());

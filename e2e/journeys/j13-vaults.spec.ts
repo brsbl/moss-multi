@@ -13,6 +13,7 @@ import {
   TRASH_ROW_ATTR,
 } from '../lib/contract.ts';
 import { grant } from '../lib/grants.ts';
+import { watchNotices } from '../lib/notice-watch.ts';
 import type { Principal } from '../lib/principals.ts';
 import { expect, test, ui } from '../lib/test.ts';
 import { TRASH_COPY } from '../../packages/protocol/src/retention.ts';
@@ -168,16 +169,33 @@ test('j13-vaults: Ben, with a root grant, sees the vault with his role and no va
   await expect(confirm).toHaveCount(0);
   await expect(adaSettings.getByRole('list', { name: 'Vaults' }).getByText(RENAMED, { exact: true })).toBeVisible();
 
-  // Confirming sends it to Trash: her open note goes terminal in place and the vault leaves both lists.
+  // Confirming sends it to Trash: her open note goes terminal in place and the vault leaves both lists. Her note holds
+  // one notice at every moment (T9.50a). The Escape follows the listing after the trash at once, faster than a person:
+  // the order in which the bridge knows of the trash before Moss's record does.
+  const watch = await watchNotices(ada.page);
   await adaSettings.getByRole('button', { name: 'Move to Trash…', exact: true }).click();
+  let deleted = false;
+  const listed = ada.page.waitForResponse((response) => {
+    const method = response.request().method();
+    const path = new URL(response.url()).pathname;
+    if (method === 'DELETE' && path.startsWith('/api/vaults/')) deleted = true;
+    return deleted && method === 'GET' && path === '/api/workspace' && response.status() === 200;
+  });
   await confirm.getByRole('button', { name: 'Move to Trash', exact: true }).click();
-  await expect(confirm).toHaveCount(0);
+  await listed;
   await ada.page.keyboard.press('Escape');
+  await expect(confirm).toHaveCount(0);
   await expect(adaSettings).toBeHidden();
   await expect(ui.pane(ada, docId), 'the open note goes terminal').toHaveAttribute(TERMINAL_REASON_ATTR, 'deleted', { timeout: PEER_SIDEBAR_MS });
   await expect(ui.body(ada, docId)).toHaveAttribute(BODY_BINDING_ATTR, 'terminal');
-  await expect(ada.page.locator(`[${CONNECTION_BANNER_ATTR}="deleted"]`), 'the notice says why').toBeVisible();
+  // The collaborator's card passes in the owner's window: Moss's own Trash notice replaces it (T9.40, T9.41).
+  const notices = (actor: Actor) => actor.page.locator(`[${NAMES.retentionNotice}], [${CONNECTION_BANNER_ATTR}]`);
+  await expect(ada.page.locator(`[${NAMES.retentionNotice}]`), 'the notice says why').toContainText(TRASH_COPY.trashedNote, { timeout: PEER_SIDEBAR_MS });
+  await expect(notices(ada), 'Ada: one notice, the owner’s').toHaveCount(1);
+  await expect(ben.page.locator(`[${CONNECTION_BANNER_ATTR}="deleted"]`), 'Ben is told why').toHaveText(TRASH_COPY.peerTrashed, { timeout: PEER_SIDEBAR_MS });
+  await expect(notices(ben), 'Ben: one notice').toHaveCount(1);
   await ui.expectVault(ada.page, 'Home', { timeout: PEER_SIDEBAR_MS, message: 'Ada lands in Home' });
+  expect(await watch.stop(), 'Ada: one notice at every moment').toEqual([]);
   await ui.expectVault(ben.page, 'Home', { timeout: PEER_SIDEBAR_MS, message: 'Ben falls back to his Home' });
   for (const actor of [ada, ben]) {
     const list = await ui.openVaultList(actor.page);

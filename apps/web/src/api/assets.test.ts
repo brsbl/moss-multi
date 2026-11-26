@@ -129,6 +129,18 @@ async function uploaded(response: Response): Promise<Uploaded> {
 
 const bytesOf = async (response: Response) => new Uint8Array(await response.arrayBuffer());
 
+/**
+ * Served bytes against the uploaded ones, compared natively: vitest's toEqual on a typed array costs about 2 µs and
+ * 350 bytes of heap per byte (24 s and 4 GB at 12 MiB), and toEqual on the two `.buffer`s compares nothing.
+ */
+function sameBytes(served: Uint8Array, expected: Uint8Array, message = 'the served bytes') {
+  expect(served.byteLength, `${message}: length`).toBe(expected.byteLength);
+  if (Buffer.compare(served, expected) === 0) return;
+  let at = 0;
+  while (served[at] === expected[at]) at += 1;
+  throw new Error(`${message}: the bytes differ first at offset ${at} (${served[at]}, expected ${expected[at]})`);
+}
+
 describe('upload (A§16)', () => {
   it('stores every moss media type in the doc folder and serves it back with its type', async () => {
     const docId = await insertDoc(d1.db, ada);
@@ -144,7 +156,7 @@ describe('upload (A§16)', () => {
       expect(served.headers.get('content-type'), name).toBe(type);
       expect(served.headers.get('x-content-type-options'), name).toBe('nosniff');
       expect(served.headers.get('accept-ranges'), name).toBe('bytes');
-      expect(await bytesOf(served), name).toEqual(body);
+      sameBytes(await bytesOf(served), body, name);
     }
   }, 20_000); // nine uploads and nine reads; a loaded runner has taken past the 5 s default
 
@@ -288,7 +300,7 @@ describe('stored bytes are the type their name declares (T3.B10, B166)', () => {
       'pattern.svg': 'image/svg+xml', 'clip.mp4': 'video/mp4', 'clip.webm': 'video/webm', 'clip.mov': 'video/quicktime' };
     for (const [name, type] of Object.entries(files)) {
       const result = await uploaded(await upload(owner.cookie, docId, name, fixture(name), type));
-      expect(await bytesOf(await call('GET', `/api/docs/${docId}/${result.relativePath}`, owner.cookie)), name).toEqual(fixture(name));
+      sameBytes(await bytesOf(await call('GET', `/api/docs/${docId}/${result.relativePath}`, owner.cookie)), fixture(name), name);
       if (!type.startsWith('image/')) continue;
       const url = `https://img.example/remote-${name}`;
       remote.set(url, { type, bytes: fixture(name) });
@@ -798,7 +810,7 @@ describe('upload storage bounds (T3.1s)', () => {
     expect(before?.used).toBe(VAULT_MEDIA_QUOTA_BYTES);
     const retried = await uploaded(await send('retry.png', body));
     expect(retried.filename).toBe('retry.png');
-    expect(await bytesOf(await call('GET', `/api/docs/${docId}/assets/retry.png`, ola.cookie)), 'the retry filled the blob').toEqual(body);
+    sameBytes(await bytesOf(await call('GET', `/api/docs/${docId}/assets/retry.png`, ola.cookie)), body, 'the retry filled the blob');
     expect(await totals(), 'the retry added no asset').toEqual(before);
     const other = new Uint8Array([...PNG, ...new Uint8Array(2048).fill(7)]);
     for (const name of ['retry.png', 'other.png']) {
@@ -839,7 +851,7 @@ describe('upload storage bounds (T3.1s)', () => {
     expect(before?.used).toBe(VAULT_MEDIA_QUOTA_BYTES);
     const retried = await uploaded(await send());
     expect(retried.filename, 'the retry finds the -2 name its first attempt bound').toBe('shot-2.png');
-    expect(await bytesOf(await call('GET', `/api/docs/${docId}/assets/shot-2.png`, ory.cookie)), 'the retry filled the blob').toEqual(body);
+    sameBytes(await bytesOf(await call('GET', `/api/docs/${docId}/assets/shot-2.png`, ory.cookie)), body, 'the retry filled the blob');
     expect(await usage(), 'the retry added no asset').toEqual(before);
   });
 
@@ -895,8 +907,8 @@ describe('upload storage bounds (T3.1s)', () => {
     }), { ...env, ASSETS }));
     expect(stored.asset.size).toBe(body.byteLength);
     expect(seen, 'one put of the whole video, no multipart upload').toEqual({ multipart: 0, puts: 1, failures: 0 });
-    expect(await bytesOf(await call('GET', `/api/docs/${docId}/assets/long.webm`, una.cookie))).toEqual(body);
-  }, 60_000);
+    sameBytes(await bytesOf(await call('GET', `/api/docs/${docId}/assets/long.webm`, una.cookie)), body);
+  });
 
   it('leaves nothing stored when a video put is cut off mid-body, and a same-file retry at the quota stores it once (T3.B30)', async () => {
     const uli = await signedUpUser(env, 'assets-b30-uli', 'Uli');
@@ -919,9 +931,9 @@ describe('upload storage bounds (T3.1s)', () => {
     const retried = await uploaded(await send());
     expect(retried.filename).toBe('cut.webm');
     expect(seen, 'the retry is one more put').toEqual({ multipart: 0, puts: 2, failures: 0 });
-    expect(await bytesOf(await call('GET', `/api/docs/${docId}/assets/cut.webm`, uli.cookie)), 'the retry stored it whole').toEqual(body);
+    sameBytes(await bytesOf(await call('GET', `/api/docs/${docId}/assets/cut.webm`, uli.cookie)), body, 'the retry stored it whole');
     expect(await totals(), 'the retry added no asset or bytes to the quota').toEqual(before);
-  }, 60_000);
+  });
 
   it('refuses an import from a URL into a vault exactly at its quota before fetching anything (B236)', async () => {
     const pia = await signedUpUser(env, 'assets-fromurl-pia', 'Pia');

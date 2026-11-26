@@ -18,12 +18,15 @@ import {
   DropdownMenuTrigger,
 } from '@moss/shared/components/ui/dropdown-menu';
 import { Input } from '@moss/shared/components/ui/input';
+import { noteEntityAtom } from '@moss/shared/state/note-atoms';
 import { LINK_ROLES, SHARE_ROLES, type LinkRole, type Role, type ShareRole } from '@moss-multi/protocol/roles';
+import { useStore } from 'jotai';
 import { Check, ChevronDown, X } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type FormEvent, type KeyboardEvent, type ReactNode } from 'react';
 import { useDocRole } from '../access.ts';
 import { sessionFetch, useSessionEnded } from '../session-fetch.ts';
 import { useTerminal } from '../collab/terminal.ts';
+import { UNTITLED } from '../collab/title-binding.ts';
 import { heldRead, isLeaveCancelled, leaveAwareSend } from '../leave.ts';
 
 export type ShareTarget =
@@ -236,6 +239,13 @@ async function copy(text: string): Promise<void> {
   await navigator.clipboard.writeText(text);
 }
 
+/** The trimmed title of moss's note record; null for none, an empty one, or moss's placeholder for an empty title. */
+function shownTitle(note: object | null): string | null {
+  const title = (note as { title?: unknown } | null)?.title;
+  const trimmed = typeof title === 'string' ? title.trim() : '';
+  return trimmed && trimmed !== UNTITLED ? trimmed : null;
+}
+
 /** The shell keeps a fixed title (Moss prints titles in faint capitals); the body's first line names the target. */
 function titles(target: ShareTarget, name: string | null): { title: string; description: string; kind: string; named: string | null } {
   if (target.type === 'doc') {
@@ -341,7 +351,16 @@ function ShareDialog({ target, open, onOpenChange }: { target: ShareTarget; open
   const [linkAccess, setLinkAccess] = useState<LinkRole>('viewer');
   const [pending, setPending] = useState(false);
   const [status, setStatus] = useState<Status>(null);
-  const [name, setName] = useState<string | null>(null);
+  // A note's name starts, at every opening, as the title the window shows, so the header names it before the reads
+  // answer (T9.50b). The dialog stays mounted while closed, so it is seeded again when `open` turns true.
+  const store = useStore();
+  const seed = () => (target.type === 'doc' ? shownTitle(store.get(noteEntityAtom(target.id))) : null);
+  const [name, setName] = useState<string | null>(seed);
+  const [wasOpen, setWasOpen] = useState(open);
+  if (open !== wasOpen) {
+    setWasOpen(open);
+    if (open && target.type === 'doc') setName(seed());
+  }
   const [inherited, setInherited] = useState<InheritedGroup[]>([]);
   const [linksAbove, setLinksAbove] = useState<LinkAbove[]>([]);
   const [hasAgent, setHasAgent] = useState(false);
