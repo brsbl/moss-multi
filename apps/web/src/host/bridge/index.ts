@@ -1131,7 +1131,9 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
       // The address follows the focused note, so a reload or a copied URL reopens it (A§4.2).
       // A pane going to another note is a visit with its own history entry, so the browser's Back returns to the note
       // before it (T9.19). The first note, a redirect, a trashed note's successor and focus moving between split panes
-      // (a note that was already showing, or one still showing) replace the address instead.
+      // (a note that was already showing, or one still showing) replace the address instead. Moss makes no focus report
+      // until its startup selection has picked the tab's first note (seam startup-focus in App.tsx, T9.53), so the
+      // first report is that note.
       setFocusedNoteId: async (id: string | null) => {
         const before = focused;
         focused = { id, panes: shownNotes };

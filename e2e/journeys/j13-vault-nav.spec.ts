@@ -263,3 +263,79 @@ test('j13-vault-nav: a switch that fails after New vault says so where she is, w
   await ui.expectVault(page, 'Home');
   await page.unroute(/\/api\/workspace\?/);
 });
+
+// T9.53: the note the tab starts on is its first note. Opening a note by its address, reloading it, or opening the
+// plain address with a remembered note writes no other note into the address and adds no history entry, so the
+// browser's Back never shows a note that was not opened in the tab.
+function recordHistory(): void {
+  const record = { loaded: window.history.length, writes: [] as string[] };
+  (window as unknown as { __t953?: typeof record }).__t953 = record;
+  for (const kind of ['pushState', 'replaceState'] as const) {
+    const original = History.prototype[kind];
+    History.prototype[kind] = function (this: History, data: unknown, unused: string, url?: string | URL | null): void {
+      if (url != null) record.writes.push(`${kind} ${new URL(String(url), window.location.href).pathname}`);
+      original.call(this, data, unused, url);
+    };
+  }
+}
+
+test('j13-vault-nav: a note opened by its address, reloaded, or remembered at the plain address is the tab\'s first note: no other note is written to the address and no history entry is added (T9.53) @p:note-4', async ({ actors }) => {
+  actors.solo('one person opens her own notes by their addresses');
+  const principal = await actors.principal('ada');
+  const ada = await actors.open(principal, { viewport: DESKTOP });
+  const home = (await listing(ada)).vault.id;
+  const stamp = Date.now().toString(36);
+  const older = await makeNote(ada, home, `Older ${stamp}`, 'The older note, opened by its address.');
+  const newer = await makeNote(ada, home, `Newer ${stamp}`, 'The newer note, never opened in the tab.');
+
+  // A second window of hers, with every history write recorded before the app loads. The length at load is the
+  // baseline: nothing is measured after the app has started.
+  const tab = await actors.session(principal, { label: 'ada-by-address', viewport: DESKTOP });
+  await tab.context.addInitScript(recordHistory);
+  const at = (docId: string) => new RegExp(`/d/${docId}$`);
+  const startup = () => tab.page.evaluate((own) => {
+    const record = (window as unknown as { __t953: { loaded: number; writes: string[] } }).__t953;
+    return { added: window.history.length - record.loaded, otherNotes: record.writes.filter((write) => !write.endsWith(`/d/${own}`)) };
+  }, older);
+  const noHistoryWritten = async (when: string) => {
+    expect.soft(await startup(), `${when}: no history entry added, no other note written to the address`).toEqual({ added: 0, otherNotes: [] });
+  };
+  const showsOlder = async (when: string) => {
+    await ui.waitBodyLive(tab, older);
+    await expect.poll(() => ui.paneIds(tab), { message: `${when}: the addressed note is the one pane` }).toEqual([older]);
+    await expect(tab.page, `${when}: the address names it`).toHaveURL(at(older));
+    await expect.poll(() => tab.page.locator(`[${SIDEBAR_ROW_ATTR}][${NAMES.docId}]`).first().getAttribute(NAMES.docId),
+      { message: `${when}: the newer note is the first listed`, timeout: BIND_TIMEOUT }).toBe(newer);
+    await noHistoryWritten(when);
+  };
+
+  await tab.goto(`/d/${older}`);
+  await showsOlder('opened by its address');
+  await noHistoryWritten('opened by its address, before the reload');
+
+  await tab.page.reload();
+  await showsOlder('reloaded');
+  await noHistoryWritten('reloaded, before the plain address');
+
+  // The plain address opens the note she viewed last, which is not her newest.
+  await tab.goto('/');
+  await showsOlder('the plain address');
+  await noHistoryWritten('the plain address, before the visit');
+
+  // A visit still adds one entry, and Back and Forward move between the two notes she opened. Each binds once more;
+  // the newest note may also have opened as the startup note.
+  tab.expectReconnects(1, older);
+  tab.expectReconnects(2, newer);
+  await noteRow(tab, newer).click();
+  await ui.waitBodyLive(tab, newer);
+  await expect(tab.page).toHaveURL(at(newer));
+  expect((await startup()).added, 'a visit adds one entry').toBe(1);
+  await tab.page.goBack({ waitUntil: 'commit' });
+  await ui.waitBodyLive(tab, older);
+  await expect(tab.page, 'Back shows the note she came from').toHaveURL(at(older));
+  await expect.poll(() => ui.paneIds(tab)).toEqual([older]);
+  await tab.page.goForward({ waitUntil: 'commit' });
+  await ui.waitBodyLive(tab, newer);
+  await expect(tab.page, 'Forward shows the note she visited').toHaveURL(at(newer));
+  expect((await startup()).added, 'Back and Forward add no entry').toBe(1);
+});

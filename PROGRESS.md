@@ -457,6 +457,18 @@ The lower branches, m5 to m8 (from the code; their band was never pressed in a b
 
 Not known: Firefox, Safari on macOS and touch; Copy outside headless Chromium's own clipboard (what WebKit's clipboard holds, a headed browser, a paste into another app); the card when the clipboard refuses, and its no-room form; T9.51's handler on the region's other buttons with the caret in the note (only Retry and the card's three actions were pressed); block kinds other than paragraphs and one bullet list; three or more closed suggestions, text beyond about 1,000 characters and panes narrower than 1440 x 1000; how often a refusal happens in real use.
 
+### T9.53 — not in this task
+
+None of these is fixed or proven by T9.53.
+
+- **A share link shows your own note (older than m9).** A signed-in person with a note of her own who opens a view link to someone else's note sees her own most recently changed note, the address becomes `/d/<her note>?share=<token>`, and the shared note never opens. Signed out, the same link opens the shared note. Unchanged by T9.53, which adds one window to this route: until the access read settles (at most 10 s) no focus is reported, so a note clicked then is written by a replace, not pushed as a visit. Likely cause, not proven: startup selection stops at `if (store.get(activeNoteIdAtom))` in App.tsx, true because of the fallback to the newest note; a likely fix is to test the stored choice (`activeNoteSelectionAtom`) there. Needs its own task and leg; every share-link leg in j08 opens the link as a person with no notes.
+- Other routes with the same cause, expected to be covered by the fix but never run with it: a note in a second vault opened by its address while the stored vault is the first (seen without the fix); a note shared by a grant opened by its address; a folder address `/f/<id>`; returning from sign-in to `/d/<id>`; Open in New Window; a bell notice about a folder; Back after a reload to an earlier note; a collaborator's edit changing which note is the newest.
+- A note trashed while one Back away: Back shows it in Trash and rewrites its entry to the last live note, so the history holds that note twice and one later Forward changes nothing on screen; restoring the note does not bring its entry back.
+- Moss still mounts the newest note for one render at every startup (its panes report comes 3 to 5 ms before the addressed note's); whether its socket opens then is not on record, and the legs allow for it.
+- A slow list could make Moss's first focus report "no note"; the host returns early on it. No log shows one.
+- Not on record: what switching vault in the app, or choosing a search result from another vault, writes to the history.
+- Not known: whether j13-vaults' "the notice says why" fails more often in WebKit with the fix; the fix on staging or with real network delay; WebKit driven by hand.
+
 ## Follow-ups (P2)
 
 Parked from the M0 checker and critic passes, each with the task that owns it.
