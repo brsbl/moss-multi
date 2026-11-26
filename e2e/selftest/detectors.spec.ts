@@ -76,12 +76,16 @@ for (const c of CASES) {
   });
 }
 
-test('invariant 7 waits for a rebinding field and then reads its text', async ({ actors, server }) => {
-  const actor = await actors.anonymous(`${server.url}/rebind-keeps-text.html`, { label: 'rebind' });
-  await exercise(actor);
-  await actor.page.locator('html[data-unbound]').waitFor({ state: 'attached' });
-  expect(await actors.findings()).toEqual([]);
-});
+// macOS WebKit can stall most of a second between two keys (T9.55h): the rebind must not depend on the pace of typing.
+for (const [variant, stallAfter] of [['', 0], [' when the typing stalls', 5]] as const) {
+  test(`invariant 7 waits for a rebinding field and then reads its text${variant}`, async ({ actors, server }) => {
+    const actor = await actors.anonymous(`${server.url}/rebind-keeps-text.html`, { label: 'rebind' });
+    await exercise(actor, stallAfter);
+    await actor.page.evaluate(() => (window as unknown as { rebind: () => void }).rebind());
+    await actor.page.locator('html[data-unbound]').waitFor({ state: 'attached' });
+    expect(await actors.findings()).toEqual([]);
+  });
+}
 
 test('a read-only body\'s tab, focused in its tablist, is not a finding (T3.B17)', async ({ actors, server }) => {
   const actor = await actors.anonymous(`${server.url}/read-only-tab.html`, { label: 'read-only-tab' });
