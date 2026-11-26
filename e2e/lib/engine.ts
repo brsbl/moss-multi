@@ -1,12 +1,15 @@
 // Engine evidence for a failed WebKit test (T9.48g): the browser's stderr, page crashes and browser disconnects, the
 // browser's age and context count, the runner's process, descriptor, memory and shared-memory state, how long each
-// close took, and a probe of what still answers. Evidence only: nothing here classifies a failure or retries one.
+// close took, and a probe of what still answers. Evidence only, with one exception: the engine-fault lines the browser
+// writes to its stderr are also noted, with their times, for Actors.settle to label a failed test (T9.55c, g). Nothing
+// here retries a test.
 import { execFile } from 'node:child_process';
 import { appendFileSync, mkdirSync, readdirSync, readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
 import { format, promisify } from 'node:util';
 import type { Browser, BrowserContext, Page } from '@playwright/test';
+import { engineFaultIn, type NotedFault } from './infra.ts';
 
 const run = promisify(execFile);
 const RING = 500;
@@ -20,6 +23,9 @@ const HEAD = 40;
 const head: string[] = [];
 const lines: string[] = [];
 let dropped = 0;
+// Beside the ring: a failed load writes 2 lines, so a fault line can leave the ring before the teardown reads it.
+const NOTED = 200;
+const noted: NotedFault[] = [];
 
 interface Debug {
   (namespace: string): unknown;
@@ -50,7 +56,13 @@ function installBrowserLog(): void {
   debug.log = function log(this: { namespace?: string } | undefined, ...args: unknown[]) {
     if (this?.namespace !== 'pw:browser') return original.apply(this, args);
     const text = format(...args).replace(ANSI, '').replace(/^\s*(?:\S+Z )?pw:browser /, '').replace(/ \+\d+m?s$/, '');
-    const line = `${new Date().toISOString()} ${text}`;
+    const at = Date.now();
+    const line = `${new Date(at).toISOString()} ${text}`;
+    const fault = engineFaultIn(text);
+    if (fault) {
+      noted.push({ at, name: fault });
+      if (noted.length > NOTED) noted.splice(0, noted.length - NOTED);
+    }
     if (head.length < HEAD) head.push(line);
     else {
       lines.push(line);
@@ -67,6 +79,11 @@ installBrowserLog();
 /** What the worker's browsers wrote, with Playwright's launch and close lines: the first lines, then the latest. */
 export function browserLog(): string[] {
   return [...head, ...(dropped > 0 ? [`… ${dropped} line(s) dropped`] : []), ...lines];
+}
+
+/** The engine-fault lines the worker's browsers wrote to stderr at or after `since` (ms). */
+export function engineFaultsSince(since: number): NotedFault[] {
+  return noted.filter((line) => line.at >= since);
 }
 
 interface EngineState { name: string; launchedAt: number; contexts: number; disconnectedAt: number[] }
@@ -154,6 +171,9 @@ export async function systemSnapshot(): Promise<Record<string, unknown>> {
     ps: ps.startsWith('unavailable') ? ps : [header, ...webkit].join('\n'),
     networkProcesses: network,
     ulimitN: await shell('sh', ['-c', 'ulimit -n']),
+    // Whether an aborted process could leave a core: no backtrace exists for any abort so far (T9.55g).
+    ulimitC: await shell('sh', ['-c', 'ulimit -c']),
+    corePattern: read('/proc/sys/kernel/core_pattern'),
     meminfo: read('/proc/meminfo'),
     shm: await shell('df', ['-k', '/dev/shm']),
     dmesg: await shell('sh', ['-c', 'dmesg 2>&1 | tail -n 40']),

@@ -7,8 +7,8 @@ import { isLoopback, recordingFor } from '../../scripts/deploy/canary-artifacts.
 import { APP_STATE_ATTR, NAMES } from './contract.ts';
 import { authKind, recordAuth } from './auth-pace.ts';
 import { observeEditor, paneExport } from './detectors.js';
-import { browserLog, contextCreated, engineState, hangProbe, systemSnapshot } from './engine.ts';
-import { assertNotInfra, browserCrashIn, InfraBlocked } from './infra.ts';
+import { browserLog, contextCreated, engineFaultsSince, engineState, hangProbe, systemSnapshot } from './engine.ts';
+import { assertNotInfra, browserCrashIn, engineFaultOf, InfraBlocked } from './infra.ts';
 import {
   actorFindings, awaitingRecovery, domFindings, networkDrops, principalFindings, resyncedDocs, typedFindings, type ActorView, type DeclaredHttp, type Finding,
 } from './invariants.ts';
@@ -118,6 +118,8 @@ export class Actors {
   readonly journey: string;
   private soloReason: string | null = null;
   private version: Provenance | null = null;
+  /** When this test's Actors was made: an engine-fault line before it belongs to an earlier test (T9.55c). */
+  private readonly madeAt = Date.now();
 
   constructor(
     private readonly browser: Browser,
@@ -389,18 +391,39 @@ export class Actors {
 
   /**
    * A fixture's teardown: asserts the invariants (unless `assert` is false) and closes every context. A failed WebKit
-   * test, whether its body or the invariants failed, carries the engine evidence (T9.48g).
+   * test, whether its body or the invariants failed, carries the engine evidence (T9.48g). It is reported BLOCKED when
+   * the browser's stderr names an engine fault in its window (engineFaultOf, T9.55c), with the invariants' own message
+   * kept beneath. Label only, never a retry, and the test still fails its job. A passing test whose window holds such a
+   * line only records the count, as an `engine-fault-survived` annotation. A page crash is known here because the
+   * invariants' evaluate on the dead page waits for the engine's report (T9.55g); `settle({ assert: false })` runs no
+   * such wait, so it cannot label a page process abort.
    */
   async settle({ assert = true } = {}): Promise<void> {
+    const teardownAt = Date.now();
     let failed = this.testInfo.status !== this.testInfo.expectedStatus;
+    let error: unknown = null;
     try {
       if (assert) await this.assertInvariants();
-    } catch (error) {
+    } catch (thrown) {
       failed = true;
-      throw error;
-    } finally {
-      await this.dispose({ capture: failed && this.browser.browserType().name() === 'webkit' });
+      error = thrown ?? new Error('the invariants threw nothing');
     }
+    const webkit = this.browser.browserType().name() === 'webkit';
+    const noted = webkit ? engineFaultsSince(this.madeAt) : [];
+    const fault = webkit
+      ? engineFaultOf({ failed, madeAt: this.madeAt, teardownAt, noted, pages: this.list.map((actor) => ({ label: actor.label, crashes: actor.telemetry.crashes })) })
+      : null;
+    if (!failed && noted.length > 0) {
+      const counts = new Map<string, number>();
+      for (const line of noted) counts.set(line.name, (counts.get(line.name) ?? 0) + 1);
+      this.testInfo.annotations.push({ type: 'engine-fault-survived', description: [...counts].map(([name, n]) => `${n} × ${name}`).join('; ') });
+    }
+    await this.dispose({ capture: failed && webkit });
+    if (fault) {
+      const beneath = error ? `\n  the teardown's error: ${(error as Error).message ?? String(error)}` : '';
+      throw new InfraBlocked(`${fault}${beneath}`);
+    }
+    if (error) throw error;
   }
 
   /**
