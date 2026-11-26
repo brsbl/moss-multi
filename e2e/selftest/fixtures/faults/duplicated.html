@@ -1,13 +1,7 @@
-<!-- Invariant 7: an echo applies the typed text twice ('WORD' becomes 'WORDWORD'). -->
+<!-- Invariant 7: an echo applies the typed text twice ('WORD' becomes 'WORDWORD'). The selftest asks for the echo once
+     it has typed: a timer echoes whatever was typed before a stall, and that is not the typed string twice. -->
 <script>
   const body = document.querySelector('[data-body-binding]');
   const initial = body.textContent.length;
-  let timer = 0;
-  body.addEventListener('input', () => {
-    clearTimeout(timer);
-    timer = setTimeout(() => {
-      body.querySelector('p').append(body.textContent.slice(initial));
-      document.documentElement.setAttribute('data-echoed', 'true');
-    }, 200);
-  });
+  window.echo = () => body.querySelector('p').append(body.textContent.slice(initial));
 </script>

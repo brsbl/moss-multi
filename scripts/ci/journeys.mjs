@@ -18,6 +18,8 @@ export const GROUPS = {
   shell: ['j00-shell', 'j07', 'j10', 'j19'],
   // Sharing.
   share: ['j08'],
+  // A share link to a note opened by someone with notes of their own (T9.54).
+  linkNotes: ['j08-link-notes'],
   // Live access changes: demotion, removal, link revocation, sign-out.
   access: ['j09'],
   // Server import against UI paste, and the protocol round trip.
@@ -64,6 +66,13 @@ export const GROUPS = {
   social: ['j15-social', 'j08-agents', 'j15-comments-guard', 'j15-comments-offline'],
   // Suggest mode and the suggestions server.
   suggest: ['j16'],
+  // A suggester's connection dropping and returning: what is refused, the cooldown, and where the text is afterwards;
+  // one window's cuts, more windows, windows returning, fresh pages, and the cooldown's net (all @slow, so it shares
+  // a shard with legs every lane runs).
+  suggestDropCuts: ['j16-suggest-drop-cuts'],
+  suggestDropTabs: ['j16-suggest-drop-tabs'],
+  suggestDropReturn: ['j16-suggest-drop-return'],
+  suggestDropFresh: ['j16-suggest-drop-fresh', 'j16-suggest-drop-cooldown'],
   // Large pastes in Suggest mode: admitted whole or refused whole, one frame, one undo step.
   suggestPaste: ['j16-paste'],
   // Suggest-mode pastes over table cells, refused whole or struck; an undone split that reads as the body; a Review

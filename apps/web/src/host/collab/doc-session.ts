@@ -7,7 +7,7 @@
 import type { ConnectionState, TerminalReason } from '@moss-multi/protocol/dom-contract';
 import { isRole, roleAtLeast, type Role } from '@moss-multi/protocol/roles';
 import { STATE_CAP_BYTES } from '@moss-multi/protocol/limits';
-import type { SuggestReply, SuggestRequest } from '@moss-multi/protocol/suggest';
+import { SUGGEST_LIMITS, type SuggestReply, type SuggestRequest } from '@moss-multi/protocol/suggest';
 import {
   base64ToBytes, CLOSE, closeAction, DOC_LIMIT_NOTICE, encodeMovesFrame, encodeSyncFrame, PAYLOAD_MESSAGE, type ServerEvent, type WriteRefusalReason,
 } from '@moss-multi/protocol/sync';
@@ -285,6 +285,11 @@ export function severDocSessions(): void {
   for (const session of [...sessions]) session.end('session-ended');
 }
 
+/** A terminal reason a retry can lift: the connection limit (Retry) and a suggestion cooldown (by itself). */
+const retriable = (reason: TerminalReason | null): boolean => reason === 'conn-limit' || reason === 'suggest-cooldown';
+/** How long past the cooldown a cooled-down session waits before reconnecting, so the DocDO's deadline has passed. */
+const COOLDOWN_SLACK_MS = 2_000;
+
 /** The banner's Retry for a doc that went terminal `conn-limit`. */
 export function retryDoc(docId: string): void {
   held.get(docId)?.session.retry();
@@ -428,6 +433,8 @@ export class DocSession {
   #failedHandshakes = 0;
   #accessRetries = 0;
   #accessRetry: ReturnType<typeof setTimeout> | undefined;
+  /** The reconnect a suggestion cooldown schedules for when it ends. */
+  #cooldownRetry: ReturnType<typeof setTimeout> | undefined;
   #paused = false;
   #pagePresence: ReturnType<YProvider['awareness']['getLocalState']> = null;
   /** Large pastes landing or unacked (T3.B32). */
@@ -616,7 +623,7 @@ export class DocSession {
    */
   release(): void {
     if (this.#disposed || this.#lingering) return;
-    if (!this.#state.unacked || (this.#ended && terminalOf(this.docId) !== 'conn-limit')) {
+    if (!this.#state.unacked || (this.#ended && !retriable(terminalOf(this.docId)))) {
       this.dispose();
       return;
     }
@@ -687,7 +694,7 @@ export class DocSession {
     setTerminal(this.docId, reason);
     // A demotion's notice no longer holds once the note has ended (its banner says why).
     settleRefusal(VIEW_ONLY, 0);
-    if (this.#lingering && reason !== 'conn-limit') {
+    if (this.#lingering && !retriable(reason)) {
       this.dispose();
       return;
     }
@@ -716,9 +723,10 @@ export class DocSession {
     void this.provider.connect();
   }
 
-  /** Tries again after `conn-limit`: the terminal state clears and the socket reopens. */
+  /** Tries again after `conn-limit` or a suggestion cooldown: the terminal state clears and the socket reopens. */
   retry(): void {
     if (this.#disposed) return;
+    clearTimeout(this.#cooldownRetry);
     this.#ended = false;
     this.#failedHandshakes = 0;
     clearTerminal(this.docId);
@@ -734,6 +742,7 @@ export class DocSession {
     this.#lingering = false;
     this.#replay.cancel();
     clearTimeout(this.#accessRetry);
+    clearTimeout(this.#cooldownRetry);
     clearInterval(this.#tick);
     clearTimeout(this.#deadline);
     document.removeEventListener('visibilitychange', this.#onVisibility);
@@ -948,10 +957,17 @@ export class DocSession {
     this.provider.id = crypto.randomUUID();
     this.#update({ type: 'closed', at: Date.now() });
     // Dispatched before the provider schedules its reconnect, so a stop here is never raced (A§10.6).
-    const action = closeAction(event?.code ?? 1006);
+    const action = closeAction(event?.code ?? 1006, event?.reason);
     switch (action.kind) {
       case 'terminal':
         this.end(action.reason);
+        // A suggestion cooldown ends by itself: reconnect once it has, and what the fork owes is delivered.
+        if (action.reason === 'suggest-cooldown') {
+          clearTimeout(this.#cooldownRetry);
+          this.#cooldownRetry = setTimeout(() => {
+            if (!this.#disposed && this.#ended && terminalOf(this.docId) === 'suggest-cooldown') this.retry();
+          }, SUGGEST_LIMITS.cooldownMs + COOLDOWN_SLACK_MS);
+        }
         if (event?.code === CLOSE.noPrincipal) leaveTo(`/login?next=${encodeURIComponent(window.location.pathname)}`);
         return;
       case 'reask':
@@ -1144,7 +1160,8 @@ export class DocSession {
       // A slow ack read is a User Timing measure, so a held tab can be told apart from the paste's batches.
       if (performance.now() - started > 50) performance.measure('moss-sync-ack', { start: started });
     } else if (isSuggestReply(event)) {
-      this.#suggest.replied();
+      // A reply to a frame this window never sent settles nothing; each fork checks it against its own requests.
+      this.#suggest.replied(event);
       for (const listener of [...this.#suggestListeners]) listener(event);
       this.#settleUnacked();
     } else if (event.t === 'write-refused') {

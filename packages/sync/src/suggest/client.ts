@@ -8,7 +8,7 @@ import {
   BODY_DOC, BODY_ROOTS, hydrate, ownValue, PAYLOAD_ID, regRefs, ROOT_KINDS, structsIn, type Inserted, type RecordOp, type SuggestionRecord,
 } from '@moss-multi/core/suggest/apply';
 import { STATE_CAP_BYTES } from '@moss-multi/protocol/limits';
-import { RESUME_MAX, SUGGEST_LIMITS, type IdSpan, type LeaseGrant, type SuggestReply, type SuggestRefusal, type SuggestRequest } from '@moss-multi/protocol/suggest';
+import { answers, RESUME_MAX, SUGGEST_LIMITS, type IdSpan, type LeaseGrant, type SuggestReply, type SuggestRefusal, type SuggestRequest } from '@moss-multi/protocol/suggest';
 import { bytesToBase64 } from '@moss-multi/protocol/sync';
 import { attachPayloadDocs, PAYLOAD_LOADED, PayloadDocs, payloadDocsFor, payloadMap, payloadText } from '../payload-docs.ts';
 import { attachPayloadSource } from '../server-doc.ts';
@@ -817,7 +817,8 @@ export class SuggestFork {
 
   /**
    * Resumes this fork's leases on the current connection, `RESUME_MAX` a frame; everything else waits until the last
-   * frame's answer.
+   * frame's answer. Only the last frame asks for fresh leases, and only for the spare F lacks, so a reconnect leaves the
+   * author holding no more unused leases than before it.
    */
   #resume(): void {
     const clients = this.#resumable();
@@ -827,7 +828,14 @@ export class SuggestFork {
     this.#resuming = true;
     this.#resumeLeft = chunks.length;
     this.#resumed = [];
-    for (const resume of chunks) this.#send({ request: { t: 'suggest-lease', resume, fork: this.#id } });
+    for (const [index, resume] of chunks.entries()) {
+      this.#send({ request: { t: 'suggest-lease', resume, fork: this.#id, mint: index === chunks.length - 1 ? this.#lacking() : 0 } });
+    }
+  }
+
+  /** The leases F lacks of its active one and a spare. */
+  #lacking(): number {
+    return Math.max(0, 2 - this.#leases.length);
   }
 
   /**
@@ -858,6 +866,9 @@ export class SuggestFork {
 
   receive(reply: SuggestReply): void {
     if (this.#disposed) return;
+    // A reply that fits none of F's requests in flight answers a frame F never sent (another client on its socket):
+    // it changes nothing.
+    if (!this.#inflight.some((pending) => answers(pending.request, reply))) return;
     const entry = this.#inflight.shift();
     const resumed = entry?.request.t === 'suggest-lease' && entry.request.resume !== undefined;
     if (reply.t !== 'suggest-refused' && typeof reply.room === 'number') {
@@ -1343,7 +1354,7 @@ export class SuggestFork {
     this.#setClient(this.#leases[0].client);
     if (this.#leases.length < 2 && !this.#leasing) {
       this.#leasing = true;
-      this.#request({ t: 'suggest-lease', fork: this.#id });
+      this.#request({ t: 'suggest-lease', fork: this.#id, mint: this.#lacking() });
     }
   }
 

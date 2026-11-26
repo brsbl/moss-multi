@@ -137,3 +137,9 @@
   pointer-events: auto;
   cursor: pointer;
 }
+
+/* A typed space is stored as U+0020. With white-space: normal an engine puts in U+00A0 for a space typed first,
+   last or beside another space, and the title field stores it as it is. */
+[data-title-binding] {
+  white-space: pre-wrap;
+}
