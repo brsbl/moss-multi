@@ -18,6 +18,8 @@ export const GROUPS = {
   shell: ['j00-shell', 'j07', 'j10', 'j19'],
   // Sharing.
   share: ['j08'],
+  // A share link to a note opened by someone with notes of their own (T9.54).
+  linkNotes: ['j08-link-notes'],
   // Live access changes: demotion, removal, link revocation, sign-out.
   access: ['j09'],
   // Server import against UI paste, and the protocol round trip.
