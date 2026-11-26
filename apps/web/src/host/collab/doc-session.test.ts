@@ -254,6 +254,22 @@ it('the first-sync deadline leaves the doc closed and sign-out stops every socke
   expect(session.provider.shouldConnect).toBe(false);
 });
 
+it('a suggestion cooldown keeps the doc and its unacked edits and reconnects by itself once, after the cooldown (T5.S16)', async () => {
+  latest().open(); session.provider.synced = true;
+  session.doc.getText('title').insert(0, 'pending');
+  const cooled = latest();
+  cooled.readyState = 3;
+  cooled.dispatchEvent(new CloseEvent('close', { code: 4429, reason: 'suggest-cooldown' }));
+  expect(terminalOf('doc')).toBe('suggest-cooldown');
+  expect(session.provider.shouldConnect).toBe(false);
+  await vi.advanceTimersByTimeAsync(55_000);
+  expect(sockets, 'nothing reconnects inside the cooldown').toHaveLength(1);
+  await vi.advanceTimersByTimeAsync(10_000);
+  expect(sockets, 'one socket opens by itself after it').toHaveLength(2);
+  expect(terminalOf('doc')).toBeNull();
+  expect(session.doc.getText('title').toString()).toBe('pending');
+  expect(hasUnacked()).toBe(true);
+});
 it('a connect requested after a terminal close cannot reopen it', async () => {
   latest().open(); latest().ended(4410);
   await session.provider.connect();

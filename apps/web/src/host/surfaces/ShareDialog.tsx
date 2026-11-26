@@ -480,7 +480,7 @@ export function ShareControl({ docId }: { docId: string }): ReactNode {
   const role = useDocRole(docId);
   // A window whose session ended (or whose note went away) can no longer share it.
   const terminal = useTerminal(docId);
-  if (role !== 'owner' || (terminal !== null && terminal !== 'conn-limit')) return null;
+  if (role !== 'owner' || (terminal !== null && terminal !== 'conn-limit' && terminal !== 'suggest-cooldown')) return null;
   return (
     <button
       type="button"
