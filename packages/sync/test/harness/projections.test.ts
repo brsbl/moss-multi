@@ -174,13 +174,18 @@ describe('updated_at', () => {
     const client = await editor(opened);
     const body = bindLexical(client.doc);
     await client.hello();
+    let edited = 0;
     for (let i = 0; i < 12; i += 1) {
       body.type(`word ${i} `);
       await client.flush();
+      edited = Date.now();
       await vi.advanceTimersByTimeAsync(1_000);
     }
     await vi.advanceTimersByTimeAsync(6_000);
-    const at = touches().map((w) => w.at);
+    const stamps = touches();
+    expect(stamps.at(-1)?.value, 'the trailing touch stamps the last edit, not the time its timer fired').toBe(edited);
+    for (const w of stamps) expect(w.value, 'no stamp is later than its write').toBeLessThanOrEqual(w.at);
+    const at = stamps.map((w) => w.at);
     expect(at.length, '12 edits over 12 s touch 3 or 4 times').toBeGreaterThanOrEqual(3);
     expect(at.length).toBeLessThanOrEqual(4);
     for (let i = 1; i < at.length; i += 1) expect(at[i] - at[i - 1]).toBeGreaterThanOrEqual(5_000);
