@@ -106,7 +106,7 @@ test("j16-review: the peer's panel lists a suggestion; an editor's accept from t
   // Accept, reached from the painted insert mark in Edit mode.
   const mark = ada.page.locator(`[${SUGGEST_MARK_ATTR}="insert"][${SUGGESTION_ID_ATTR}]`).first();
   await expect(mark).toBeAttached({ timeout: BIND_TIMEOUT });
-  await mark.click({ force: true });
+  await mark.click();
   const active = panel(ada).locator(`[${SUGGESTION_CARD_ATTR}][${SUGGESTION_ACTIVE_ATTR}]`);
   await expect(active, 'the painted mark opens its card').toHaveCount(1);
   await active.getByRole('button', { name: 'Accept' }).click();
