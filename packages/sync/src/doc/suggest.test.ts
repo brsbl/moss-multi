@@ -13,7 +13,8 @@ import { acceptRecord, nodeRegistry, previewRecord, rejectRecord } from '../sugg
 import { ForkShim } from '../suggest/fork-shim.ts';
 import { decodeFrame, encodeFrame, int, MUTATIONS, rng, targetsOf } from '../suggest/fuzz-support.ts';
 import { EDITOR, OTHER_SUGGESTER, seededBody, select, spansOfText, SUGGESTER } from '../suggest/test-support.ts';
-import { SUGGEST_CAPS, SuggestIngest, type IngestOptions, type Suggester } from './suggest.ts';
+import { SUGGEST_LIMITS, type SuggestReply, type SuggestRequest } from '@moss-multi/protocol/suggest';
+import { handleSuggest, SUGGEST_CAPS, SuggestIngest, type IngestOptions, type Suggester } from './suggest.ts';
 
 const sam = (connection = 'c-sam', role = 'suggester'): Suggester => ({ ...SUGGESTER, role, connection });
 const sky = (connection = 'c-sky', role = 'suggester'): Suggester => ({ ...OTHER_SUGGESTER, role, connection });
@@ -866,5 +867,78 @@ describe('T5.B1 leases held by deletes, and payload ops checked before the paylo
     expect(loads, 'refused before the payload loads').toBe(0);
     expect(ingest.ops(sam(), mine.record, { doc: id, update: edit(mine.client, 'p') })).toMatchObject({ ok: true, doc: id });
     expect(loads, 'a valid op loads it once').toBe(1);
+  });
+});
+
+type Leased = Extract<SuggestReply, { t: 'suggest-leased' }>;
+const clientsOf = (reply: SuggestReply): number[] | SuggestReply => (reply.t === 'suggest-leased' ? reply.leases.map((lease) => lease.client) : reply);
+
+/** A fork of `live` under `client`: each write returns its own update, in order, as a fork transaction's. */
+function forkUnder(live: Y.Doc, client: number): (text: string) => Uint8Array {
+  const doc = new Y.Doc();
+  doc.clientID = client;
+  Y.applyUpdate(doc, Y.encodeStateAsUpdate(live));
+  return (text) => {
+    const sv = Y.encodeStateVector(doc);
+    firstBlock(doc).insert(0, text);
+    return Y.encodeStateAsUpdate(doc, sv);
+  };
+}
+
+describe("T5.S16 a resume of the person's own leases is never refused for the cap, and reserves only what the fork keeps @p:mean-2", () => {
+  it("with 4 live leases on the person's other connections, a resume naming one used and one unused expired lease is granted, and ops under the used lease land", () => {
+    const live = seededBody();
+    const ingest = ingestOn(live);
+    const fork = 'fork-t5s16-typing';
+    const [active, spare] = (handleSuggest(ingest, sam('c1'), { t: 'suggest-lease', fork }) as Leased).leases;
+    const write = forkUnder(live, active.client);
+    expect(ingest.ops(sam('c1'), active.record, write('Before '))).toMatchObject({ ok: true, record: active.record });
+    // The socket closes and the DocDO sees it; the window types on, offline.
+    ingest.expireConnection('c1');
+    const offline = write('Offline ');
+    // Two more windows of the person take the cap of live leases meanwhile.
+    for (const connection of ['c2', 'c3']) expect(clientsOf(handleSuggest(ingest, sam(connection), { t: 'suggest-lease', fork: `fork-t5s16-${connection}` }))).toHaveLength(2);
+    expect(ingest.leases.live(SUGGESTER.id, 0)).toBe(SUGGEST_LIMITS.liveLeases);
+    const resumed = handleSuggest(ingest, sam('c4'), { t: 'suggest-lease', resume: [active.client, spare.client], fork });
+    expect(clientsOf(resumed), 'the resume rebinds both, past the cap, and mints nothing').toEqual([active.client, spare.client]);
+    expect(ingest.ops(sam('c4'), active.record, offline), 'the offline text lands').toMatchObject({ ok: true, record: active.record });
+    // Minting stays capped.
+    expect(handleSuggest(ingest, sam('c5'), { t: 'suggest-lease', fork: 'fork-t5s16-c5' })).toMatchObject({ t: 'suggest-refused', reason: 'lease-cap' });
+  });
+
+  it('a resume naming an active and a spare lease mints nothing when the fork asks for none; a resume without the field mints as before', () => {
+    const live = seededBody();
+    const ingest = ingestOn(live);
+    const fork = 'fork-t5s16-resume';
+    const named = clientsOf(handleSuggest(ingest, sam('c1'), { t: 'suggest-lease', fork })) as number[];
+    const resumed = handleSuggest(ingest, sam('c2'), { t: 'suggest-lease', resume: named, fork, mint: 0 } as SuggestRequest);
+    expect(clientsOf(resumed), 'exactly the two it named').toEqual(named);
+    expect(ingest.leases.live(SUGGESTER.id, 0)).toBe(2);
+    // The field only lowers what is minted: past a batch it is a batch.
+    const more = handleSuggest(ingest, sam('c3'), { t: 'suggest-lease', resume: named, fork, mint: 9 } as SuggestRequest);
+    expect(clientsOf(more)).toHaveLength(2 + SUGGEST_LIMITS.leaseBatch);
+    expect(ingest.leases.live(SUGGESTER.id, 0)).toBe(SUGGEST_LIMITS.liveLeases);
+    // A client that omits it gets today's resume: up to a batch more.
+    const other = ingestOn(seededBody());
+    const before = clientsOf(handleSuggest(other, sam('c1'), { t: 'suggest-lease', fork })) as number[];
+    expect(clientsOf(handleSuggest(other, sam('c2'), { t: 'suggest-lease', resume: before, fork }))).toHaveLength(2 + SUGGEST_LIMITS.leaseBatch);
+  });
+
+  it('a takeover retires the connection the leases are taken from: it is named once, and its other leases stop counting', () => {
+    const live = seededBody();
+    const superseded: string[] = [];
+    const ingest = ingestOn(live, { onSuperseded: (connection: string) => superseded.push(connection) } as Partial<IngestOptions>);
+    const fork = 'fork-t5s16-takeover';
+    const named = clientsOf(handleSuggest(ingest, sam('c1'), { t: 'suggest-lease', fork })) as number[];
+    // Leases the old connection holds that the resume does not name.
+    expect(clientsOf(handleSuggest(ingest, sam('c1'), { t: 'suggest-lease', fork }))).toHaveLength(2);
+    expect(ingest.leases.live(SUGGESTER.id, 0)).toBe(4);
+    const resumed = handleSuggest(ingest, sam('c2'), { t: 'suggest-lease', resume: named, fork, mint: 0 } as SuggestRequest);
+    expect(clientsOf(resumed)).toEqual(named);
+    expect(superseded, 'the old connection is retired').toEqual(['c1']);
+    expect(ingest.leases.live(SUGGESTER.id, 0), "the old connection's other leases no longer count").toBe(2);
+    // A resume on the connection that already holds them supersedes nothing.
+    handleSuggest(ingest, sam('c2'), { t: 'suggest-lease', resume: named, fork, mint: 0 } as SuggestRequest);
+    expect(superseded).toEqual(['c1']);
   });
 });

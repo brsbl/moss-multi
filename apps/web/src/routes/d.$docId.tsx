@@ -1,6 +1,6 @@
 import { createFileRoute } from '@tanstack/react-router';
 import type { ReactNode } from 'react';
-import { askDocAccess } from '../host/access.ts';
+import { askDocAccessAtGate } from '../host/access.ts';
 import { useAccessGate } from '../host/access-gate.ts';
 import { auth, requireSessionOrLink } from '../host/auth.ts';
 import { BootFrame, MossAppHost } from '../host/MossAppHost.tsx';
@@ -21,7 +21,7 @@ export const Route = createFileRoute('/d/$docId')({
 
 function DocRoute(): ReactNode {
   const { docId } = Route.useParams();
-  const { gate, retry } = useAccessGate(docId, askDocAccess);
+  const { gate, retry } = useAccessGate(docId, askDocAccessAtGate);
   if (gate === 'open') return <MossAppHost />;
   if (gate === 'denied') return <DenialPage signedIn={auth.get().status === 'signed-in'} />;
   return <div id="root">{gate === 'degraded' ? <DegradedFrame onRetry={retry} /> : <BootFrame />}</div>;

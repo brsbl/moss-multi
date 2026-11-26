@@ -338,7 +338,8 @@ jobs:
           if-no-files-found: ignore
 
   # SP15: Linux WebKit never navigates history on a bare Backspace, so the legs that prove the guard (tagged
-  # @macos) run in macOS WebKit at milestone gates and on request (dispatch input macos).
+  # @macos) run in macOS WebKit at milestone gates and on request (dispatch input macos). Unlike the e2e shards it
+  # runs only the @macos selftests, then the @macos legs (T9.55).
   macos:
     needs: [plan, build]
     if: needs.plan.outputs.macos == 'true'
@@ -366,9 +367,14 @@ jobs:
           node scripts/stack.mjs start --run-id "$RUN_ID" --prebuilt .local-stack/prebuilt/dist --hooks
           --expect-commit "${{ needs.build.outputs.commit }}" --expect-bundle "${{ needs.build.outputs.bundleHash }}"
       - run: echo "STACK_STATE=$PWD/.local-stack/runs/$RUN_ID/state.json" >> "$GITHUB_ENV"
+      # Two runs, not one with a dependency: Playwright never applies --grep to a dependency project, so every selftest
+      # ran here, the @slow ones too, and those are proven on the e2e shards' runner and its tmpfs stack state.
+      - name: The @macos selftests in WebKit
+        working-directory: e2e
+        run: pnpm exec playwright test --project=selftest-webkit --grep @macos
       - name: The @macos legs in WebKit
         working-directory: e2e
-        run: pnpm exec playwright test --project=selftest-webkit --project=webkit --grep @macos
+        run: pnpm exec playwright test --project=webkit --no-deps --grep @macos
       - name: Stop the stack
         if: always()
         run: node scripts/stack.mjs stop --run-id "$RUN_ID" || true

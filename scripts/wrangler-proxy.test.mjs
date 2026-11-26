@@ -80,4 +80,22 @@ describe('the patched wrangler ProxyWorker', () => {
     expect(calls.map((call) => call.method)).toEqual(['GET', 'POST']);
     expect((await posted).status).toBe(200);
   });
+
+  // The Worker closes the connections of one burst together, so after a lost GET the next pooled connection is closing
+  // too (T9.55): six pooled at 0 are each lost to a forward from 4996 ms until the proxy can know they closed.
+  it('answers a GET lost on a pool that is idling out together, without parking it', async () => {
+    vi.useFakeTimers({ now: 0 });
+    let closing = 6;
+    const { worker, calls } = proxy(() => (Date.now() >= 4996 && Date.now() < 5300 && closing-- > 0 ? lost() : new Response('ok')));
+    await Promise.all(Array.from({ length: 6 }, () => worker.fetch(new Request('http://127.0.0.1:8850/api/version'))));
+    await vi.advanceTimersByTimeAsync(4996);
+    let status = null;
+    void worker.fetch(new Request('http://127.0.0.1:8850/api/version')).then((response) => {
+      status = response.status;
+    });
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(worker.requestRetryQueue.size).toBe(0);
+    expect(status).toBe(200);
+    expect(calls, 'six to fill the pool, one lost, one replay').toHaveLength(8);
+  });
 });
