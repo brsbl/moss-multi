@@ -91,6 +91,8 @@ declare module '@moss/shared/state/atoms' {
   export const activeFolderPathAtom: WritableAtom<string, [string], void>;
   export const revealFolderPathAtom: WritableAtom<null, [string | null | undefined], void>;
   export const hydrateNotesAtom: WritableAtom<null, [], Promise<void>>;
+  /** A note's record as moss's note store holds it (T9.54: the boot puts a share link's note there). */
+  export function mapNoteMetadataToNoteEntity(record: { id: string; title: string; createdAt: number; updatedAt: number }): object;
   export const splitTabNoteIdAtom: WritableAtom<string | null, [string | null], void>;
   export const openSplitTabAtom: WritableAtom<null, [string], void>;
   export const splitNavigateToNoteAtom: WritableAtom<null, [string], void>;
