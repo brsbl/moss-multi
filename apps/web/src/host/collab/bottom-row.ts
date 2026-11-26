@@ -16,6 +16,12 @@ export const BOTTOM_ROW = 'pointer-events-auto flex flex-wrap items-center justi
 /** A row's exit or action: a plain text button in Moss's default ink. */
 export const BOTTOM_ROW_ACTION = 'shrink-0 text-xs text-ink-default transition-colors hover:text-ink-muted';
 
+/** The region's mousedown: a press on a notice's action leaves the caret in the note, as Moss's own toolbar buttons do. */
+export function keepCaretInNote(event: { target: unknown; preventDefault(): void }): void {
+  const target = event.target as { closest?: (selector: string) => unknown } | null;
+  if (target?.closest?.('button')) event.preventDefault();
+}
+
 // Docs whose Suggesting row is in Moss's docked toolbar right now.
 const attached = new Map<string, number>();
 const listeners = new Set<() => void>();

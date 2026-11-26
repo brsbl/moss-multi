@@ -421,6 +421,39 @@ Each is the behaviour before T9.47 unless it says otherwise, and each has a test
 13. Accepted by design: when your line is replaced on its own, the one new line in its place takes your caret whenever its text begins or ends like your line, even if a co-editor deleted your paragraph and wrote that line fresh.
 14. When several of a co-editor's edits reach you in one update (after a reconnect, or a resend of their merged edits) and the lines next to yours read alike, your caret can land in their new line instead of on your words: for example, with two lines that both read "T" and your caret in the second, their deletion that joins the two lines plus an Enter at the end puts your caret in the new empty line below.
 
+### T9.51 — what the unsaved-text card still does
+
+T9.51 fixed only the first press on the card's buttons with the caret in the note. Each of these is about the same card, and none is fixed by T9.51.
+
+Ways the card can still cost a person their text:
+
+1. Dismiss does not ask and cannot be undone, and it works before any copy has (`UnsavedCard.tsx`, `suggest/mode.ts`). A product question for the owner.
+2. A reload drops the card with no browser question (`suggest/mode.ts`, `unacked.ts`); T5.S16 holds the leave-site question while text is waiting. The app's own full loads do the same: sign-out, Sign in on an ended session, Reload from the update notice and the app menu, the stale-chunk reload.
+3. A paragraph identical to another unsaved one is kept once (`packages/sync/src/suggest/client.ts`, a `Set`).
+4. An empty paragraph typed while offline is left out (the same line).
+5. Markdown punctuation comes back escaped, such as `snake\_case`, `5 \* 3` and `back\\slash` (`suggest/mounts.ts` exports Markdown), though the card's comment says "as typed". Whether pasting into Moss restores the characters is not known. Items 3 to 5 are in `client.ts`, the same file on m5 to m9, so their fix belongs on m5.
+6. A press on the card's words still moves the card when the caret is in the note (from the code, not seen), so the first try at selecting the text by hand, or at dragging its scrollbar, starts on a card that drops. That is where the card sends people when the clipboard refuses, and after T9.51 a refused Copy leaves the caret in the note.
+7. The card gives back whole paragraphs and nothing marks which words were not saved; someone else's words in that paragraph come back with it (from the code).
+8. A refusal that arrives after the person left the note stores the text, but the card shows only in that note's pane and nothing elsewhere says text is waiting (`suggest/mounts.ts`, `pane.tsx`).
+9. "Copied" never goes back while the card stays up, so it does not follow a later change of the clipboard (`UnsavedCard.tsx`).
+
+Things about the card that do not lose text by themselves:
+
+10. While the note is locked out, the connection notice leads and the card is behind "Recover unsaved text (N)".
+11. When the leading notice changes, or another note is opened and this one reopened, the text stays but the shown text collapses and "Copied" is forgotten.
+12. A second refusal adds its own row; it does not replace the first.
+13. Long text is not cut: it sits in a 160 px box that scrolls, with nothing marking that there is more below.
+14. The card is still drawn while History is open or the note is in Trash (from the code). In Trash it is drawn in a second region (`NoticeStack.tsx`) that does not get T9.51's handler; that region does not follow the toolbar, so the first-press fault is not expected there. Not run.
+15. A press already in flight when the toolbar comes or goes for another reason (text selected in the note, a rebuild putting the caret back) can still miss (from the code).
+
+The lower branches, m5 to m8 (from the code; their band was never pressed in a browser):
+
+16. Copy is the only way back to the text; there is no Show text.
+17. Nothing is offered if the clipboard refuses, and with no clipboard API the press does nothing.
+18. Dismiss drops every closed suggestion's text at once, with no question.
+
+Not known: Firefox, Safari on macOS and touch; Copy outside headless Chromium's own clipboard (what WebKit's clipboard holds, a headed browser, a paste into another app); the card when the clipboard refuses, and its no-room form; T9.51's handler on the region's other buttons with the caret in the note (only Retry and the card's three actions were pressed); block kinds other than paragraphs and one bullet list; three or more closed suggestions, text beyond about 1,000 characters and panes narrower than 1440 x 1000; how often a refusal happens in real use.
+
 ## Follow-ups (P2)
 
 Parked from the M0 checker and critic passes, each with the task that owns it.
