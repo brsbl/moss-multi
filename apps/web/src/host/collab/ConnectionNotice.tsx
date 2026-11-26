@@ -5,6 +5,7 @@ import { RefusalAnnouncer } from '../surfaces/RefusalAnnouncer.tsx';
 import { leaveTo } from '../navigation.ts';
 import { useDocConnection } from './connection.ts';
 import { retryDoc } from './doc-session.ts';
+import { retrySuggest, useSuggestBusy } from './suggest/mode.ts';
 import { useTerminal } from './terminal.ts';
 
 const terminalCopy: Record<TerminalReason, string> = {
@@ -13,7 +14,12 @@ const terminalCopy: Record<TerminalReason, string> = {
   'session-ended': 'Your session has ended. Sign in again to continue.',
   unavailable: 'This note is unavailable.',
   'conn-limit': 'This note has reached its connection limit. Close another window, then retry.',
+  // It reconnects by itself when the cooldown ends, delivering what the window still owes.
+  'suggest-cooldown': 'Suggesting is paused for about a minute. What you typed is kept in this window, so don’t reload.',
 };
+
+/** A Suggest window the person's other Suggest windows leave no lease for. */
+const SUGGEST_BUSY = 'This note is open for suggesting in other windows. Close one to suggest here.';
 
 export function ConnectionIndicator({ docId }: { docId: string }) {
   const view = useDocConnection(docId);
@@ -30,13 +36,16 @@ export function ConnectionIndicator({ docId }: { docId: string }) {
 export function ConnectionNotice({ docId }: { docId: string | null }) {
   const view = useDocConnection(docId);
   const terminal = useTerminal(docId);
-  const kind = terminal ?? (view?.retrying ? 'retrying' : view?.synced && view.connection === 'offline' ? 'offline' : null);
-  const message = terminal ? terminalCopy[terminal] : (kind === 'retrying'
+  const busy = useSuggestBusy(docId);
+  const kind = terminal ?? (view?.retrying ? 'retrying' : view?.synced && view.connection === 'offline' ? 'offline' : busy ? 'suggest-busy' : null);
+  const message = terminal ? terminalCopy[terminal] : kind === 'suggest-busy' ? SUGGEST_BUSY : (kind === 'retrying'
     ? 'Still connecting… Your note will open when sync finishes.'
     : 'Connection lost. Your edits are kept in this window and will sync when the connection returns.');
+  const retry = (run: (id: string) => void) => <button type="button" className="underline" onClick={() => { if (docId) run(docId); }}>Retry</button>;
   return <div {...{ [NOTICE_BAND_ATTR]: '' }} className="relative z-10 shrink-0">
     {kind ? <Banner {...{ [CONNECTION_BANNER_ATTR]: kind }} action={terminal === 'conn-limit'
-      ? <button type="button" className="underline" onClick={() => { if (docId) retryDoc(docId); }}>Retry</button>
+      ? retry(retryDoc)
+      : kind === 'suggest-busy' ? retry(retrySuggest)
       : terminal === 'session-ended' ? <button type="button" className="underline" onClick={() => leaveTo(`/login?next=${encodeURIComponent(window.location.pathname + window.location.search)}`)}>Sign in</button> : undefined}>{message}</Banner> : null}
     <RefusalAnnouncer />
   </div>;

@@ -2,13 +2,14 @@
 // notices all go through here. `location.assign`, `replace` and `reload` cannot be wrapped (L§4.6), so nothing else in
 // host code calls them. A full load after an auth change drops every in-memory moss and bridge cache. The unload
 // guard stands aside: sign-out and chunk reload have already waited or asked, and an ended session (4401, A§10.5)
-// can never sync what it holds, so asking would not save it.
+// can never sync what it holds, so asking would not save it. Text offered back and not dismissed is the exception
+// (unsavedHere): whatever starts the leave, the browser still asks unless the person already chose to discard it.
 //
 // A notice opens its note in place through moss's own note switch, never a page load, so a sentence typed up to the
 // click is kept whole (L§4.6 navigation mid-typing). From the click until the note is live, keys aimed at nothing are
 // refused visibly rather than landing on the bell or vanishing.
 import { BODY_BINDING_ATTR, DOC_ID_ATTR, DOC_STATE_ATTR, EDITOR_PANE_ATTR } from '@moss-multi/protocol/dom-contract';
-import { allowUnload, waitForAllAcked } from './collab/unacked.ts';
+import { allowUnload, unsavedHere, waitForAllAcked } from './collab/unacked.ts';
 import { armOpeningGuard } from './opening-guard.ts';
 import { refuseInput } from './refusal.ts';
 
@@ -30,7 +31,9 @@ export const LEAVE_UNSYNCED = 'Your latest edits haven’t synced yet, so this p
 /** Leaves for `href` once every edit in the tab is acked; while any is not, the page stays and says why. */
 export async function departTo(href: string): Promise<void> {
   const guard = armOpeningGuard('Opening…');
-  if (await waitForAllAcked(ACK_WAIT_MS)) {
+  if (unsavedHere() === 'unacked') await waitForAllAcked(ACK_WAIT_MS);
+  // Decided after the wait: a suggestion refused during it offers its text back, which lives only in this page.
+  if (unsavedHere() === null) {
     leaveTo(href);
     return;
   }

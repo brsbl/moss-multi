@@ -14,7 +14,7 @@ import {
 import { ROLES, roleAtLeast, type Role } from '@moss-multi/protocol/roles';
 import { SUGGEST_LIMITS, type SuggestReply, type SuggestRequest } from '@moss-multi/protocol/suggest';
 import {
-  bytesToBase64, CLOSE, encodePayloadFrame, encodeSyncFrame, PAYLOAD_STEP1, PAYLOAD_STEP2, PAYLOAD_UPDATE, type PayloadAck, type PayloadFrame,
+  bytesToBase64, CLOSE, encodePayloadFrame, encodeSyncFrame, PAYLOAD_STEP1, PAYLOAD_STEP2, PAYLOAD_UPDATE, SUGGEST_COOLDOWN_REASON, type PayloadAck, type PayloadFrame,
   type AnchorMove, type DocLimit, type RenameRefusal, type ServerEvent, type WriteRefusalReason,
 } from '@moss-multi/protocol/sync';
 import {
@@ -232,6 +232,15 @@ function noRoom(connection: Connection, until: number, limit?: NoteLimit): void 
   if (noRoomUntil(connection) === until && noRoomLimit(connection) === limit) return;
   // Functional setState only, as attach does: the object form would wipe the rest of the attachment.
   (connection as unknown as Connection<Record<string, unknown>>).setState((previous) => ({ ...(previous ?? {}), noRoomUntil: until, noRoomLimit: limit }));
+}
+
+/**
+ * A connection whose fork resumed its leases on another socket (the page gave it up; the DocDO had not seen it close).
+ * In the socket's attachment, so a wake keeps it: its later suggest frames do nothing and count nothing.
+ */
+const retired = (connection: Connection) => (connection.state as { retired?: boolean } | null)?.retired === true;
+function retire(connection: Connection): void {
+  (connection as unknown as Connection<Record<string, unknown>>).setState((previous) => ({ ...(previous ?? {}), retired: true }));
 }
 
 /** The trashes holding the doc closed, each with when the alarm may settle it. */
@@ -565,6 +574,8 @@ export class DocDO extends YServer<SyncEnv> {
         if (!continues) this.#noticeSuggestion(record, author);
       },
       limit: (growth) => this.#recordLimit(growth),
+      onSuperseded: (nonce, principal) => this.#retireConnection(nonce, principal),
+      newer: (nonce, holders, principal) => this.#openedAfter(nonce, holders, principal),
     });
     store.onCompacted = () => this.#ingest?.compacted();
     this.document.getMap(SUGGESTIONS).observeDeep(() => {
@@ -641,7 +652,7 @@ export class DocDO extends YServer<SyncEnv> {
       return;
     }
     if (this.#coolingDown(attachment.principalId)) {
-      connection.close(CLOSE.connectionLimit, 'suggest-cooldown');
+      connection.close(CLOSE.connectionLimit, SUGGEST_COOLDOWN_REASON);
       return;
     }
     const check = this.#accessCheck();
@@ -983,8 +994,10 @@ export class DocDO extends YServer<SyncEnv> {
     const attachment = attachmentOf(connection);
     const ingest = this.#ingest;
     if (!attachment || !ingest) return;
+    // A socket its fork has left: what arrives late on it was replayed on the new one. O(1), no reply, not counted.
+    if (retired(connection)) return;
     if (this.#coolingDown(attachment.principalId)) {
-      connection.close(CLOSE.connectionLimit, 'suggest-cooldown');
+      connection.close(CLOSE.connectionLimit, SUGGEST_COOLDOWN_REASON);
       return;
     }
     let request: SuggestRequest | null = null;
@@ -1012,6 +1025,8 @@ export class DocDO extends YServer<SyncEnv> {
     }
     const who: Suggester = { id: attachment.principalId, name: attachment.name, role: attachment.role, connection: attachment.nonce ?? connection.id };
     const reply: SuggestReply = request ? handleSuggest(ingest, who, request) : { t: 'suggest-refused', record: null, reason: 'malformed' };
+    // A late resume on a socket its fork has left retired that socket: no reply, nothing counted.
+    if (retired(connection)) return;
     this.sendCustomMessage(connection, JSON.stringify(reply));
     if (reply.t !== 'suggest-refused') {
       noRoom(connection, 0);
@@ -1019,6 +1034,34 @@ export class DocDO extends YServer<SyncEnv> {
     }
     if (reply.reason === 'doc-cap' || reply.reason === 'ops-cap') noRoom(connection, Date.now() + SUGGEST_LIMITS.refusals.windowMs, reply.limit);
     this.#countRefusal(attachment.principalId);
+  }
+
+  /**
+   * The connection a fork's resume took its leases from (its nonce) is retired and closed (a superseded socket); only
+   * ever one of the resuming principal's own.
+   */
+  #retireConnection(nonce: string, principal: string): void {
+    for (const connection of this.getConnections()) {
+      const attachment = attachmentOf(connection);
+      if ((attachment?.nonce ?? connection.id) !== nonce || attachment?.principalId !== principal) continue;
+      retire(connection);
+      connection.close(CLOSE.normal, 'superseded');
+    }
+  }
+
+  /** Whether one of `holders` (nonces) is an open, unretired socket of `principal`'s admitted after socket `nonce`. */
+  #openedAfter(nonce: string, holders: ReadonlySet<string>, principal: string): boolean {
+    let mine: number | undefined;
+    const theirs: number[] = [];
+    for (const connection of this.getConnections()) {
+      const attachment = attachmentOf(connection);
+      if (!attachment || attachment.principalId !== principal || retired(connection) || !isOpen(connection)) continue;
+      const id = attachment.nonce ?? connection.id;
+      if (id === nonce) mine = attachment.admittedAt;
+      else if (holders.has(id)) theirs.push(attachment.admittedAt ?? 0);
+    }
+    const since = mine;
+    return since !== undefined && theirs.some((at) => at > since);
   }
 
   /** Whether the connection is still in its no-room window: at most one counted room refusal per window. */
@@ -2409,7 +2452,7 @@ export class DocDO extends YServer<SyncEnv> {
   #countRefusal(principalId: string): void {
     if (!this.#cooldowns?.count(principalId)) return;
     for (const connection of this.#all()) {
-      if (attachmentOf(connection)?.principalId === principalId) connection.close(CLOSE.connectionLimit, 'suggest-cooldown');
+      if (attachmentOf(connection)?.principalId === principalId) connection.close(CLOSE.connectionLimit, SUGGEST_COOLDOWN_REASON);
     }
   }
 
