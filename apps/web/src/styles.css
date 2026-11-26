@@ -42,3 +42,9 @@
 ::highlight(moss-comment-active-4) { text-decoration-color: var(--highlight-chalk-grey); }
 [data-theme="dark"] ::highlight(moss-comment-hover-0),
 [data-theme="dark"] ::highlight(moss-comment-active-0) { text-decoration-color: color-mix(in srgb, var(--highlight-chalk-yellow) 50%, var(--ink-default)); }
+
+/* A typed space is stored as U+0020. With white-space: normal an engine puts in U+00A0 for a space typed first,
+   last or beside another space, and the title field stores it as it is. */
+[data-title-binding] {
+  white-space: pre-wrap;
+}

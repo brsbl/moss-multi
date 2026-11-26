@@ -125,6 +125,7 @@ test('j12-search: wiki links resolve by title and stem, an unresolved one shows 
   for (const resolved of await pill(ada, sourceId, targetTitle).all()) await expect(resolved).not.toHaveClass(BROKEN);
   await actors.checkpoint('links');
 
+  ada.expectReconnects(1, targetId);
   await ui.openNote(ada, targetId);
   const panel = await backlinks(ada);
   await expect(panel.getByRole('button', { name: sourceTitle }), 'the target lists the linking note').toBeVisible({ timeout: INDEX_TIMEOUT });
@@ -136,7 +137,6 @@ test('j12-search: wiki links resolve by title and stem, an unresolved one shows 
   await ui.typeBody(ada, sourceId, ` ${edited}`);
   await acked(ada, sourceId);
   await indexed(ada, edited, sourceId);
-  ada.expectReconnects(1, targetId);
   await ada.goto(`/d/${targetId}`);
   await ui.waitLive(ada, targetId);
   await ada.declareRemount(targetId);
@@ -155,6 +155,25 @@ test('j12-search: wiki links resolve by title and stem, an unresolved one shows 
   expect(own.backlinks.map((b) => b.id), 'while Ada, who can open it, is').toContain(sourceId);
   await backlinks(benActor);
   await expect(benActor.page.getByRole('button', { name: sourceTitle }), "Ben's panel shows no backlink").toHaveCount(0);
+});
+
+// Two notes written back to back: each one's trailing updated_at touch lands within 5 s of its first keystroke
+// (TOUCH_INTERVAL_MS) and stamps its last edit, so the newest-first list never puts the first note back on top.
+test('j12-search: the notes list keeps the note edited last first while both settle @p:note-7', async ({ actors }) => {
+  actors.solo('one person writes two notes; the promise is the order of her own list');
+  const ada = await openShell(actors, 'ada');
+  const first = await writeNote(ada, `First ${token()}`, 'Written first.');
+  const second = await writeNote(ada, `Second ${token()}`, 'Written after it.');
+  const names = new Map([[first, 'first'], [second, 'second']]);
+  const orders: string[] = [];
+  const until = Date.now() + 6_500;
+  while (Date.now() < until) {
+    const ids = await ada.page.locator(`[${SIDEBAR_ROW_ATTR}]`).evaluateAll((rows, attr) => rows.map((r) => r.getAttribute(attr)), NAMES.docId);
+    const order = ids.flatMap((id) => names.get(id ?? '') ?? []).join(' ');
+    if (orders.at(-1) !== order) orders.push(order);
+    await ada.page.waitForTimeout(40);
+  }
+  expect(orders, 'one order while both trailing touches land: the note edited last first').toEqual(['second first']);
 });
 
 test('j12-search: an edit only inside a code block reaches the index without another note edit @p:note-7', async ({ actors, stack }) => {
