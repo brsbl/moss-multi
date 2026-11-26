@@ -692,5 +692,5 @@ export function ShareDialogHost(): ReactNode {
 export function useCanShare(docId: string): boolean {
   const role = useDocRole(docId);
   const terminal = useTerminal(docId);
-  return role === 'owner' && (terminal === null || terminal === 'conn-limit');
+  return role === 'owner' && (terminal === null || terminal === 'conn-limit' || terminal === 'suggest-cooldown');
 }

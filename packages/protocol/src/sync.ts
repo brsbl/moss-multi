@@ -33,7 +33,10 @@ export type CloseAction =
   /** 4409: the write-refused reason arrived just before; the local doc cannot be delivered. */
   | { kind: 'refused' };
 
-export function closeAction(code: number): CloseAction {
+/** The reason a 4429 carries when it is a suggestion cooldown (A§5.1): it ends by itself, unlike the connection limit. */
+export const SUGGEST_COOLDOWN_REASON = 'suggest-cooldown';
+
+export function closeAction(code: number, reason?: string): CloseAction {
   switch (code) {
     case CLOSE.normal:
       return { kind: 'normal' };
@@ -45,7 +48,7 @@ export function closeAction(code: number): CloseAction {
     case CLOSE.deleted:
       return { kind: 'terminal', reason: 'deleted' };
     case CLOSE.connectionLimit:
-      return { kind: 'terminal', reason: 'conn-limit' };
+      return { kind: 'terminal', reason: reason === SUGGEST_COOLDOWN_REASON ? 'suggest-cooldown' : 'conn-limit' };
     case CLOSE.outdated:
       return { kind: 'terminal', reason: 'outdated' };
     case CLOSE.revoked:

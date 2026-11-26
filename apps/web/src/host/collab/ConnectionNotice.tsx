@@ -17,6 +17,7 @@ import { NOTICE_ACTION as ACTION } from '../notice-stack.ts';
 import { reloadUnlessUnacked } from '../reload-guard.ts';
 import { holdCue, useDocConnection, useUnacked, type Cue } from './connection.ts';
 import { retryDoc } from './doc-session.ts';
+import { retrySuggest, useSuggestBusy } from './suggest/mode.ts';
 import { useTerminal } from './terminal.ts';
 
 const Menu = DropdownMenu as ComponentType<{ children: ReactNode; open?: boolean; onOpenChange?: (open: boolean) => void }>;
@@ -28,10 +29,15 @@ const terminalCopy: Record<TerminalReason, string> = {
   unavailable: 'This note is unavailable.',
   'conn-limit': 'This note has reached its connection limit. Close another window, then retry.',
   outdated: 'Moss has been updated. Reload to keep editing.',
+  // It reconnects by itself when the cooldown ends, delivering what the window still owes.
+  'suggest-cooldown': 'Suggesting is paused for about a minute. What you typed is kept in this window, so don’t reload.',
 };
 
 const ICON = 'h-3.5 w-3.5 shrink-0';
 const HEADING = 'px-2 py-1.5 text-xs font-normal text-ink-faint';
+
+/** A Suggest window the person's other Suggest windows leave no lease for. */
+const SUGGEST_BUSY = 'This note is open for suggesting in other windows. Close one to suggest here.';
 
 function terminalAction(terminal: TerminalReason | null, docId: string | null) {
   switch (terminal) {
@@ -73,9 +79,10 @@ export function useNotice(docId: string | null): { kind: ConnectionBanner; termi
   // A session that ended under this tab says so here too when no note is open, or before its note's socket ends.
   const ended = useSessionEnded();
   const terminal = useTerminal(docId) ?? (ended ? 'session-ended' : null);
-  const kind = terminal ?? (view?.retrying ? 'retrying' : view?.synced && view.connection === 'offline' ? 'offline' : null);
+  const busy = useSuggestBusy(docId);
+  const kind = terminal ?? (view?.retrying ? 'retrying' : view?.synced && view.connection === 'offline' ? 'offline' : busy ? 'suggest-busy' : null);
   if (!kind) return null;
-  const message = terminal ? terminalCopy[terminal] : (kind === 'retrying'
+  const message = terminal ? terminalCopy[terminal] : kind === 'suggest-busy' ? SUGGEST_BUSY : (kind === 'retrying'
     ? 'Still connecting… Your note will open when sync finishes.'
     : 'Connection lost. Your edits are kept in this window and will sync when the connection returns.');
   return { kind, terminal, message };
@@ -86,7 +93,9 @@ export function NoticeCard({ docId, notice, extra }: { docId: string | null; not
   const icon = notice.terminal
     ? <AlertTriangle aria-hidden className="h-4 w-4 shrink-0 text-accent-terracotta/80" /* Moss's Trash notice icon */ />
     : <CloudOff aria-hidden className={`${ICON} text-ink-faint`} />;
-  const own = terminalAction(notice.terminal, docId);
+  const own = notice.kind === 'suggest-busy'
+    ? <button type="button" className={ACTION} onClick={() => { if (docId) retrySuggest(docId); }}>Retry</button>
+    : terminalAction(notice.terminal, docId);
   return (
     <Banner {...{ [CONNECTION_BANNER_ATTR]: notice.kind }} icon={icon} action={own || extra ? <>{extra}{own}</> : undefined}>
       {notice.message}

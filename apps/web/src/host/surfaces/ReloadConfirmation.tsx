@@ -1,4 +1,4 @@
-// The outdated banner's Reload asks first while edits are unacked; the question belongs to the shell, as sign-out's does.
+// The outdated banner's Reload asks first while anything is unsaved; the question belongs to the shell, as sign-out's does.
 import { useSyncExternalStore } from 'react';
 import { ConfirmationDialog } from '@moss/shared/components/ui/confirmation-dialog';
 import { answerReload, needsReloadConfirmation, subscribeReloadConfirmation } from '../reload-guard.ts';

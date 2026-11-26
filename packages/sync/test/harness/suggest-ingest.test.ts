@@ -8,7 +8,7 @@ import { expectLinearTime } from '../../../../scripts/lib/linear-time.mjs';
 import * as Y from 'yjs';
 import { recordDigest, deleteUpdate, type RecordOp } from '@moss-multi/core/suggest/apply';
 import { TEXT_CHAR_CAP } from '@moss-multi/protocol/limits';
-import type { LeaseGrant, SuggestReply, SuggestRequest } from '@moss-multi/protocol/suggest';
+import { SUGGEST_LIMITS, type LeaseGrant, type SuggestReply, type SuggestRequest } from '@moss-multi/protocol/suggest';
 import { bytesToBase64, CLOSE, CUSTOM_PREFIX, encodePayloadFrame, PAYLOAD_UPDATE, type ServerEvent } from '@moss-multi/protocol/sync';
 import { DocDO } from '../../src/doc-do.ts';
 import { PayloadStore } from '../../src/payloads.ts';
@@ -821,5 +821,171 @@ describe('T5.B1 a payload op refused for its lease or a cap loads no payload doc
       loads.mockRestore();
       query.mockRestore();
     }
+  });
+});
+
+describe('T5.S16 a connection a fork has resumed from elsewhere is retired @p:mean-2', () => {
+  it("after a fork's takeover, three suggest frames on the superseded connection start no cooldown, and its leases stop counting", async () => {
+    const opened = await seeded();
+    const doc = opened.dobj.document;
+    const fork = 'fork-t5s16-harness';
+    const old = await on(opened, SAM);
+    const named = ((await send(old, { t: 'suggest-lease', fork })) as Extract<SuggestReply, { t: 'suggest-leased' }>).leases;
+    // Two more on the old connection that the resume will not name.
+    expect(await send(old, { t: 'suggest-lease', fork })).toMatchObject({ t: 'suggest-leased' });
+    // The page gives the stalled socket up; its fork resumes on a new one while the DocDO still holds the old one open.
+    const fresh = await on(opened, SAM);
+    expect(await send(fresh, { t: 'suggest-lease', resume: named.map((lease) => lease.client), fork, mint: 0 } as SuggestRequest)).toMatchObject({ t: 'suggest-leased' });
+    // The stalled socket's late keystrokes arrive now, one frame each, under a lease it no longer holds.
+    for (let i = 0; i < 3; i += 1) {
+      await old.deliver(`${CUSTOM_PREFIX}${JSON.stringify(opsRequest(named[0].record, forge(doc, (d) => firstBlock(d).insert(0, `L${i} `), named[0].client)))}`);
+      await old.pump();
+    }
+    expect(fresh.closed, 'no cooldown: the new socket stays open').toBeNull();
+    expect(await send(fresh, opsRequest(named[0].record, forge(doc, (d) => firstBlock(d).insert(0, 'Mine '), named[0].client)))).toMatchObject({ t: 'suggest-ack', record: named[0].record });
+    // The retired connection's own leases no longer count: another window gets its two.
+    const other = await on(opened, SAM);
+    expect(await leases(other)).toHaveLength(2);
+    expect(fresh.closed).toBeNull();
+  });
+
+  // The takeover retires the old connection whether or not its leases idled there.
+  const granted = (reply: SuggestReply) => (reply as Extract<SuggestReply, { t: 'suggest-leased' }>).leases;
+  const IDLE = SUGGEST_LIMITS.leaseIdleMs + 60_000;
+
+  it('a fork that takes its leases back after they idled past leaseIdleMs retires the old connection all the same', async () => {
+    const opened = await seeded();
+    const doc = opened.dobj.document;
+    const fork = 'fork-t5s16-idle';
+    const old = await on(opened, SAM);
+    const named = granted(await send(old, { t: 'suggest-lease', fork }));
+    // The window writes nothing for longer than leaseIdleMs; its socket went half-open and the DocDO never saw it close.
+    await vi.advanceTimersByTimeAsync(IDLE);
+    const fresh = await on(opened, SAM);
+    expect(await send(fresh, { t: 'suggest-lease', resume: named.map((lease) => lease.client), fork, mint: 0 } as SuggestRequest)).toMatchObject({ t: 'suggest-leased' });
+    // Late frames on the stalled socket, one per keystroke, under a lease it no longer holds.
+    for (let i = 0; i < 3; i += 1) {
+      await old.deliver(`${CUSTOM_PREFIX}${JSON.stringify(opsRequest(named[0].record, forge(doc, (d) => firstBlock(d).insert(0, `L${i} `), named[0].client)))}`);
+      await old.pump();
+    }
+    expect.soft(fresh.closed, 'no cooldown: the replacement stays open').toBeNull();
+    expect.soft(old.closed, 'the superseded connection is retired').toEqual({ code: CLOSE.normal, reason: 'superseded' });
+    expect.soft(old.events.filter((event) => event.t === 'suggest-refused'), 'its late frames draw no refusal').toEqual([]);
+    expect(await send(fresh, opsRequest(named[0].record, forge(doc, (d) => firstBlock(d).insert(0, 'Mine '), named[0].client)))).toMatchObject({ t: 'suggest-ack', record: named[0].record });
+    expect(fresh.closed).toBeNull();
+  });
+
+  it('a retired connection stays retired after the DocDO is evicted and woken by its late frames', async () => {
+    const opened = await seeded();
+    const doc = opened.dobj.document;
+    const fork = 'fork-t5s16-wake';
+    const old = await on(opened, SAM);
+    const named = granted(await send(old, { t: 'suggest-lease', fork }));
+    const fresh = await on(opened, SAM);
+    expect(await send(fresh, { t: 'suggest-lease', resume: named.map((lease) => lease.client), fork, mint: 0 } as SuggestRequest)).toMatchObject({ t: 'suggest-leased' });
+    const woken = await start(wake(opened));
+    old.opened = woken;
+    fresh.opened = woken;
+    for (let i = 0; i < 3; i += 1) {
+      await old.deliver(`${CUSTOM_PREFIX}${JSON.stringify(opsRequest(named[0].record, forge(doc, (d) => firstBlock(d).insert(0, `W${i} `), named[0].client)))}`);
+      await old.pump();
+    }
+    expect(old.events.filter((event) => event.t === 'suggest-refused'), 'the retirement is in the socket attachment').toEqual([]);
+    expect(fresh.closed, 'no cooldown after the wake').toBeNull();
+  });
+
+  it("a resume naming another person's lease retires nothing, and is refused and counted as before", async () => {
+    const opened = await seeded();
+    const fork = 'fork-t5s16-sky';
+    const sky = await on(opened, SKY);
+    const theirs = granted(await send(sky, { t: 'suggest-lease', fork }));
+    const sam = await on(opened, SAM);
+    expect(await send(sam, { t: 'suggest-lease', resume: [theirs[0].client], fork } as SuggestRequest)).toEqual({ t: 'suggest-refused', record: null, reason: 'lease' });
+    await vi.advanceTimersByTimeAsync(IDLE);
+    // Idle or not, the lease is not theirs to take.
+    expect(await send(sam, { t: 'suggest-lease', resume: [theirs[0].client], fork } as SuggestRequest)).toEqual({ t: 'suggest-refused', record: null, reason: 'lease' });
+    expect(sky.closed, "the other person's connection is untouched").toBeNull();
+    expect(await send(sky, { t: 'suggest-lease', resume: [theirs[0].client], fork } as SuggestRequest)).toMatchObject({ t: 'suggest-leased' });
+    expect(sky.closed).toBeNull();
+  });
+
+  it("a late resume on a socket the fork has already left retires that socket, never the fork's newer one", async () => {
+    const opened = await seeded();
+    const doc = opened.dobj.document;
+    const fork = 'fork-t5s16-late-resume';
+    const first = await on(opened, SAM);
+    const named = granted(await send(first, { t: 'suggest-lease', fork }));
+    const resume = { t: 'suggest-lease', resume: named.map((lease) => lease.client), fork, mint: 0 } as SuggestRequest;
+    // The first socket drops; the page opens a second and resumes on it, then that link stalls too before the resume
+    // lands, and 12 s later the page opens a third and resumes there.
+    await vi.advanceTimersByTimeAsync(1_000);
+    const stalled = await on(opened, SAM);
+    await vi.advanceTimersByTimeAsync(12_000);
+    const live = await on(opened, SAM);
+    expect(await send(live, resume)).toMatchObject({ t: 'suggest-leased' });
+    // The stalled socket's resume, then its keystrokes, arrive late.
+    await stalled.deliver(`${CUSTOM_PREFIX}${JSON.stringify(resume)}`);
+    await stalled.pump();
+    for (let i = 0; i < 3; i += 1) {
+      await stalled.deliver(`${CUSTOM_PREFIX}${JSON.stringify(opsRequest(named[0].record, forge(doc, (d) => firstBlock(d).insert(0, `S${i} `), named[0].client)))}`);
+      await stalled.pump();
+    }
+    expect.soft(live.closed, "the fork's live socket stays open").toBeNull();
+    expect.soft(stalled.closed, 'the stalled socket is the one retired').toEqual({ code: CLOSE.normal, reason: 'superseded' });
+    expect.soft(stalled.events.filter((event) => event.t === 'suggest-refused'), 'its late frames draw no refusal').toEqual([]);
+    expect(await send(live, opsRequest(named[0].record, forge(doc, (d) => firstBlock(d).insert(0, 'Live '), named[0].client)))).toMatchObject({ t: 'suggest-ack', record: named[0].record });
+    expect(live.closed).toBeNull();
+  });
+
+  it('three late resumes inside one refusal window each retire their own stale socket and count nothing toward the cooldown', async () => {
+    const opened = await seeded();
+    const doc = opened.dobj.document;
+    const fork = 'fork-t5s16-three-late';
+    const first = await on(opened, SAM);
+    const named = granted(await send(first, { t: 'suggest-lease', fork }));
+    const resume = { t: 'suggest-lease', resume: named.map((lease) => lease.client), fork, mint: 0 } as SuggestRequest;
+    // Three sockets of the same window, each given up before its resume landed, then the live one.
+    const stale: TestClient[] = [];
+    for (let i = 0; i < 3; i += 1) {
+      await vi.advanceTimersByTimeAsync(1_000);
+      stale.push(await on(opened, SAM));
+    }
+    await vi.advanceTimersByTimeAsync(1_000);
+    const live = await on(opened, SAM);
+    expect(await send(live, resume)).toMatchObject({ t: 'suggest-leased' });
+    // Each stale socket's resume arrives late, all inside one window of windowMs.
+    for (const socket of stale) {
+      const before = socket.events.length;
+      await vi.advanceTimersByTimeAsync(1_000);
+      await socket.deliver(`${CUSTOM_PREFIX}${JSON.stringify(resume)}`);
+      await socket.pump();
+      expect.soft(socket.events.slice(before).filter(isReply), 'a late resume is not answered').toEqual([]);
+    }
+    for (const [i, socket] of stale.entries()) expect.soft(socket.closed, `stale socket ${i} is retired`).toEqual({ code: CLOSE.normal, reason: 'superseded' });
+    expect(live.closed, 'the live socket stays open, never 4429').toBeNull();
+    // The leases are still bound to the live socket: a write under the active one lands there.
+    expect(await send(live, opsRequest(named[0].record, forge(doc, (d) => firstBlock(d).insert(0, 'Live '), named[0].client)))).toMatchObject({ t: 'suggest-ack', record: named[0].record });
+    // Nothing was counted: the live socket takes max - 1 refusals and stays open, and one more starts the cooldown.
+    const { max } = SUGGEST_LIMITS.refusals;
+    for (let i = 0; i < max - 1; i += 1) expect(await send(live, { t: 'suggest-withdraw', record: `nope-${i}` })).toMatchObject({ t: 'suggest-refused' });
+    expect(live.closed, 'the late resumes were not counted').toBeNull();
+    expect(await send(live, { t: 'suggest-withdraw', record: 'nope-last' })).toMatchObject({ t: 'suggest-refused' });
+    expect(live.closed?.code, 'forged refusals still start the cooldown').toBe(CLOSE.connectionLimit);
+  });
+
+  it("another window of the person's (another fork) never retires this one, even naming its idle leases", async () => {
+    const opened = await seeded();
+    const one = await on(opened, SAM);
+    const mine = granted(await send(one, { t: 'suggest-lease', fork: 'fork-t5s16-one' }));
+    await vi.advanceTimersByTimeAsync(IDLE);
+    const two = await on(opened, SAM);
+    expect(await send(two, { t: 'suggest-lease', fork: 'fork-t5s16-two' })).toMatchObject({ t: 'suggest-leased' });
+    // Only a forged frame names another window's lease; the idle lease moves, but the window it was on stays open.
+    await send(two, { t: 'suggest-lease', resume: [mine[1].client], fork: 'fork-t5s16-two', mint: 0 } as SuggestRequest);
+    expect(one.closed, 'the first window is not retired').toBeNull();
+    expect(two.closed).toBeNull();
+    expect(await send(one, { t: 'suggest-lease', resume: [mine[0].client], fork: 'fork-t5s16-one', mint: 0 } as SuggestRequest)).toMatchObject({ t: 'suggest-leased' });
+    expect(one.closed).toBeNull();
+    expect(two.closed).toBeNull();
   });
 });

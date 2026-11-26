@@ -6,6 +6,7 @@ import { useSyncExternalStore } from 'react';
 import { lookupSession } from '../auth/session-fn.ts';
 import { setAppState } from './app-state.ts';
 import { createAuthStore, LOGIN_PATH, type AuthState, type SessionUser } from './auth-state.ts';
+import { releaseKept } from './collab/unacked.ts';
 import { armSessionFetch, sessionCallHeld, setSessionEnded } from './session-fetch.ts';
 import { prepareSignOut } from './sign-out-guard.ts';
 import { leaveTo } from './navigation.ts';
@@ -24,6 +25,10 @@ armSessionFetch(auth.sessionAware((input, init) => fetch(input, init)));
 auth.subscribe((state) => setSessionEnded(state.status === 'signed-out' && state.ended === true));
 
 if (typeof window !== 'undefined') {
+  // A sign-out that ends signed in did not leave: a discard chosen at its confirm no longer stands.
+  auth.subscribe(() => {
+    if (auth.get().status === 'signed-in') releaseKept(false);
+  });
   // A degraded tab retries at once when the network or the tab comes back.
   const retryIfDegraded = () => {
     if (auth.get().status === 'degraded') auth.retryNow();

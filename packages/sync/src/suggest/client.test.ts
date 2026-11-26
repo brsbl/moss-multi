@@ -760,3 +760,99 @@ describe('T5.S14 an accept that keeps never loses typing still in flight @p:mean
     }
   });
 });
+
+describe('T5.S16 a resume is never refused for the cap and reserves only what the fork keeps @p:mean-2', () => {
+  const refused = (events: ForkEvent[]) => events.filter((event) => event.type === 'refused');
+  const leasedReplies = (link: ReturnType<typeof wire>) => link.replies.filter((reply): reply is Extract<SuggestReply, { t: 'suggest-leased' }> => reply.t === 'suggest-leased');
+
+  it('two windows drop and the DocDO sees both close; the idle one is back first; the one that typed offline resumes unrefused and its text lands', () => {
+    const live = seededBody();
+    const first = wire(live, 'c1');
+    const a = mount(live, first);
+    const second = wire(live, 'c2', first.ingest);
+    const b = mount(live, second);
+    try {
+      a.act(() => select('Hello', 24).insertText(' One.'));
+      first.deliver(a.fork);
+      // Both sockets close, seen by the DocDO; the first window types on, and what it sends is lost with the socket.
+      first.ingest.expireConnection('c1');
+      first.ingest.expireConnection('c2');
+      a.act(() => select('Hello', 29).insertText(' Two.'));
+      first.outbox.length = 0;
+      // The idle window is back first, then the one that typed.
+      second.who.connection = 'c4';
+      b.fork.reconnected();
+      second.deliver(b.fork);
+      first.who.connection = 'c3';
+      a.fork.reconnected();
+      first.deliver(a.fork);
+      expect([...first.replies, ...second.replies].filter((reply) => reply.t === 'suggest-refused'), 'nothing is refused').toEqual([]);
+      expect(refused(a.events), 'input stays open').toEqual([]);
+      expect(a.fork.closed).toBe(false);
+      expect(a.fork.owes).toBe(false);
+      const [record] = recordIds(live).filter((id) => readMeta(live, id)?.status === 'open');
+      expect(readRecord(live, record)?.ops.length, 'the offline edit lands').toBe(2);
+      // Each resume's reply carries exactly the two leases its fork holds.
+      expect(leasedReplies(second).at(-1)?.leases, "the idle window's resume").toHaveLength(2);
+      const clients = (reply?: Extract<SuggestReply, { t: 'suggest-leased' }>) => (reply?.leases ?? []).map((lease) => lease.client).sort();
+      expect(clients(leasedReplies(first).at(-1)), "the typing window's resume").toEqual(clients(leasedReplies(first)[0]));
+    } finally {
+      b.dispose();
+      a.dispose();
+    }
+  });
+
+  it('a resume asks the DocDO to mint only the spare the fork lacks', () => {
+    const live = seededBody();
+    const link = wire(live);
+    const m = mount(live, link);
+    try {
+      m.act(() => select('Hello', 24).insertText(' One.'));
+      link.deliver(m.fork);
+      link.who.connection = 'c2';
+      m.fork.reconnected();
+      const resume = link.outbox.find((request) => request.t === 'suggest-lease' && request.resume !== undefined);
+      expect(resume, 'the fork holds its active and spare: it asks for none').toMatchObject({ mint: 0 });
+      link.deliver(m.fork);
+      expect(leasedReplies(link).at(-1)?.leases).toHaveLength(2);
+    } finally {
+      m.dispose();
+    }
+  });
+});
+
+describe('T5.S16 a reply the fork never asked for changes nothing @p:mean-2', () => {
+  it('refusals and a grant of frames another client sent on its socket leave the text in flight owed, and it lands', () => {
+    const live = seededBody();
+    const link = wire(live);
+    const m = mount(live, link);
+    try {
+      m.act(() => select('Hello', 24).insertText(' One.'));
+      expect(link.outbox.length, 'the edit is in flight').toBeGreaterThan(0);
+      // Frames the fork never sent, answered on its socket ahead of its own: three refusals (as a forged withdraw of an
+      // unknown record draws), a grant of a lease request and a refusal naming no record.
+      const stray: SuggestReply[] = [
+        ...[0, 1, 2].map((i) => handleSuggest(link.ingest, link.who, { t: 'suggest-withdraw', record: `unknown-${i}` })),
+        handleSuggest(link.ingest, link.who, { t: 'suggest-lease', mint: 1 }),
+        { t: 'suggest-refused', record: null, reason: 'malformed' },
+      ];
+      expect(stray.slice(0, 3).map((reply) => (reply.t === 'suggest-refused' ? reply.reason : reply.t))).toEqual(['record', 'record', 'record']);
+      for (const reply of stray) m.fork.receive(reply);
+      expect(m.events.filter((event) => event.type === 'refused'), 'input stays open').toEqual([]);
+      expect(m.fork.closed).toBe(false);
+      expect(m.fork.owes, 'the edit is still owed').toBe(true);
+      link.deliver(m.fork);
+      expect(m.fork.owes).toBe(false);
+      const [record] = recordIds(live).filter((id) => readMeta(live, id)?.status === 'open');
+      expect(readRecord(live, record)?.ops.length, 'the edit lands').toBe(m.fork.sent);
+      // A refusal of a request it did send still halts it.
+      m.act(() => select('Hello', 29).insertText(' Two.'));
+      const mine = link.outbox.splice(0)[0];
+      expect(mine?.t).toBe('suggest-ops');
+      m.fork.receive({ t: 'suggest-refused', record: mine?.t === 'suggest-ops' ? mine.record : null, reason: 'record-closed' });
+      expect(m.events.filter((event) => event.type === 'refused')).toHaveLength(1);
+    } finally {
+      m.dispose();
+    }
+  });
+});

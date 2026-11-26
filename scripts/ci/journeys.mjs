@@ -83,6 +83,13 @@ export const GROUPS = {
   social: ['j15-social', 'j08-agents', 'j15-comments-guard', 'j15-comments-offline'],
   // Suggest mode and the suggestions server.
   suggest: ['j16'],
+  // A suggester's connection dropping and returning: what is refused, the cooldown, and where the text is afterwards;
+  // one window's cuts, more windows, windows returning, fresh pages, and the cooldown's net (all @slow, so it shares
+  // a shard with legs every lane runs).
+  suggestDropCuts: ['j16-suggest-drop-cuts'],
+  suggestDropTabs: ['j16-suggest-drop-tabs'],
+  suggestDropReturn: ['j16-suggest-drop-return'],
+  suggestDropFresh: ['j16-suggest-drop-fresh', 'j16-suggest-drop-cooldown'],
   // Large pastes in Suggest mode: admitted whole or refused whole, one frame, one undo step.
   suggestPaste: ['j16-paste'],
   // Suggest-mode pastes over table cells, refused whole or struck; an undone split that reads as the body; a Review
@@ -137,11 +144,16 @@ export function groupOf(file, groups = GROUPS) {
 
 /**
  * Leg declarations in a spec's source: `test(` or `test.only|fixme|fail|slow(` with a literal title. A leg declared in
- * a loop counts once, so the count tracks added declarations, not runtime legs.
+ * a loop counts once, so the count tracks added declarations, not runtime legs. A spec whose legs are made in loops
+ * states the legs it runs in a line `// journey-legs: N`, and that number is its count.
  * @param {string} text
  * @returns {number}
  */
-export const countLegs = (text) => (text.match(/^[^\S\n\r\u2028\u2029]*test(?:\.(?:only|fixme|fail|slow))?\(\s*[`'"]/gm) ?? []).length;
+export const countLegs = (text) => {
+  const stated = /^\/\/ journey-legs: (\d+)\b/m.exec(text);
+  if (stated) return Number(stated[1]);
+  return (text.match(/^[^\S\n\r\u2028\u2029]*test(?:\.(?:only|fixme|fail|slow))?\(\s*[`'"]/gm) ?? []).length;
+};
 
 /**
  * The journey spec files in `dir`, each with its group, whether any leg is tagged @slow, and its leg declarations.

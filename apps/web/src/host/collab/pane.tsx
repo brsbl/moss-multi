@@ -12,7 +12,6 @@ import {
   BODY_BINDING_ATTR, BOTTOM_REGION_ATTR, DOC_ID_ATTR, DOC_STATE_ATTR, EDIT_MODE_ATTR, EDITOR_GENERATION_ATTR, EDITOR_PANE_ATTR, SUGGEST_REFUSED_ATTR,
   SUGGEST_SENT_ATTR, SYNC_UNACKED_ATTR, TERMINAL_REASON_ATTR, ROLE_ATTR, type BindingState, type DocState, type EditMode,
 } from '@moss-multi/protocol/dom-contract';
-import type { SuggestRefusal } from '@moss-multi/protocol/suggest';
 import { excludedPropertiesFor } from '@moss-multi/sync/excluded-properties';
 import type { BodyUndo } from '@moss-multi/sync/payload-docs';
 import { syncNoteEntityAtom } from '@moss/shared/state/atoms';
@@ -30,8 +29,9 @@ import {
 } from './doc-session.ts';
 import { auth } from '../auth.ts';
 import { captureCaret, type CaretMark } from './suggest/caret.ts';
-import { modeFor, offerUnsaved, setOpenSuggestions, showMode, subscribeModes } from './suggest/mode.ts';
+import { clearSuggestBusy, modeFor, offerUnsaved, setOpenSuggestions, showMode, subscribeModes, suggestBusy } from './suggest/mode.ts';
 import { ReviewMount, SuggestMount } from './suggest/mounts.ts';
+import { afterRefusal, NO_SUGGESTION_ROOM } from './suggest/rebuild.ts';
 import { readMeta, recordIds, SUGGESTIONS } from '@moss-multi/sync/suggest/records';
 import { ReviewBand, SuggestBand } from './suggest/SuggestChrome.tsx';
 import { HistoryView, useHistoryOpen } from '../history/HistoryView.tsx';
@@ -177,9 +177,6 @@ const RAISED_NOTICE: Record<(typeof RAISED)[number], string> = {
   suggest: 'You can now suggest changes to this note.',
   comment: 'You can now comment on this note.',
 };
-
-/** Refusals that mean the note has no room for more suggestions (T5.S4): retrying in a new F would be refused too. */
-const NO_SUGGESTION_ROOM: ReadonlySet<SuggestRefusal> = new Set<SuggestRefusal>(['doc-cap', 'ops-cap']);
 
 class PaneBinding implements SuggestPane {
   #state: PaneState = { docState: 'binding', bodyState: 'unbound', bodyVisible: false, resetting: false, revision: 0, hasText: false, mode: 'edit', suggestSent: 0, suggestRefused: 0 };
@@ -376,6 +373,8 @@ class PaneBinding implements SuggestPane {
    */
   mountFor(session: DocSession): { doc: Doc; provider: Provider } {
     this.#mount = null;
+    // A new mount asks afresh: a busy notice belongs to the one it replaces.
+    clearSuggestBusy(this.docId);
     this.#inputClosed = this.#noRoom;
     this.#mountReady = this.#mode === 'edit';
     if (this.#mode === 'edit') return { doc: session.doc, provider: session.provider as unknown as Provider };
@@ -391,16 +390,18 @@ class PaneBinding implements SuggestPane {
         refused: (unsaved, reason, limit) => {
           // Input closes in this tick; F is rebuilt once the DocDO has answered everything in flight. A note with no
           // room for more suggestions keeps input closed in the rebuilt F until the mode changes, and a refusal of
-          // that F's lease, or of a first lease (F then fills read-only), rebuilds nothing more.
+          // that F's lease, or of a first lease (F then fills read-only), rebuilds nothing more. Nor does a first lease
+          // the person's other Suggest windows leave no room for: the note shows read-only, and Retry asks again.
+          const next = afterRefusal(reason, { noRoom: this.#noRoom, ready: this.#mountReady });
           const full = NO_SUGGESTION_ROOM.has(reason);
-          const again = full && (this.#noRoom || !this.#mountReady);
-          if (full) this.#noRoom = true;
+          this.#noRoom = next.noRoom;
           this.#inputClosed = true;
           this.#editor?.setEditable(false);
           offerUnsaved(this.docId, unsaved, full, limit);
           this.#apply(session.state);
           this.#mountChanged();
-          if (!again) this.#remount();
+          if (next.busy) suggestBusy(this.docId, () => this.#remount());
+          if (next.rebuild) this.#remount();
         },
         rebuild: () => this.#remount(),
         closed: (event) => dropUndo(this.#editor, event.clients),

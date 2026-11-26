@@ -1,6 +1,6 @@
 // Initial-shell chunk recovery. Optional surfaces use recoverableLazy so their failures never unmount an editor.
 import { Component, type ReactNode } from 'react';
-import { hasDocSessions, hasUnacked } from './collab/unacked.ts';
+import { hasDocSessions, unsavedHere } from './collab/unacked.ts';
 import { currentLeave, heldRead } from './leave.ts';
 import { refuseInput } from './refusal.ts';
 import { reloadDocument } from './navigation.ts';
@@ -17,9 +17,12 @@ export function isChunkLoadError(error: unknown): boolean {
   );
 }
 
+/** An open note, an unacked edit, or text offered back and not dismissed (after its session is gone too) holds it. */
+const heldBack = (): boolean => hasDocSessions() || unsavedHere() !== null;
+
 /** Reloads unless this tab already did within the window; returns whether it reloads. */
 export function reloadOnce(now = Date.now(), storage: Pick<Storage, 'getItem' | 'setItem'> | null = safeSession(), reload = reloadDocument): boolean {
-  if (hasUnacked() || hasDocSessions()) return false;
+  if (heldBack()) return false;
   const last = Number(storage?.getItem(RELOAD_KEY) ?? 0);
   if (now - last < RELOAD_WINDOW_MS) return false;
   storage?.setItem(RELOAD_KEY, String(now));
@@ -54,7 +57,7 @@ export function logCaughtError(error: unknown): void {
 /** A failed fetch is not proof of a stale chunk. A live editor never reloads automatically, nor a page that is leaving. */
 export async function recoverChunk(): Promise<boolean> {
   if (leaving()) return false;
-  if (hasDocSessions() || hasUnacked()) {
+  if (heldBack()) {
     refuseInput('A part of the app could not load. Your edits are kept here; try the action again when connected.');
     return false;
   }

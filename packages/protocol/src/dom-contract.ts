@@ -42,7 +42,8 @@ export type ConnectionState = (typeof CONNECTION_STATES)[number];
 
 /** On the pane. */
 export const TERMINAL_REASON_ATTR = 'data-terminal-reason';
-export const TERMINAL_REASONS = ['deleted', 'revoked', 'session-ended', 'unavailable', 'conn-limit', 'outdated'] as const;
+/** `suggest-cooldown`: the 60 s suggestion cooldown (a 4429 naming it), which reconnects by itself once it ends. */
+export const TERMINAL_REASONS = ['deleted', 'revoked', 'session-ended', 'unavailable', 'conn-limit', 'outdated', 'suggest-cooldown'] as const;
 export type TerminalReason = (typeof TERMINAL_REASONS)[number];
 
 /** The reserved notice band under each pane's top bar (A§10.5): in flow and zero-height; input refusals show in it. */
@@ -52,10 +53,11 @@ export const BOTTOM_REGION_ATTR = 'data-bottom-region';
 
 /**
  * The connection notice, floating in the pane's bottom region (T9.40): `retrying` while a first sync is late, `offline` while a synced doc is not
- * delivering, `halted` after a refused write stopped the doc, or the terminal reason.
+ * delivering, `halted` after a refused write stopped the doc, `suggest-busy` while the person's other Suggest windows
+ * hold every lease this one asked for, or the terminal reason.
  */
 export const CONNECTION_BANNER_ATTR = 'data-connection-banner';
-export const CONNECTION_BANNERS = ['retrying', 'offline', 'halted', ...TERMINAL_REASONS] as const;
+export const CONNECTION_BANNERS = ['retrying', 'offline', 'halted', 'suggest-busy', ...TERMINAL_REASONS] as const;
 export type ConnectionBanner = (typeof CONNECTION_BANNERS)[number];
 
 /**
