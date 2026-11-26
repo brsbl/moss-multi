@@ -206,6 +206,15 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - Tests: `projections.test.ts` checks that the trailing touch stamps the twelfth edit and that no stamp is later than its write; a `j12-search` leg reads the list every 40 ms for 6.5 s after two notes are written and expects one order, the second note first. The split-navigation leg of `j00-persist` now expects C, B, A: B's trailing stamp is before C was created, so the list no longer moves after B's typing.
 - What is left: a row can still move at a 5-second mark for a good reason (note A edited from 0 to 4 s and note B at 2 to 3 s leaves B on top until A's trailing write), and a click that straddles any row move still opens nothing, or the neighbouring note. `ui.openNote` was left as it is on purpose: a second click in a helper that most journeys use would hide a first click that opens nothing.
 
+### T9.52b — a click beside a block, and the comment shortcut leg
+
+- A click beside a block (a code block's line numbers, a block's frame) does not keep it selected, as in Moss at the pin: the block's click handler selects it and `@lexical/rich-text` clears that selection inside the same click. `e2e/parity/block-click.spec.ts` holds that behavior.
+- No fix was kept, because claiming those clicks also keeps a block selected through clicks inside its own editing surface, and then a whole block is removed where nothing was before:
+  - a stroke drawn on a selected canvas, then Backspace or Delete, removes the canvas;
+  - a chart clicked, Edit, text in its JSON selected and cut, removes the chart;
+  - on macOS, a click inside a code block's open text, then Ctrl+H or Ctrl+D, removes the code block.
+- The j15 comment shortcut leg now selects the code block from the keyboard: the caret at the end of the paragraph above, ArrowDown, the selection outline, then the shortcut.
+
 ## T1.1s identity audit
 
 - Members: signed-in link-only readers reached doc member names through either a doc or ancestor-folder token. Authorization now omits the token; folder members already used grants only. The regression run [37133412126](https://github.com/brsbl/moss-multi/actions/runs/37133412126) failed all four doc cases (query/header × doc/folder link) with 200 instead of 404. Owner emails, grantee names, anonymous denial and owner-only writes remain covered.
