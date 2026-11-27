@@ -57,6 +57,13 @@
     scrollbar-color: theme('colors.border-subtle') transparent;
   }
 
+  /* moss-multi seam: scroll-flip-scope (T9.56). scrollbar-color is inherited, so each change of data-scrolling
+     restyled every block of the note. The canvas's children hold the value they had at rest, so the change stops at
+     them; the canvas's own thumb shows and hides as before. */
+  .canvas-scroll > * {
+    scrollbar-color: transparent transparent;
+  }
+
   .canvas-scroll::-webkit-scrollbar {
     width: 6px;
     height: 6px;

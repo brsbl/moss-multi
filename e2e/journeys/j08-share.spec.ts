@@ -5,6 +5,7 @@
 // link is viewer signed out, editor signed in, and the max of link and grant with a grant. Revoked, forged and
 // inaccessible links all get the same 404 and the same denial page, an email shared with nobody's account answers
 // exactly as one shared with an account, and nobody but the owner sees an email.
+import type { LexicalEditor } from 'lexical';
 import { createHash, randomBytes } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import type { Route } from '@playwright/test';
@@ -497,14 +498,39 @@ test('j08 read-only: a viewer\'s and a commenter\'s checkbox, slash and block co
   await expect(box(dee), 'an editor toggles the checkbox').toHaveAttribute('aria-checked', 'true');
   await expect.poll(() => deeFrames.count(), { message: 'and the toggle is a write' }).toBeGreaterThan(deeBefore);
   await expect(box(ada), 'which reaches the owner').toHaveAttribute('aria-checked', 'true', { timeout: LIVE_TIMEOUT });
-  await ui.body(dee, docId).locator('p').filter({ hasText: 'Ranked end.' }).click();
-  await dee.page.keyboard.press('End');
+  // Enter and Backspace act on Lexical's own selection, and Lexical takes a click's caret on the selectionchange after
+  // it; until then its selection is still at the task the pointer left. So the caret is confirmed at the end of the
+  // paragraph for Lexical as well before Enter. The browser-caret check stays but is not what prevents the split.
+  const end = ui.body(dee, docId).locator('p').filter({ hasText: 'Ranked end.' });
+  await expect(async () => {
+    await end.click();
+    await dee.page.keyboard.press('End');
+    expect(await end.evaluate((p) => {
+      const selection = getSelection();
+      if (!selection?.isCollapsed || !selection.anchorNode || !p.contains(selection.anchorNode)) return false;
+      const rest = document.createRange();
+      rest.selectNodeContents(p);
+      rest.setStart(selection.anchorNode, selection.anchorOffset);
+      return rest.toString() === '';
+    })).toBe(true);
+    expect(await ui.body(dee, docId).evaluate((element) => {
+      const state = (element as HTMLElement & { __lexicalEditor: LexicalEditor }).__lexicalEditor.getEditorState();
+      const anchor = (state._selection as { anchor?: { key: string; offset: number; type: string } } | null)?.anchor;
+      return state.read(() => {
+        const node = anchor && state._nodeMap.get(anchor.key) as unknown as { getTextContent(): string; getChildrenSize?(): number } | undefined;
+        if (!anchor || !node) return 'no selection';
+        const size = anchor.type === 'element' ? node.getChildrenSize?.() : node.getTextContent().length;
+        return `${node.getTextContent()}@${anchor.offset === size ? 'end' : anchor.offset}`;
+      });
+    })).toBe('Ranked end.@end');
+  }, 'the editor\'s caret sits at the end of "Ranked end."').toPass({ timeout: LIVE_TIMEOUT });
   await dee.page.keyboard.press('Enter');
   await dee.page.keyboard.type('/');
   await expect(slashOptions(dee).first(), 'an editor\'s "/" opens the slash menu').toBeVisible();
   await dee.page.keyboard.press('Escape');
   await dee.page.keyboard.press('Backspace');
   await dee.page.keyboard.press('Backspace');
+  await expect(box(dee), 'the editor\'s keys left the check item as it was').toHaveAttribute('aria-checked', 'true');
   await expect(ui.pane(dee, docId)).toHaveAttribute(SYNC_UNACKED_ATTR, '0', { timeout: LIVE_TIMEOUT });
   await expect.poll(() => ui.fieldText(ada, docId, 'body'), { timeout: LIVE_TIMEOUT }).toBe(await ui.fieldText(dee, docId, 'body'));
   const settled = await ui.fieldText(ada, docId, 'body');
