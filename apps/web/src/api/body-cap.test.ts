@@ -1,11 +1,13 @@
 // Every route that reads a JSON body caps it (T3.S7; A§18): a body that declares more than its route's cap is refused
 // with 413 before a byte is read, and one that streams past the cap without declaring a length is refused as it passes
-// it, never buffered further. Uploads stream with their own bounds (assets.test.ts).
+// it, never buffered further. Uploads stream with their own bounds (assets.test.ts); the largest note creation runs
+// through the real DocDO in body-cap.harness.test.ts.
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { CREATE_BODY_MAX_BYTES } from '@moss-multi/protocol/limits';
 import { handleAuthRoute } from '../auth/route.ts';
 import { migratedD1, type TestD1 } from '../test/d1.ts';
 import { BASE, insertDoc, insertFolder, SECRET, signedUpUser, type AuthTestEnv, type TestUser } from '../test/principals.ts';
+import { COMMENT_BODY_MAX_BYTES } from './comments.ts';
 import { setRemoteFetchForTests } from './remote.ts';
 import { JSON_BODY_MAX_BYTES } from './respond.ts';
 import { handleApi } from './router.ts';
@@ -19,6 +21,8 @@ const DocDO = {
   get: (id: { name: string }) => ({
     setName: async () => undefined, recheck: async () => ({ closed: 0 }), renameTitle: async () => undefined,
     create: async (init: unknown) => { created.set(id.name, init); },
+    createComment: async ({ id: commentId }: { id: string }) => ({ ok: true, id: commentId, quote: null }),
+    editComment: async () => ({ ok: true }), resolveComment: async () => ({ ok: true }), reactComment: async () => ({ ok: true }),
   }),
 };
 const PrincipalDO = {
@@ -26,6 +30,7 @@ const PrincipalDO = {
   get: () => ({
     setName: async () => undefined, publish: async () => undefined, takeCreateToken: async () => true,
     takeWriteToken: async () => true, takeUploadToken: async () => true, takeFetchToken: async () => true,
+    takeCommentToken: async () => true,
   }),
 };
 
@@ -109,6 +114,10 @@ const ROUTES: Route[] = [
   { method: 'PATCH', path: () => `/api/vaults/${ada.homeId}`, cap: JSON_BODY_MAX_BYTES, error: 'too-large', ok: () => ({ name: 'Home again' }), status: 200 },
   { method: 'POST', path: () => '/api/agents', cap: JSON_BODY_MAX_BYTES, error: 'too-large', ok: () => ({ name: 'Scribe' }), status: 201 },
   { method: 'POST', path: () => '/api/notifications/read', cap: JSON_BODY_MAX_BYTES, error: 'too-large', ok: () => ({ ids: [] }), status: 200 },
+  { method: 'POST', path: () => `/api/docs/${docId}/comments`, cap: COMMENT_BODY_MAX_BYTES, error: 'too-large', ok: () => ({ id: 'c-ok', text: 'Fine' }), status: 201 },
+  { method: 'PATCH', path: () => `/api/docs/${docId}/comments/c-ok`, cap: COMMENT_BODY_MAX_BYTES, error: 'too-large', ok: () => ({ text: 'Edited' }), status: 200 },
+  { method: 'POST', path: () => `/api/docs/${docId}/comments/c-ok/resolve`, cap: COMMENT_BODY_MAX_BYTES, error: 'too-large', ok: () => ({ resolved: true }), status: 200 },
+  { method: 'POST', path: () => `/api/docs/${docId}/comments/c-ok/reactions`, cap: COMMENT_BODY_MAX_BYTES, error: 'too-large', ok: () => ({ emoji: '👍', on: true }), status: 200 },
   { method: 'POST', path: () => '/api/unfurl', cap: JSON_BODY_MAX_BYTES, error: 'too-large', ok: () => ({ noteId: docId, url: 'https://site.example/' }), status: 200 },
   { method: 'POST', path: () => '/api/feedback', cap: FEEDBACK_BODY_MAX_BYTES, error: 'too-large', ok: () => ({ body: 'Lovely.' }), status: 201 },
 ];
@@ -180,6 +189,17 @@ describe('JSON bodies are capped on every route that reads one', () => {
     const sent = JSON.stringify({ body: '\u0001'.repeat(10_000), page: '\u0001'.repeat(2_000) });
     expect(sent.length, 'longer than the default cap').toBeGreaterThan(JSON_BODY_MAX_BYTES);
     const response = await send(ROUTES.at(-1)!, sent);
+    expect(response.status, await response.clone().text()).toBe(201);
+  }, 30_000);
+
+  // T4.R2: T3.S7's caps must refuse no comment body the DocDO accepts (comments.ts: 10,000 characters of text and of
+  // quote), whatever a client escapes.
+  const comment = (method: string, path: string, body: string) => send({ method, path: () => path, cap: 0, error: '', ok: () => ({}), status: 0 }, body);
+
+  it('a comment create takes the longest text and quote, every character escaped', async () => {
+    const sent = JSON.stringify({ id: 'c-cap', text: '\u0001'.repeat(10_000), anchor: { quote: { exact: '\u0001'.repeat(10_000), prefix: '', suffix: '' } } });
+    expect(sent.length, 'longer than the default cap').toBeGreaterThan(JSON_BODY_MAX_BYTES);
+    const response = await comment('POST', `/api/docs/${docId}/comments`, sent);
     expect(response.status, await response.clone().text()).toBe(201);
   }, 30_000);
 });

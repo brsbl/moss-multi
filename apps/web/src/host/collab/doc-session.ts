@@ -7,16 +7,20 @@
 import type { ConnectionState, TerminalReason } from '@moss-multi/protocol/dom-contract';
 import { isRole, roleAtLeast, type Role } from '@moss-multi/protocol/roles';
 import { STATE_CAP_BYTES } from '@moss-multi/protocol/limits';
-import { base64ToBytes, CLOSE, closeAction, DOC_LIMIT_NOTICE, encodeSyncFrame, PAYLOAD_MESSAGE, type ServerEvent, type WriteRefusalReason } from '@moss-multi/protocol/sync';
+import {
+  base64ToBytes, CLOSE, closeAction, DOC_LIMIT_NOTICE, encodeMovesFrame, encodeSyncFrame, PAYLOAD_MESSAGE, type ServerEvent, type WriteRefusalReason,
+} from '@moss-multi/protocol/sync';
 import { attachPayloadDocs, namedPayloadIds, PayloadDocs, PayloadSync } from '@moss-multi/sync/payload-docs';
 import { applyDeletes, deletesUpdate, landedWhole, PasteWatch, rollBackPaste, withoutDeletes, type PasteRecord, type PayloadSpan, type Ranges } from '@moss-multi/sync/paste-rollback';
 import YProvider from 'y-partyserver/provider';
 import * as Y from 'yjs';
 import { knownRole, rememberRole } from '../access.ts';
+import { existingModel } from '../comments/model.ts';
 import { heldRead } from '../leave.ts';
 import { leaveTo } from '../navigation.ts';
 import { refuseInput, settleRefusal } from '../refusal.ts';
 import { AckLedger } from './acks.ts';
+import { ownUpdate, readStep1, Replay } from './replay.ts';
 import {
   connectionOf, FIRST_SYNC_DEADLINE_MS, HANDSHAKE_FAILURES, HEARTBEAT_CHECK_MS, publishConnection, reduceLink, RESYNC_MS,
   SILENCE_LIMIT_MS, startLink, type Link, type LinkEvent,
@@ -51,6 +55,7 @@ export const WRITE_REFUSED: Record<WriteRefusalReason, string> = {
   'doc-cap': 'This note is at its size limit, so your last change was not saved.',
   suggest: "Suggestions aren't available yet, so your change was not saved.",
   unresolved: 'Your last change could not be saved. Reconnecting to the saved note.',
+  'protected-type': 'Your last change could not be saved. Reconnecting to the saved note.',
 };
 export const HALTED_REFUSED = 'Your last change could not be saved. Reconnecting to the saved note.';
 const VIEW_ONLY = 'You can view this note but can no longer edit it.';
@@ -383,6 +388,9 @@ export class DocSession {
   #ended = false;
   #reopening = false;
   readonly #ledger = new AckLedger();
+  readonly #replay: Replay;
+  /** Payload resends wait for the note's backlog replay (#opened). */
+  #payloadsDue = false;
   #link: Link;
   #socketOpen = false;
   #lastResync = 0;
@@ -437,6 +445,32 @@ export class DocSession {
     });
     broadcastAwarenessOnUpdate(this.provider);
     closeNormally(this.provider, () => this.#lingering);
+    this.#replay = new Replay((update) => {
+      const ws = this.provider.ws;
+      if (!ws || ws.readyState !== WebSocket.OPEN || this.#ended) return false;
+      ws.send(encodeSyncFrame(2, update));
+      return true;
+    });
+    // The frame discipline (comments.md §6): with writes unacked, the server's step 1 is answered only after they are
+    // replayed as their own frames, and the step 2 it then gets arrives inert. Writes made meanwhile wait their turn.
+    // The step 2 carries only this client's own writes (ownUpdate), never a comment record the server wrote meanwhile.
+    const answerSync = this.provider.messageHandlers[0];
+    this.provider.messageHandlers[0] = (encoder, decoder, provider, emitSynced, type) => {
+      const sv = this.#ended ? null : readStep1(decoder);
+      if (!sv) answerSync(encoder, decoder, provider, emitSynced, type);
+      else if (this.#ledger.pending().length) this.#replay.start(this.#ledger.pending(), () => this.#answerStep1(sv));
+      else {
+        this.#replay.cancel();
+        this.#answerStep1(sv);
+      }
+    };
+    const sendLive = this.provider._updateHandler;
+    this.doc.off('update', sendLive);
+    this.provider._updateHandler = (update, origin) => {
+      if (origin !== this.provider && this.#replay.active) this.#replay.hold(update);
+      else sendLive(update, origin);
+    };
+    this.doc.on('update', this.provider._updateHandler);
     this.provider.on('status', ({ status }: { status: string }) => {
       if (status === 'connected') this.#opened();
     });
@@ -537,7 +571,12 @@ export class DocSession {
       track.holding = false;
       const ranges = track.watch.deletes();
       // A socket that is down sends them with the unacked writes when it reconnects.
-      if (ranges.length > 0 && !this.#ended) this.provider.ws?.send(encodeSyncFrame(2, deletesUpdate(ranges)));
+      const ws = this.provider.ws;
+      if (ranges.length === 0 || this.#ended || !ws) continue;
+      // The server sees the moved text's delete only now, after the copy: it is told where the comments on it went.
+      const moves = existingModel(this.doc)?.moves() ?? [];
+      if (moves.length > 0) ws.send(encodeMovesFrame(moves));
+      ws.send(encodeSyncFrame(2, deletesUpdate(ranges)));
     }
   }
 
@@ -623,6 +662,7 @@ export class DocSession {
     this.#pagePresence = null;
     this.stopPresence?.();
     this.#lingering = false;
+    this.#replay.cancel();
     clearTimeout(this.#accessRetry);
     clearInterval(this.#tick);
     clearTimeout(this.#deadline);
@@ -699,11 +739,30 @@ export class DocSession {
     this.#failedHandshakes = 0;
     const ws = this.provider.ws as DocSocket | null;
     if (ws) ws.hold = this.#hold;
-    // The note's unacked writes go first (the provider's own step 1 and step 2 follow this event): they hold the
-    // elements naming payloads made offline, so those payloads' resends never reach the DocDO as unnamed writes.
-    const pending = this.#ledger.pendingUpdate();
-    if (pending && !this.#ended) this.provider.ws?.send(encodeSyncFrame(2, pending));
-    this.#payloadSync.connected((id) => this.#ledger.pendingUpdate(id));
+    // A write made before the server's step 1 arrives must not overtake the backlog replayed then (comments.md §6).
+    // The note's backlog goes first: it holds the elements naming payloads made offline, so those payloads' resends wait
+    // for it and never reach the DocDO as unnamed writes.
+    if (this.#ledger.pending().length && !this.#ended) {
+      this.#replay.arm();
+      this.#payloadsDue = true;
+    } else {
+      this.#payloadsDue = false;
+      this.#payloadSync.connected((id) => this.#ledger.pendingUpdate(id));
+    }
+  }
+
+  /** Each held payload's step 1 and unacked writes, once the note's backlog has gone (#opened). */
+  #resendPayloads(): void {
+    if (!this.#payloadsDue) return;
+    this.#payloadsDue = false;
+    this.#payloadSync.connected((id) => (this.#ended ? null : this.#ledger.pendingUpdate(id)));
+  }
+
+  /** Answers the server's step 1 with the step 2 it asked for, holding only this client's writes. */
+  #answerStep1(sv: Uint8Array): void {
+    const ws = this.provider.ws;
+    if (ws?.readyState === WebSocket.OPEN && !this.#ended) ws.send(encodeSyncFrame(1, ownUpdate(this.doc, sv)));
+    this.#resendPayloads();
   }
 
   #synced(): void {
@@ -806,6 +865,8 @@ export class DocSession {
     if (this.#disposed) return;
     const opened = this.#socketOpen;
     this.#socketOpen = false;
+    // What it had not sent stays in the ledger; the next socket replays it.
+    this.#replay.cancel();
     // Each socket gets its own partyserver connection id (`_pk`, read at every reconnect): the DocDO keys acks by
     // socket, but a fresh id keeps any lookup by id unambiguous.
     this.provider.id = crypto.randomUUID();
@@ -930,10 +991,12 @@ export class DocSession {
       if (state !== null && !this.#ended && !this.#lingering) awareness.setLocalState(state);
       // Writes still queued in the outbox are on their way; resending them would only queue them twice.
       if ((ws as DocSocket).outbox?.busy) return;
-      const pending = this.#ledger.pendingUpdate();
-      if (pending && !this.#ended) ws.send(encodeSyncFrame(2, pending));
-      // Each held payload asks again too, so one whose frames were lost on this socket catches up (A§10.10).
-      this.#payloadSync.connected((id) => (this.#ended ? null : this.#ledger.pendingUpdate(id)));
+      // Unacked writes go again under the frame discipline (comments.md §6), unless a replay is already sending them.
+      // Each held payload asks again too, after the note's backlog, so one whose frames were lost catches up (A§10.10).
+      this.#payloadsDue = true;
+      if (this.#ledger.pending().length && !this.#ended) {
+        if (!this.#replay.active) this.#replay.start(this.#ledger.pending(), () => this.#resendPayloads());
+      } else this.#resendPayloads();
     } catch {
       // closing; the close path takes over
     }

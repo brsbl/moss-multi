@@ -14,17 +14,19 @@ import {
 import { ROLES, roleAtLeast, type Role } from '@moss-multi/protocol/roles';
 import {
   bytesToBase64, CLOSE, encodePayloadFrame, encodeSyncFrame, PAYLOAD_STEP1, PAYLOAD_STEP2, PAYLOAD_UPDATE, type PayloadAck, type PayloadFrame,
-  type DocLimit, type RenameRefusal, type ServerEvent, type WriteRefusalReason,
+  type AnchorMove, type DocLimit, type RenameRefusal, type ServerEvent, type WriteRefusalReason,
 } from '@moss-multi/protocol/sync';
 import {
   attachmentFrom, classifySync, connectCode, EVERYONE, parseFrame, revocationCode, stateBytesAfter, WriteRate, type Attachment, type DeleteSet,
 } from './doc/admission.ts';
 import { attach, attachmentOf, awarenessTooLarge, awarenessFrame, receivePresence, leavePresence } from './doc/awareness.ts';
 import { AckCoalescer, DocStore, PERSISTENCE } from './doc/persistence.ts';
+import { coerceSidecar, COMMENT_STATE_SHARE, COMMENTS_PER_DOC, DocComments, type CommentCreate, type CommentDeleteScope, type CommentResult, type CommentSource } from './doc/comments.ts';
 import { d1Projections, Projections, type ProjectionTarget } from './doc/projections.ts';
 import { TRY_AGAIN, withDeadline, type Stamp } from './access-epoch.ts';
 import { publishMeta, publishReopened, type FanoutEnv, type Holder } from './fanout.ts';
 import type { SyncEnv } from './env.ts';
+import { positionItem } from '@moss-multi/core/anchor-frame';
 import { migrateFrontmatter } from '@moss-multi/core/frontmatter';
 import { seedPayload } from './payload-docs.ts';
 import { growthOf, structCount, TextCount } from './note-size.ts';
@@ -63,6 +65,8 @@ export interface DocLimits {
   maxConnections: number;
   writeRate: { max: number; windowMs: number };
   awarenessMaxBytes: number;
+  /** Comment and reply records per doc (comments.md §4). */
+  maxComments: number;
   /** Withheld payload ids one connection may write at once (the ids it is minting, or holds after a delete). */
   withheldIdsPerConnection: number;
   /** Bytes one principal may write into withheld payloads, so nobody crowds out another's (A§10.10). */
@@ -90,6 +94,9 @@ export interface CreateDocInput {
   title?: string;
   /** A body to import through the one converter instead of the seed's empty paragraph. */
   markdown?: string;
+  /** Moss's comments.json for `markdown`'s `%%m:` markers (moss interchange); records are authored by `author`. */
+  comments?: Record<string, unknown>;
+  author?: string;
 }
 
 /** What a recheck revokes (A§5.1, A§8): principals and share tokens close 4403, sessions 4402. */
@@ -154,6 +161,13 @@ const serializer = () => {
   };
 };
 
+/** Who a REST comment write stands for, as the Worker resolved it: its principal, session or key, and share token. */
+export type CommentActor = SocketIdentity;
+
+/** A comment write whose authorization D1 could not confirm: refused, and the client may retry. */
+const UNCONFIRMED: CommentResult = { ok: false, status: 503, error: 'unconfirmed' };
+const FORBIDDEN: CommentResult = { ok: false, status: 403, error: 'forbidden' };
+
 /** A server write that would pass one of the note's limits (A§5.1 Limits): `doc-cap`, `doc-cap:text` or `doc-cap:structure`. */
 export class DocCapError extends Error {
   constructor(readonly limit: DocLimit = 'state') {
@@ -192,6 +206,16 @@ function holdsOf(store: DocStore): Map<string, number> {
 }
 
 /** A socket the DO may still send to and read from. */
+/** The clock ranges kept per client per socket for named moves; contiguous writes merge into one. */
+const WRITTEN_RANGES = 256;
+
+/** Each client a frame writes structs for, with its state before the frame applies. */
+function clientStates(store: Y.Doc['store'], structs: ReturnType<typeof Y.decodeUpdate>['structs']): Map<number, number> {
+  const states = new Map<number, number>();
+  for (const struct of structs) if (!states.has(struct.id.client)) states.set(struct.id.client, Y.getState(store, struct.id.client));
+  return states;
+}
+
 const isOpen = (connection: Connection) => connection.readyState === undefined || connection.readyState === 1;
 
 const sizeOf = (message: WSMessage) => (typeof message === 'string' ? message.length : message.byteLength);
@@ -275,6 +299,8 @@ const MIN_ANSWER_SHARE = 1 / 4096;
 const MIN_TARGET_SHARE = 1 / 32;
 /** A save slower than this waits for writes to pause (T3.S6: large pastes, their undo and redo). */
 const SLOW_FRAME_MS = 1_000;
+/** The most structs one comment write adds to the note: a root's record and its anchor (A§5.1 Limits). */
+const COMMENT_STRUCTS = 2;
 
 /** A slow save waits for this long without a client write. */
 const WRITE_PAUSE_MS = 2_000;
@@ -289,6 +315,7 @@ export class DocDO extends YServer<SyncEnv> {
     maxConnections: MAX_CONNECTIONS,
     writeRate: WRITE_RATE,
     awarenessMaxBytes: AWARENESS_MAX_BYTES,
+    maxComments: COMMENTS_PER_DOC,
     withheldIdsPerConnection: 64,
     withheldBytesPerIdentity: Math.floor(STATE_CAP_BYTES / 4),
     inboxFramesPerConnection: 256,
@@ -342,6 +369,11 @@ export class DocDO extends YServer<SyncEnv> {
   }
 
   #store: DocStore | null = null;
+  #comments: DocComments | null = null;
+  /** Where a socket's finished paste moved commented text, for its next sync frame (T4.W). */
+  readonly #moves = new WeakMap<Connection, AnchorMove[]>();
+  /** The clocks each socket's own writes added, by client: a named move may only point into them (T4.W). */
+  readonly #written = new WeakMap<Connection, Map<number, [from: number, to: number][]>>();
   #payloads: PayloadStore | null = null;
   /** The note's body text, exact (A§5.1 Limits). */
   #text: TextCount | null = null;
@@ -423,6 +455,8 @@ export class DocDO extends YServer<SyncEnv> {
     this.#store = store;
     this.#payloads = payloads;
     this.document.on('update', (update: Uint8Array, origin: unknown) => this.#persist(store, update, origin));
+    // R from meta and the anchor indexes from the `a:` records (comments.md §3, I8).
+    this.#comments = new DocComments(this.document, store);
     migrateFrontmatter(this.document, 'frontmatter-migration');
     const migrated = migratePayloads(this.document, (id, value) => {
       if (!payloads.has(id)) seedPayload(payloads.doc(id), value, JANITOR);
@@ -440,6 +474,7 @@ export class DocDO extends YServer<SyncEnv> {
     // A client on the earlier binding deletes a key its undo first wrote; its default goes back (A§10.11).
     keepLeanKeys(this.document, serverLeanDefaults(), LEAN_KEYS, isConnection);
     this.#seed(store);
+    this.#comments.flush();
     const target = (this.constructor as typeof DocDO).projectionTarget(this.env);
     if (target) {
       const projections = new Projections(this.name, target, store.meta('title-projected'), (title) => store.setMeta('title-projected', title));
@@ -705,6 +740,10 @@ export class DocDO extends YServer<SyncEnv> {
       if (this.#payloads) this.#payloadFrame(connection, attachment, store, this.#payloads, frame.payload);
       return;
     }
+    if (frame.kind === 'moves') {
+      if (roleAtLeast(attachment.role, 'editor')) this.#moves.set(connection, frame.moves);
+      return;
+    }
     if (frame.kind === 'awareness') {
       if (!awarenessTooLarge(frame.bytes, this.#limits.awarenessMaxBytes)) receivePresence(this.document.awareness, connection, message, [...this.getConnections()]);
       return;
@@ -715,22 +754,97 @@ export class DocDO extends YServer<SyncEnv> {
       return;
     }
     // Inert frames (every step 2 answering a step 1) pass whatever the role; writes meet the gates.
+    /** A frame Yjs will apply: an editor's write. */
+    let applying: ReturnType<typeof Y.decodeUpdate> | null = null;
+    /** Read for this frame only, whatever becomes of it. */
+    let moves: AnchorMove[] | undefined;
     if (frame.kind === 'sync') {
-      const { changes, missing, deletes } = classifySync(this.document, frame.update);
-      if (changes) {
-        if (this.#refused(connection, attachment, () => this.#noteLimit(store, frame.update), missing)) return;
-      } else if (roleAtLeast(attachment.role, 'editor')) {
+      moves = this.#moves.get(connection);
+      this.#moves.delete(connection);
+      let decoded: ReturnType<typeof Y.decodeUpdate>;
+      try {
+        decoded = Y.decodeUpdate(frame.update);
+      } catch {
+        this.#refuse(connection, 'unresolved', CLOSE.writeRefused);
+        return;
+      }
+      const { changes, missing, deletes } = classifySync(this.document, frame.update, decoded);
+      const guarded = () => !!this.#comments?.check(decoded);
+      if (changes && this.#refused(connection, attachment, () => this.#noteLimit(store, frame.update), missing, guarded)) return;
+      // Gate 2b on every step 2 or update, inert or not, whatever the role: no client frame reaches `comments`
+      // (comments.md §3, I1). O(frame · log); it follows no references.
+      if (!changes && guarded()) {
+        this.#refuse(connection, 'protected-type', CLOSE.writeRefused);
+        return;
+      }
+      if (!changes && roleAtLeast(attachment.role, 'editor')) {
         // The doc already holds it, so nothing persists to ack it: an editor's reconnect step 2 after its ack was lost
         // with the old socket. Acked too, so the client learns its edits are on the server (A§10.6).
         this.#acks.schedule(connection, deletes);
       }
       this.#frameDeletes = deletes;
+      if (changes && !this.isReadOnly(connection)) applying = decoded;
     }
+    if (moves && applying) this.#comments?.expectMoves(this.#ownMoves(connection, moves));
+    const before = applying ? clientStates(this.document.store, applying.structs) : null;
     try {
       super.onMessage(connection, message);
     } finally {
       this.#frameDeletes = undefined;
+      this.#comments?.expectMoves(undefined);
+      if (before) this.#noteWritten(connection, before);
     }
+    if (frame.kind === 'sync') this.#afterFrame(connection, store, applying ? applying.structs : []);
+  }
+
+  /** Records the clocks this frame added for each client it wrote, from the states before it applied. */
+  #noteWritten(connection: Connection, before: Map<number, number>): void {
+    let written = this.#written.get(connection);
+    for (const [client, from] of before) {
+      const to = Y.getState(this.document.store, client);
+      if (to <= from) continue;
+      if (!written) this.#written.set(connection, (written = new Map()));
+      const ranges = written.get(client) ?? [];
+      const last = ranges[ranges.length - 1];
+      if (last && last[1] === from) last[1] = to;
+      else ranges.push([from, to]);
+      if (ranges.length > WRITTEN_RANGES) ranges.shift();
+      written.set(client, ranges);
+    }
+  }
+
+  /**
+   * The moves whose start and end both name items this socket's own writes added, so a hint can only carry a comment
+   * onto text its sender wrote (its paste's copy), never onto words that were there before.
+   */
+  #ownMoves(connection: Connection, moves: AnchorMove[]): AnchorMove[] {
+    const written = this.#written.get(connection);
+    if (!written) return [];
+    const own = (position: string) => {
+      const item = positionItem(position);
+      return !!item && !!written.get(item.client)?.some(([from, to]) => item.clock >= from && item.clock < to);
+    };
+    return moves.filter(([, start, end]) => own(start) && own(end));
+  }
+
+  /**
+   * After a client frame applies: nothing it carried may wait in Yjs's pending queues to integrate after a later
+   * write, so a parked struct or delete is dropped and the frame refused, as is a frame Yjs threw on (comments.md §3,
+   * I2). Then the anchor changes it caused are written through writeComments in this turn (I8), and only then may the
+   * log compact, so a snapshot never holds parked structs.
+   */
+  #afterFrame(connection: Connection, store: DocStore, applied: ReturnType<typeof Y.decodeUpdate>['structs']): void {
+    const yStore = this.document.store;
+    // y-protocols swallows what Yjs throws mid-apply, so a throw shows only as a struct that is neither integrated
+    // nor parked.
+    const threw = applied.some((struct) => !(struct instanceof Y.Skip) && struct.id.clock + struct.length > Y.getState(yStore, struct.id.client));
+    if (threw || yStore.pendingStructs !== null || yStore.pendingDs !== null) {
+      yStore.pendingStructs = null;
+      yStore.pendingDs = null;
+      this.#refuse(connection, 'unresolved', CLOSE.writeRefused);
+    }
+    this.#comments?.flush();
+    store.compactIfDue(this.document);
   }
 
   /**
@@ -920,17 +1034,20 @@ export class DocDO extends YServer<SyncEnv> {
     if (store.meta('created') !== null) return;
     const title = input.title?.trim();
     // The body is admitted with the title's bytes, so a body and title past the cap together write neither.
-    const titleBytes = title ? (titleDiff(this.document, title)?.byteLength ?? 0) : 0;
+    const titleUpdate = title ? titleDiff(this.document, title) : null;
+    const titleBytes = titleUpdate?.byteLength ?? 0;
     if (input.markdown) {
       const parts = splitFrontmatter(input.markdown);
       // Frontmatter whose aliases name far more than its text holds is refused whole, as a body past the cap is.
       if (parts.error === FRONTMATTER_EXPANSION_ERROR) throw new DocCapError();
       const hasFrontmatter = parts.hasFrontmatter && !parts.error;
       const frontmatter = hasFrontmatter ? input.markdown.slice(0, input.markdown.length - parts.body.length) : undefined;
+      const sidecar = input.comments ? Object.fromEntries(coerceSidecar(input.comments)) : undefined;
+      let marks: ReturnType<typeof importBody>;
       try {
-        importBody(
+        marks = importBody(
           this.document, hasFrontmatter ? parts.body : input.markdown, (diff, payloads) => this.#admitServerWrite(store, diff, payloads, titleBytes), frontmatter,
-          this.#limits.structCap - this.#size().structs,
+          sidecar, this.#limits.structCap - this.#size().structs,
         );
       } catch (error) {
         // Markdown of more lines or cells than the converter's work budget or the structure guard holds is refused whole
@@ -939,9 +1056,20 @@ export class DocDO extends YServer<SyncEnv> {
         if (error instanceof Error && error.message === FRONTMATTER_EXPANSION_ERROR) throw new DocCapError();
         throw error;
       }
+      // Right after the tree diff, in the same turn (comments.md §13).
+      // The import's diff may be past a log row and not yet counted in stateBytes, so the room is measured.
+      // Records also stop at the structure guard, leaving the title's structs: a root is two structs, a reply one.
+      if (sidecar) {
+        const room = this.#commentRoom(Y.encodeStateAsUpdate(this.document).byteLength);
+        const titleStructs = titleUpdate ? growthOf(this.document, titleUpdate).structs : 0;
+        const structRoom = this.#limits.structCap - this.#size().structs - titleStructs;
+        const records = Math.min(this.#limits.maxComments, Math.max(0, Math.floor(structRoom / COMMENT_STRUCTS)));
+        this.#comments?.importSidecar(sidecar, marks, input.author ?? input.ownerId, records, room);
+      }
     }
     // POST /api/docs wrote a provisional row; the title and its filename arrive through the projection.
     if (title) this.#writeTitle(store, title);
+    this.#comments?.flush();
     store.setMeta('folder', input.folderId);
     store.setMeta('owner', input.ownerId);
     if (!title) this.#projections?.initializeEmpty();
@@ -970,6 +1098,7 @@ export class DocDO extends YServer<SyncEnv> {
       }
       if (store.meta('deleted') === '1' || holdsOf(store).size > 0) throw new RenameRefusedError('deleted');
       this.#writeTitle(store, text);
+      this.#comments?.flush();
     });
     this.#projections?.touch();
     await this.#projections?.flush();
@@ -989,6 +1118,128 @@ export class DocDO extends YServer<SyncEnv> {
     if (!diff) return;
     this.#admitServerWrite(store, diff, []);
     Y.applyUpdate(this.document, diff, SERVER_TITLE);
+  }
+
+  /**
+   * A comment or reply from REST (comments.md §4): `author` is the server principal the Worker resolved, and the
+   * Worker has checked commenter access and the per-principal rate. Records persist in this turn.
+   */
+  createComment(input: CommentCreate & { actor?: CommentActor }): Promise<CommentResult> {
+    const { actor, ...create } = input;
+    return this.#commentWrite(actor, (store, comments) => {
+      const limit = this.#commentLimit(COMMENT_STRUCTS);
+      if (limit) return limit;
+      // The record and anchor bytes, quote included, count against the comments' share of the cap (A§5.1 Limits).
+      const result = comments.create(create, this.#limits.maxComments, this.#commentRoom(store.stateBytes));
+      comments.flush();
+      return result;
+    });
+  }
+
+  /** Resolves or reopens a thread for a commenter or above (comments.md §12). */
+  resolveComment(input: { id: string; resolved: boolean; by: CommentSource; actor?: CommentActor }): Promise<CommentResult> {
+    return this.#commentWrite(input.actor, (_store, comments) => this.#commentLimit(1, true) ?? comments.resolve(input.id, input.resolved, input.by));
+  }
+
+  /** Edits a comment's text; `author` is the Worker's principal and must be the comment's author (comments.md §12). */
+  editComment(input: { id: string; author: string; text: string; actor?: CommentActor }): Promise<CommentResult> {
+    return this.#commentWrite(input.actor, (store, comments) =>
+      this.#commentLimit(1) ?? comments.edit(input.id, input.author, input.text, this.#commentRoom(store.stateBytes)));
+  }
+
+  /**
+   * Deletes a comment or a whole thread as its author; a root delete promotes the oldest reply (comments.md §12). Always
+   * admitted, as a deletion is: it removes records, and rewrites at most its thread's replies, bounded by the record cap.
+   */
+  deleteComment(input: { id: string; author: string; scope: CommentDeleteScope; actor?: CommentActor }): Promise<CommentResult> {
+    return this.#commentWrite(input.actor, (_store, comments) => comments.remove(input.id, input.author, input.scope));
+  }
+
+  /** Adds or removes the principal's reaction on a comment (comments.md §12); a removal has the structure headroom. */
+  reactComment(input: { id: string; principal: string; emoji: string; on: boolean; actor?: CommentActor }): Promise<CommentResult> {
+    return this.#commentWrite(input.actor, (store, comments) =>
+      this.#commentLimit(1, !input.on) ?? comments.react(input.id, input.principal, input.emoji, input.on, this.#commentRoom(store.stateBytes)));
+  }
+
+  /**
+   * The note's limits for a comment write adding up to `structs` structs (A§5.1 Limits), as the shared #limitMet holds a
+   * frame to them: it adds no body text, and its structs count toward the structure guard; a resolve or a removed
+   * reaction, which adds no record, has the headroom formats and properties have. The state bound is #commentRoom.
+   */
+  #commentLimit(structs: number, headroom = false): Extract<CommentResult, { ok: false }> | null {
+    const before = this.#size();
+    const limit = this.#limitMet(before, { chars: before.chars, structs: before.structs + structs }, headroom);
+    return limit ? { ok: false, status: 413, error: 'doc-cap', limit } : null;
+  }
+
+  /**
+   * Every comment write (A§8 pull validation, T2.5): in one serialized write the actor is re-resolved through the same
+   * check whether or not it has a socket (a live session or key, at least commenter, a live doc), then the open sockets
+   * are validated in one read that checks the actor again as a socket admitted at its epoch, and the write runs right
+   * after with no await between. A reader or actor revoked while the actor was read is refused with no kick needed.
+   * A check that cannot answer refuses. With no access check installed (the Node harness), writes apply as frames do.
+   */
+  async #commentWrite(actor: CommentActor | undefined, write: (store: DocStore, comments: DocComments) => CommentResult): Promise<CommentResult> {
+    const store = await this.#ready();
+    const comments = this.#comments;
+    if (!comments) throw new Error('DocDO started without comments');
+    // A doc closed without a hold may have missed a restore's settle: D1 decides, as at admission.
+    if (store.meta('deleted') === '1' && holdsOf(store).size === 0 && this.#liveness()) {
+      try {
+        await this.#queue(() => this.#settle([]));
+      } catch (error) {
+        console.error('DocDO comment write could not confirm the doc is live', error);
+        return UNCONFIRMED;
+      }
+    }
+    const check = this.#accessCheck();
+    return this.#serial(async () => {
+      if (check) {
+        let refused: CommentResult | null;
+        try {
+          const resolvedAt = Date.now();
+          const authorized = await this.#authorizeActor(check, store, actor, resolvedAt);
+          refused = typeof authorized === 'string' ? null : authorized;
+          if (!refused) {
+            const verdict = await this.#validate(check, undefined, { ...actor, role: 'commenter', epoch: authorized } as Attachment);
+            if (verdict === CLOSE.sessionEnded) refused = { ok: false, status: 401, error: 'unauthenticated' };
+            else if (verdict === CLOSE.deleted) refused = { ok: false, status: 404, error: 'trashed' };
+            else if (typeof verdict === 'number') refused = FORBIDDEN;
+            // A kick that landed while the sockets were read outdates the actor's answer too.
+            else if (revocationCode({ ...actor, resolvedAt } as Attachment, store.revoked) !== null) refused = FORBIDDEN;
+          }
+        } catch (error) {
+          console.error('DocDO could not re-authorize a comment write; refusing it', error);
+          return UNCONFIRMED;
+        }
+        if (refused) return refused;
+      }
+      // A trash holds the doc closed to every write (A§8), and a settled one leaves it deleted.
+      if (holdsOf(store).size > 0 || store.meta('deleted') === '1') return { ok: false, status: 404, error: 'trashed' };
+      return write(store, comments);
+    });
+  }
+
+  /**
+   * The actor's verdict now: the access epoch it was resolved at while it may comment, else the refusal. Throws when D1
+   * cannot answer.
+   */
+  async #authorizeActor(check: AccessCheck, store: DocStore, actor: CommentActor | undefined, resolvedAt: number): Promise<CommentResult | string> {
+    const unauthenticated: CommentResult = { ok: false, status: 401, error: 'unauthenticated' };
+    if (!actor || (actor.kind !== 'user' && actor.kind !== 'agent')) return unauthenticated;
+    const session = actor.kind === 'user' ? actor.sessionId : null;
+    if (actor.kind === 'user' && !session) return unauthenticated;
+    const { stamp, access } = await withDeadline(this.#limits.accessDeadlineMs, async (race) => {
+      const read = await race(check.stamp(this.name, session ? [session] : [], actor.kind === 'agent' ? [actor.principalId] : []));
+      return { stamp: read, access: await race(check.resolve(this.name, actor)) };
+    });
+    if (session ? !stamp.sessions.has(session) : !stamp.agents.has(actor.principalId)) return unauthenticated;
+    if (access === 'deleted') return { ok: false, status: 404, error: 'trashed' };
+    if (access === null) return { ok: false, status: 404, error: 'not-found' };
+    if (!roleAtLeast(access.role, 'commenter')) return FORBIDDEN;
+    // A kick persisted while D1 answered outdates what it said.
+    if (revocationCode({ ...actor, resolvedAt } as Attachment, store.revoked) !== null) return FORBIDDEN;
+    return stamp.key;
   }
 
   /**
@@ -1175,6 +1426,8 @@ export class DocDO extends YServer<SyncEnv> {
       title.delete(0, title.length);
       title.insert(0, input.title ?? '');
     }, SERVER_IMPORT);
+    this.#comments?.dropCopied();
+    this.#comments?.flush();
     store.setMeta('folder', input.folderId);
     store.setMeta('owner', input.ownerId);
     await this.#projections?.flush();
@@ -1251,15 +1504,17 @@ export class DocDO extends YServer<SyncEnv> {
    * Pull validation (A§8): reads the doc's access epoch and the sockets' credentials, then closes every socket whose
    * session ended (4402) or key was revoked (4403), and re-resolves each socket admitted under an older epoch, closing
    * it on a lowered or lost role (4403) or a doc in Trash (4410). A socket that keeps its role takes the new epoch.
-   * Throws, closing nothing, when D1 cannot answer.
+   * Throws, closing nothing, when D1 cannot answer. `actor`, a comment writer, is judged in the same read as a socket
+   * would be and its verdict returned, so the last D1 read before its write confirms it even with no socket open.
    */
-  async #validate(check: AccessCheck, only?: Connection[]): Promise<void> {
+  async #validate(check: AccessCheck, only?: Connection[], actor?: Attachment): Promise<number | Resolved | null> {
     const sockets = (only ?? [...this.#all()]).flatMap((connection) => {
       const attachment = attachmentOf(connection);
       return attachment && isOpen(connection) ? [{ connection, attachment }] : [];
     });
-    if (sockets.length === 0) return;
-    const { stamp, verdicts } = await withDeadline(this.#limits.accessDeadlineMs, (race) => this.#verdicts(check, sockets, race));
+    if (sockets.length === 0 && !actor) return null;
+    const subjects = actor ? [...sockets, { attachment: actor }] : sockets;
+    const { stamp, verdicts } = await withDeadline(this.#limits.accessDeadlineMs, (race) => this.#verdicts(check, subjects, race));
     for (const [i, { connection, attachment }] of sockets.entries()) {
       const verdict = verdicts[i];
       if (!isOpen(connection)) continue;
@@ -1275,11 +1530,13 @@ export class DocDO extends YServer<SyncEnv> {
       if (verdict === CLOSE.deleted) this.sendCustomMessage(connection, JSON.stringify({ t: 'doc-deleted' } satisfies ServerEvent));
       connection.close(verdict, verdict === CLOSE.sessionEnded ? 'session ended' : verdict === CLOSE.deleted ? 'deleted' : 'revoked');
     }
+    return actor ? verdicts[sockets.length] ?? null : null;
   }
 
   /**
    * Each socket's verdict: null to keep it as admitted, its access when re-resolved and kept, or the code that closes
-   * it. Every D1 read goes through `race`, the validation's deadline.
+   * it. Every D1 read goes through `race`, the validation's deadline. When a resolve ran, the stamp is read again after
+   * it and must be unchanged, so nothing judged on the first read lost access unseen; three changed reads throw.
    */
   async #verdicts(
     check: AccessCheck,
@@ -1287,37 +1544,48 @@ export class DocDO extends YServer<SyncEnv> {
     race: <R>(read: Promise<R>) => Promise<R>,
   ): Promise<{ stamp: Stamp; verdicts: (number | Resolved | null)[] }> {
     const unique = (ids: (string | null)[]) => [...new Set(ids.filter((id): id is string => id !== null))];
-    const stamp = await race(check.stamp(
-      this.name,
-      unique(sockets.map(({ attachment }) => (attachment.kind === 'user' ? attachment.sessionId : null))),
-      unique(sockets.map(({ attachment }) => (attachment.kind === 'agent' ? attachment.principalId : null))),
-    ));
-    const resolved = new Map<string, Promise<Resolved | 'deleted' | null>>();
-    const verdicts = await race(Promise.all(sockets.map(async ({ attachment }): Promise<number | Resolved | null> => {
-      if (attachment.kind === 'user' && attachment.sessionId !== null && !stamp.sessions.has(attachment.sessionId)) return CLOSE.sessionEnded;
-      if (attachment.kind === 'agent' && !stamp.agents.has(attachment.principalId)) return CLOSE.revoked;
-      if (stamp.key && attachment.epoch === stamp.key) return null;
-      const who = [attachment.kind, attachment.principalId, attachment.sessionId, attachment.shareToken].join('|');
-      let access = resolved.get(who);
-      if (!access) resolved.set(who, (access = check.resolve(this.name, attachment)));
-      const now = await access;
-      if (now === 'deleted') return CLOSE.deleted;
-      if (now === null || ROLES.indexOf(now.role) < ROLES.indexOf(attachment.role)) return CLOSE.revoked;
-      // Kept, with presence as a fresh admission would allow it: a socket only a link still lifts no longer sees who is here.
-      return { role: attachment.role, presence: now.presence };
-    })));
-    return { stamp, verdicts };
+    const sessions = unique(sockets.map(({ attachment }) => (attachment.kind === 'user' ? attachment.sessionId : null)));
+    const agents = unique(sockets.map(({ attachment }) => (attachment.kind === 'agent' ? attachment.principalId : null)));
+    let stamp = await race(check.stamp(this.name, sessions, agents));
+    for (let pass = 1; ; pass += 1) {
+      const current = stamp;
+      const resolved = new Map<string, Promise<Resolved | 'deleted' | null>>();
+      const verdicts = await race(Promise.all(sockets.map(async ({ attachment }): Promise<number | Resolved | null> => {
+        if (attachment.kind === 'user' && attachment.sessionId !== null && !current.sessions.has(attachment.sessionId)) return CLOSE.sessionEnded;
+        if (attachment.kind === 'agent' && !current.agents.has(attachment.principalId)) return CLOSE.revoked;
+        if (current.key && attachment.epoch === current.key) return null;
+        const who = [attachment.kind, attachment.principalId, attachment.sessionId, attachment.shareToken].join('|');
+        let access = resolved.get(who);
+        if (!access) resolved.set(who, (access = check.resolve(this.name, attachment)));
+        const now = await access;
+        if (now === 'deleted') return CLOSE.deleted;
+        if (now === null || ROLES.indexOf(now.role) < ROLES.indexOf(attachment.role)) return CLOSE.revoked;
+        // Kept, with presence as a fresh admission would allow it: a socket only a link still lifts no longer sees who is here.
+        return { role: attachment.role, presence: now.presence };
+      })));
+      if (resolved.size === 0) return { stamp, verdicts };
+      // A subject judged on the stamp may have lost access while the resolves awaited D1: a last read confirms the
+      // epoch and every live credential held, else the verdicts are taken again under the new stamp.
+      const again = await race(check.stamp(this.name, sessions, agents));
+      const held = again.key === stamp.key && [...stamp.sessions].every((id) => again.sessions.has(id)) && [...stamp.agents].every((id) => again.agents.has(id));
+      if (held) return { stamp, verdicts };
+      if (pass === 3) throw new Error('access kept changing while the sockets were validated');
+      stamp = again;
+    }
   }
 
   #liveness(): TrashedInD1 | null {
     return (this.constructor as typeof DocDO).liveness(this.env);
   }
 
-  /** `admitting`, a socket still in onConnect, is left for its own refusal. */
+  /**
+   * `admitting`, a socket still in onConnect, is left for its own refusal. A D1 read past the access deadline throws
+   * before anything changes, freeing the queue; its late answer is ignored.
+   */
   async #settle(release: string[], admitting?: Connection): Promise<{ deleted: boolean; open: boolean }> {
     const trashedInD1 = this.#liveness();
     if (!trashedInD1) throw new Error('DocDO has no D1 to settle from');
-    const deleted = await trashedInD1(this.name);
+    const deleted = await withDeadline(this.#limits.accessDeadlineMs, (race) => race(trashedInD1(this.name)));
     const store = await this.#ready();
     const holds = holdsOf(store);
     for (const hold of release) holds.delete(hold);
@@ -1425,12 +1693,16 @@ export class DocDO extends YServer<SyncEnv> {
   #persist(store: DocStore, update: Uint8Array, origin: unknown): void {
     this.#exported = null;
     if (origin === PERSISTENCE) return;
-    store.record(update, this.document);
+    store.record(update);
     this.#edited(store);
     if (isConnection(origin)) {
       this.#lastWriteAt = Date.now();
       this.#acks.schedule(origin, this.#frameDeletes);
       this.#projections?.touch();
+    } else if (origin !== LEAN_KEYS) {
+      // Server writes run with nothing parked: every client frame's leftovers were purged when it applied. A lean-key
+      // repair runs inside a client frame's apply, before that purge, so the frame's own #afterFrame compacts.
+      store.compactIfDue(this.document);
     }
   }
 
@@ -1461,6 +1733,11 @@ export class DocDO extends YServer<SyncEnv> {
     const cap = this.#limits.stateCapBytes;
     const payloads = (this.#payloads?.totalBytes ?? 0) + extra;
     return store.stateBytes + payloads + update.byteLength > cap && stateBytesAfter(this.document, update) + payloads > cap;
+  }
+
+  /** The bytes comment writes may still add to a state of `stateBytes`, counted with every stored payload as #overCap does. */
+  #commentRoom(stateBytes: number): number {
+    return Math.floor(this.#limits.stateCapBytes * COMMENT_STATE_SHARE) - stateBytes - (this.#payloads?.totalBytes ?? 0);
   }
 
   #payloadOverCap(store: DocStore, payloads: PayloadStore, id: string, doc: Y.Doc, update: Uint8Array): boolean {
@@ -1680,15 +1957,17 @@ export class DocDO extends YServer<SyncEnv> {
    * True when the write was refused and the socket closed; a refusal is never silent. `missing`: the frame needs a
    * clock the doc lacks, which Yjs would hold pending, uncounted, and integrate under a later sender's transaction.
    */
-  #refused(connection: Connection, attachment: Attachment, overCap: () => DocLimit | null, missing = false): boolean {
-    if (!roleAtLeast(attachment.role, 'suggester')) return this.#refuse(connection, 'role', CLOSE.revoked);
-    // A suggester's writes are vetted on a mirror (M5); until then they are refused, never applied unvetted.
-    if (!roleAtLeast(attachment.role, 'editor')) return this.#refuse(connection, 'suggest', CLOSE.writeRefused);
+  #refused(connection: Connection, attachment: Attachment, overCap: () => DocLimit | null, missing = false, guarded?: () => boolean): boolean {
+    // Suggesters never write the body: their changes travel as suggestion records (docs/design/suggestions.md I1).
+    // The role decides, never the frame's contents.
+    if (!roleAtLeast(attachment.role, 'editor')) return this.#refuse(connection, 'role', CLOSE.revoked);
     if (!this.#rate.allow(connection)) {
       // Transient: the client keeps its Y.Doc and its next step 2 re-delivers everything.
       connection.close(CLOSE.writeRate, 'write rate');
       return true;
     }
+    // A guard violation is refused 4409 even when it also needs a clock the doc lacks (comments.md §3).
+    if (guarded?.()) return this.#refuse(connection, 'protected-type', CLOSE.writeRefused);
     if (missing) {
       // Transient too: a reconnect's step 2 carries whatever the frame depended on.
       connection.close(CLOSE.writeRate, 'missing dependency');

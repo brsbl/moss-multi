@@ -5,9 +5,13 @@ import { createYjsBinding, syncLexicalUpdateToYjs, syncYjsChangesToLexical, type
 import { registerList } from '@lexical/list';
 import { $normalizeFormatWhitespace } from '@moss-desktop/renderer/editor/markdown/format-whitespace';
 import { refusingSpentImports } from '@moss-desktop/renderer/editor/markdown/linear-import';
-import { $addUpdateTag, $createParagraphNode, $getRoot, $isElementNode, COLLABORATION_TAG, SKIP_SCROLL_INTO_VIEW_TAG, TextNode, type LexicalEditor, type LexicalNode } from 'lexical';
+import {
+  $addUpdateTag, $createParagraphNode, $getRoot, $isDecoratorNode, $isElementNode, $isTextNode, COLLABORATION_TAG, SKIP_SCROLL_INTO_VIEW_TAG, TextNode,
+  type ElementNode, type LexicalEditor, type LexicalNode,
+} from 'lexical';
 import * as Y from 'yjs';
 import { readField } from '@moss-multi/core/doc-fields';
+import { BLOCK_CHAR } from '@moss-multi/core/tree-anchor';
 import { composeFrontmatter, importFrontmatter } from '@moss-multi/core/frontmatter';
 import { $importNoteBody, createConverterEditor, exportMarkdown } from './converter/index.ts';
 import { $recomputeExportFormulas } from './formula-export.ts';
@@ -43,7 +47,8 @@ export function attachPayloadSource(live: Y.Doc, source: PayloadSource): void {
   sources.set(live, source);
 }
 
-function sourceOf(live: Y.Doc): PayloadSource {
+/** `live`'s payloads: the attached source, or its in-memory payload docs. */
+export function payloadSourceOf(live: Y.Doc): PayloadSource {
   const attached = sources.get(live);
   if (attached) return attached;
   const host = payloadDocsFor(live);
@@ -59,7 +64,7 @@ function sourceOf(live: Y.Doc): PayloadSource {
 
 const noop = () => {};
 /** Server bindings need the provider's shape, not a network: no cursor sync, no mutation listeners (A§12). */
-const provider = {
+export const provider = {
   awareness: { getLocalState: () => null, getStates: () => new Map(), on: noop, off: noop, setLocalState: noop, setLocalStateField: noop },
   connect: noop,
   disconnect: noop,
@@ -93,9 +98,10 @@ export function serverLeanDefaults(): LeanDefaults {
   return leanDefaults;
 }
 
-interface Mirror {
+export interface Mirror {
   doc: Y.Doc;
   editor: LexicalEditor;
+  binding: Binding;
   /** Each payload the mutation wrote, as one update. */
   written: () => [string, Uint8Array][];
   dispose: () => void;
@@ -105,9 +111,9 @@ interface Mirror {
  * A headless editor bound to a fresh Y.Doc that holds `live`'s state, with the hydration committed. Payloads load on
  * first read, from the named ones only.
  */
-function mirrorOf(live: Y.Doc): Mirror {
+export function mirrorOf(live: Y.Doc): Mirror {
   const doc = new Y.Doc();
-  const source = sourceOf(live);
+  const source = payloadSourceOf(live);
   const payloads = new PayloadDocs((id) => source.read(id), (id) => source.has(id));
   const writes = new Map<string, Uint8Array[]>();
   payloads.onHold((id, held) => {
@@ -138,6 +144,7 @@ function mirrorOf(live: Y.Doc): Mirror {
   return {
     doc,
     editor,
+    binding,
     written: () => [...writes].map(([id, updates]) => [id, Y.mergeUpdates(updates)]),
     dispose: () => {
       stopRegisters();
@@ -180,7 +187,7 @@ export function serverWrite(live: Y.Doc, origin: unknown, mutate: (doc: Y.Doc) =
   const { diff, payloads } = mirrorDiff(live, mutate);
   mark('write: mirror released');
   admit(diff, payloads);
-  const source = sourceOf(live);
+  const source = payloadSourceOf(live);
   for (const [id, update] of payloads) source.write(id, update);
   let changed = false;
   const onUpdate = () => {
@@ -207,6 +214,77 @@ export function seedEmptyParagraph(live: Y.Doc): boolean {
   });
 }
 
+/** Where one imported comment's markers sat: its first and last unit (text-mode ordinals), and whether a decorator held it. */
+export interface MarkRange {
+  first: number;
+  last: number;
+  block: boolean;
+}
+
+/** What marker import recorded over the mark-transparent tree, and that tree's unit text to align it with the live doc. */
+export interface ImportedMarks {
+  ranges: Map<string, MarkRange>;
+  text: string;
+}
+
+type Commentable = LexicalNode & { getCommentIds(): string[]; setCommentIds(ids: string[]): void };
+const isCommentable = (node: LexicalNode): node is Commentable =>
+  typeof (node as Partial<Commentable>).getCommentIds === 'function' && typeof (node as Partial<Commentable>).setCommentIds === 'function';
+const isMark = (node: LexicalNode): node is ElementNode & { getIDs(): string[] } => node.getType() === 'mark' && $isElementNode(node);
+
+/**
+ * Records each comment id's units (MarkNodes and decorator ids, in the order anchor-frame counts units), then unwraps
+ * every MarkNode and clears every decorator's ids, so nothing of a comment stays in the tree (comments.md §11, §13).
+ */
+function $stripCommentMarks(): ImportedMarks {
+  const ranges = new Map<string, MarkRange>();
+  const marks: ElementNode[] = [];
+  const parts: string[] = [];
+  let at = 0;
+  const note = (ids: readonly string[], first: number, last: number, block: boolean) => {
+    for (const id of ids) {
+      const range = ranges.get(id);
+      if (range) {
+        range.last = last;
+        range.block = false;
+      } else {
+        ranges.set(id, { first, last, block });
+      }
+    }
+  };
+  const visit = (node: LexicalNode, ids: readonly string[]) => {
+    if ($isTextNode(node)) {
+      const text = node.getTextContent();
+      if (text.length) note(ids, at, at + text.length - 1, false);
+      parts.push(text);
+      at += text.length;
+      return;
+    }
+    if ($isDecoratorNode(node)) {
+      const own = isCommentable(node) ? node.getCommentIds() : [];
+      note(ids, at, at, false);
+      note(own.filter((id) => !ids.includes(id)), at, at, true);
+      if (own.length && isCommentable(node)) node.setCommentIds([]);
+      parts.push(BLOCK_CHAR);
+      at += 1;
+      return;
+    }
+    if (!$isElementNode(node)) return;
+    let inner = ids;
+    if (isMark(node)) {
+      marks.push(node);
+      inner = [...ids, ...node.getIDs().filter((id) => !ids.includes(id))];
+    }
+    for (const child of node.getChildren()) visit(child, inner);
+  };
+  visit($getRoot(), []);
+  for (const mark of marks) {
+    for (const child of mark.getChildren()) mark.insertBefore(child);
+    mark.remove();
+  }
+  return { ranges, text: parts.join('') };
+}
+
 /** What importBody throws, writing nothing, for a body whose nodes alone would pass the structure guard. */
 export const IMPORT_STRUCTS_PAST = 'import-structs-past';
 
@@ -222,19 +300,26 @@ function $nodesUnderRoot(): number {
 }
 
 /**
- * Replaces the body with `markdown` through the one converter (A§12), which imports with no selection (SP2). Throws
- * IMPORT_BUDGET_SPENT, writing nothing, for markdown that spends the converter's whole work budget, and
- * IMPORT_STRUCTS_PAST for one whose nodes would pass `structs` (every node is at least two structs, its type and its
- * `__type`, A§10.11), before the binding writes them: the mirror of a note far past the guard would not fit the heap.
+ * Replaces the body with `markdown` through the one converter (A§12), which imports with no selection (SP2). With a
+ * comments sidecar, its markers become recorded ranges (moss's `$processCommentMarkers`, then unwrapped); without
+ * one, markers are dropped. Throws IMPORT_BUDGET_SPENT, writing nothing, for markdown that spends the converter's
+ * whole work budget, and IMPORT_STRUCTS_PAST for one whose nodes would pass `structs` (every node is at least two
+ * structs, its type and its `__type`, A§10.11), before the binding writes them: the mirror of a note far past the
+ * guard would not fit the heap.
  */
-export function importBody(live: Y.Doc, markdown: string, admit?: Admit, frontmatter?: string, structs = Infinity): boolean {
-  return serverWrite(live, SERVER_IMPORT, (doc) => {
-    refusingSpentImports(() => $importNoteBody(markdown, { comments: {} }));
+export function importBody(
+  live: Y.Doc, markdown: string, admit?: Admit, frontmatter?: string, comments?: Record<string, unknown>, structs = Infinity,
+): ImportedMarks {
+  let marks: ImportedMarks = { ranges: new Map(), text: '' };
+  serverWrite(live, SERVER_IMPORT, (doc) => {
+    refusingSpentImports(() => $importNoteBody(markdown, { comments: (comments ?? {}) as never }));
+    marks = $stripCommentMarks();
     if (2 * $nodesUnderRoot() > structs) throw new Error(IMPORT_STRUCTS_PAST);
     if (frontmatter !== undefined) {
       importFrontmatter(doc, frontmatter, SERVER_IMPORT);
     }
   }, admit);
+  return marks;
 }
 
 /** An export that read a doc in place changed it; no listener or observer of the doc heard the change. */
@@ -304,7 +389,7 @@ interface View {
  * event on the root.
  */
 function viewOf(live: Y.Doc): View {
-  const source = sourceOf(live);
+  const source = payloadSourceOf(live);
   const payloads = new PayloadDocs((id) => source.read(id), (id) => source.has(id));
   const editor = createConverterEditor();
   const stopLists = registerList(editor);
@@ -343,11 +428,14 @@ function viewOf(live: Y.Doc): View {
   return { editor, dispose };
 }
 
-/** Whether the editor's committed tree holds a formula node. */
-function hasFormulas(editor: LexicalEditor): boolean {
-  for (const node of editor.getEditorState()._nodeMap.values()) if (node.__type === 'formula') return true;
+/** Whether the editor's committed tree holds a node of one of `types`. */
+function holds(editor: LexicalEditor, types: ReadonlySet<string>): boolean {
+  for (const node of editor.getEditorState()._nodeMap.values()) if (types.has(node.__type)) return true;
   return false;
 }
+
+const FORMULAS = new Set(['formula']);
+const MARKS = new Set(['mark']);
 
 /**
  * The `.md` file (A§12): the frontmatter block in its fences, then the body through the one converter. A doc no client
@@ -363,8 +451,10 @@ export function exportDocMarkdown(live: Y.Doc, noteId = live.guid): string {
 function exportFrom(view: View, live: Y.Doc, noteId: string): string {
   try {
     mark('export: hydrated');
-    // An update clones the editor state's node map; a note without formulas has nothing to recompute.
-    if (hasFormulas(view.editor)) view.editor.update(() => $recomputeExportFormulas(noteId), { discrete: true });
+    // An update clones the editor state's node map; a note without formulas or marks has nothing to change.
+    // Defense in depth: comments are never in the tree, but a mark a client wrote must not reach a file.
+    if (holds(view.editor, MARKS)) view.editor.update(() => void $stripCommentMarks(), { discrete: true });
+    if (holds(view.editor, FORMULAS)) view.editor.update(() => $recomputeExportFormulas(noteId), { discrete: true });
     const markdown = composeFrontmatter(readField(live, 'frontmatter'), exportMarkdown(view.editor));
     mark('export: exported');
     return markdown;

@@ -87,10 +87,21 @@ function serverWritten(markdown: string): Y.Doc {
   return doc;
 }
 
+type Commentable = LexicalNode & { getCommentIds(): string[]; setCommentIds(ids: string[]): void };
+function $clearDecoratorComments(node: LexicalNode): void {
+  const commentable = node as unknown as Partial<Commentable>;
+  if (commentable.getCommentIds && commentable.setCommentIds && commentable.getCommentIds().length) commentable.setCommentIds([]);
+  if ($isElementNode(node)) for (const child of node.getChildren()) $clearDecoratorComments(child);
+}
+
 /** The note as a client on `layout` writes it, importing `markdown` in its editor. */
 async function clientWritten(layout: Layout, markdown: string, options = {}) {
   const writer = peer(layout);
-  writer.editor.update(() => $importNoteBody(markdown, options), { discrete: true });
+  writer.editor.update(() => {
+    $importNoteBody(markdown, options);
+    // A decorator's comment ids stay local (EXCLUDED_FIELDS); the server's import clears them the same way.
+    $clearDecoratorComments($getRoot());
+  }, { discrete: true });
   await settle();
   return writer;
 }
