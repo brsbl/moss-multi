@@ -1,13 +1,13 @@
 # moss-multi progress
 
-**Overall: 43% done** (130 of 302 planned tasks verified)
+**Overall: 43% done** (131 of 303 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
 | M0 Foundation | Open the real moss shell from the built Worker; sign up and in; a note survives a restart | 19 / 19 | in progress |
 | M1 Two people, one note | Share a note and co-edit live with presence, cursors, shared titles | 20 / 20 | in progress |
 | M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 13 / 13 | in progress |
-| M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 78 / 75 | in progress |
+| M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 79 / 76 | in progress |
 | M4 Comments | Moss's full comment experience as CRDT data | 0 / 5 | |
 | M5 Suggestions | Suggest mode, vetting, accept/reject | 0 / 5 | |
 | M6 History | Versions, view, diff, identity-preserving restore | 0 / 4 | |
@@ -150,6 +150,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-11-27 — T9.52 verified (sections a and c): j04's hibernation leg now gives its cold peer a person of its own and checks that only the cold peer asks for the warm note after the idle, and a space typed first in a title or before a pasted word is now stored as a plain space rather than U+00A0, because the title field keeps spaces as typed.
 - 2026-11-27 — T9.54h verified: a person signed in with notes of their own who opens a share link to someone else's note now sees that note, at the link's role and with no sidebar row, instead of their own newest note, and the new link-notes journey covers view, comment and edit links, sign-in from a link, a held or failed first listing, refused links and a link revoked while open.
 - 2026-11-27 — T9.55 verified (sections e, f the capture guard, h and b): a GET lost while the stack's pooled connections idle out together is now answered on one replay instead of parked, a screenshot the browser refuses is skipped and recorded instead of replacing a test's findings, the macos job runs only the `@macos` selftests and legs and the `duplicated` selftest no longer depends on the pace of typing, and a note's updated time is now its last edit, so two notes written back to back keep their newest-first order.
+- 2026-11-27 — T9.56 verified (sections e, a, b and c): the unit tests' D1 handle keeps a batch's statements until the batch settles, so a batch in flight no longer fails inside the test proxy; the undo leg always types its x before it reads; the read-only share leg presses Enter only once the editor has taken its click; and scrolling a long note no longer restyles every block inside it.
 
 ### T9.55e — a replayed GET waits until the closing connections have closed
 
@@ -721,3 +722,6 @@ Local browser verification remains assigned to the independent checker under the
 - T3.B33 (The note server never keeps a body property of the wrong type) checker P2: keepLeanKeys walks every client in transaction.afterState per transaction before skipping unchanged ones, outside repairWork.steps, so the cost is O(historical clients + touched structs) rather than O(keys touched) and the equal-steps test cannot see it; cheap per client and bounded in practice.
 - T3.B33 (The note server never keeps a body property of the wrong type) checker P2: the BUILDPLAN line names an 'offline indent, undo, indent' undo-lean test that does not exist — the two-peer test injects NaN directly into the earlier binding's Y.Doc and then indents and outdents through setIndent, because on m3 that sequence never produced NaN; the test is real and was red first, but the BUILDPLAN line overstates it.
 - T3.B32 (A paste that cannot finish leaves nothing behind) checker P2: the cut notice first says 'nothing was pasted', then changes to the 'kept' wording — while the note is hidden and rebinding the cutting tab shows "The paste didn't fit, so nothing was pasted.", and once the rollback finds a line someone else edited it changes to "...It was removed, except for what someone else had already edited."; the body is hidden during the first text and the final text is correct, so this is a brief wording flicker, not a wrong result.
+- T9.56 (The full test run fails only on a real regression, part 5) checker P2: the report's count of full-lane jobs is wrong; run 46038671083 has 64 jobs, 63 succeeded and the macOS job skipped, not 50 of 50 (the run is still green).
+- T9.56 (The full test run fails only on a real regression, part 5) checker P2: section c's stills do not prove every nested scroller's thumb is hidden; the code-block and chart captures show no overflow, the HTML source is a clipped strip and WebKit draws no thumbs, so only the tab bar and canvas edge show the change; code and chart header controls differ slightly in hover-fade opacity, not attributed to the rule.
+- T9.56 (The full test run fails only on a real regression, part 5) checker P2: in 9 of 20 WebKit undo-probe readbacks the text read back after the loss is 'Intro https://line.types/ on' instead of 'Intro line. types on'; an autolink seems to fire while the space is briefly missing → separate follow-up, not investigated.
