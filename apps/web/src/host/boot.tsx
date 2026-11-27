@@ -59,6 +59,13 @@ async function openLinkedNote(bridge: Bridge): Promise<void> {
   store.set(activeNoteIdAtom, docId);
 }
 
+/** Starts the guard that keeps a note opened outside the listing off moss's list (unlisted-notes.ts, T9.56). */
+async function keepUnlistedNotesOffTheList(bridge: Bridge): Promise<void> {
+  // Loaded after the bridge is installed, as moss's own modules must be (A§4.3).
+  const [{ getDefaultStore }, { keepUnlistedNotesOffTheList: keep }] = await Promise.all([import('jotai'), import('./unlisted-notes.ts')]);
+  keep(getDefaultStore(), bridge[WORKSPACE].outsideListing);
+}
+
 export async function bootMoss(): Promise<{ default: ComponentType }> {
   const bridge = installBridge(
     auth,
@@ -75,6 +82,8 @@ export async function bootMoss(): Promise<{ default: ComponentType }> {
   const linked = openLinkedNote(bridge).catch(() => undefined);
   const analytics = await import('@moss-desktop/renderer/error-analytics');
   analytics.installRendererErrorAnalytics();
+  // A note the tab opened outside the listing never enters moss's list, whichever path opens it (T9.56).
+  const unlisted = keepUnlistedNotesOffTheList(bridge).catch(() => undefined);
   if (window.location.pathname === '/pdf-export' || new URLSearchParams(window.location.search).get('mossMode') === 'pdf-export') {
     const { default: PdfExportApp } = await import('@moss-desktop/renderer/PdfExportApp');
     function PdfExportPage() {
@@ -116,5 +125,6 @@ export async function bootMoss(): Promise<{ default: ComponentType }> {
     );
   }
   await linked;
+  await unlisted;
   return { default: MossShell };
 }

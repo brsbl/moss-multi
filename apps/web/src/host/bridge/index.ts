@@ -495,6 +495,8 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
   };
   /** Notes outside the listing that byId opened by their URL through askDocAccess (B238). */
   const admitted = new Set<string>();
+  /** Every note this tab learned from its address and not from a listing; it has no sidebar row unless a listing carries it (T9.56). */
+  const offList = new Set<string>();
   const readBacklinks = async (id: string) => {
     const path = `/api/docs/${encodeURIComponent(id)}/backlinks`;
     const cancel = new AbortController();
@@ -674,6 +676,7 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
       if (answer.kind === 'open' && !known.has(id)) {
         known.set(id, toNoteMetadata(answer.doc));
         admitted.add(id);
+        offList.add(id);
       }
     }
     const note = known.get(id);
@@ -799,7 +802,13 @@ export function createBridge({ pathname, share = () => null, fetch: fetcher = fe
         if (known.has(doc.id)) return;
         known.set(doc.id, toNoteMetadata(doc));
         admitted.add(doc.id);
+        offList.add(doc.id);
       },
+      /**
+       * A note this tab opened by its address that the listing read last does not carry (a share link's note, T9.54).
+       * Moss draws a sidebar row for every note in its list, and its own open-note path adds each note it opens (T9.56).
+       */
+      outsideListing: (id: string) => offList.has(id) && !workspaceSnapshot?.docs.some((doc) => doc.id === id),
       subscribe: (listener: () => void) => {
         workspaceListeners.add(listener);
         return () => { workspaceListeners.delete(listener); };
