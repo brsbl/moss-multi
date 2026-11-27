@@ -1,13 +1,13 @@
 # moss-multi progress
 
-**Overall: 42% done** (127 of 302 planned tasks verified)
+**Overall: 43% done** (130 of 302 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
 | M0 Foundation | Open the real moss shell from the built Worker; sign up and in; a note survives a restart | 19 / 19 | in progress |
 | M1 Two people, one note | Share a note and co-edit live with presence, cursors, shared titles | 20 / 20 | in progress |
 | M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 13 / 13 | in progress |
-| M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 75 / 75 | in progress |
+| M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 78 / 75 | in progress |
 | M4 Comments | Moss's full comment experience as CRDT data | 0 / 5 | |
 | M5 Suggestions | Suggest mode, vetting, accept/reject | 0 / 5 | |
 | M6 History | Versions, view, diff, identity-preserving restore | 0 / 4 | |
@@ -147,6 +147,9 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-11-16 — T3.B31c verified: a note now holds up to 1.02 million characters, as in Google Docs, and a structure ceiling of 165,000 structs, checked alike on live edits, pastes, creates, duplicates and imports, with deletions and format changes given headroom and refusals that name the limit.
 - 2026-11-17 — T3.B33 verified: the note server now puts a body property of the wrong type or a non-finite number, such as a NaN indent, back to its default on every peer, counts that repair against the note's limits, and never overwrites a concurrent valid write with it.
 - 2026-11-17 — T3.B32 verified: a large paste that a size limit cuts short is now rolled back, so the part that landed is deleted in whole blocks before the note shows, every peer converges on it, a reload mid-rollback resumes it, and a block another writer edited is kept whole and the notice says so.
+- 2026-11-27 — T9.52 verified (sections a and c): j04's hibernation leg now gives its cold peer a person of its own and checks that only the cold peer asks for the warm note after the idle, and a space typed first in a title or before a pasted word is now stored as a plain space rather than U+00A0, because the title field keeps spaces as typed.
+- 2026-11-27 — T9.54h verified: a person signed in with notes of their own who opens a share link to someone else's note now sees that note, at the link's role and with no sidebar row, instead of their own newest note, and the new link-notes journey covers view, comment and edit links, sign-in from a link, a held or failed first listing, refused links and a link revoked while open.
+- 2026-11-27 — T9.55 verified (sections e, f the capture guard, h and b): a GET lost while the stack's pooled connections idle out together is now answered on one replay instead of parked, a screenshot the browser refuses is skipped and recorded instead of replacing a test's findings, the macos job runs only the `@macos` selftests and legs and the `duplicated` selftest no longer depends on the pace of typing, and a note's updated time is now its last edit, so two notes written back to back keep their newest-first order.
 
 ### T9.55e — a replayed GET waits until the closing connections have closed
 
