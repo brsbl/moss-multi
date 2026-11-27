@@ -22,8 +22,10 @@ const TYPED = 'abcdefghijklmnopqrst';
  * Calibrated on CI runners (T3.B13). Sync time per keystroke with the unpatched binding: 31 ms in Chromium and 92 ms in
  * WebKit (run 38321927817); patched, 6 ms and 11-12 ms (run 38323194734).
  * Input-to-paint: 176-232 ms before the patch and 120-184 ms after (runs 38301848192, 38301850762, 38311128561,
- * 38314448516, 38319353253, 38323194734); long tasks 142-251 ms per key before and 94-185 after, the longest up to 715 ms.
- * The sync budget is per engine.
+ * 38314448516, 38319353253, 38323194734); long tasks 142-251 ms per key before and 94-185 after.
+ * The longest task is the largest main-thread task of 50 ms or more from the first key to 1 s after the last. Until
+ * T9.56c it was not a keystroke but one restyle of the whole note when the canvas's scrolling flag flipped (up to
+ * 1,060 ms); since then it is one keystroke. The sync budget is per engine.
  */
 const SYNC_MS = { chromium: 12, webkit: 36 };
 const INPUT_TO_PAINT_MS = 240;
