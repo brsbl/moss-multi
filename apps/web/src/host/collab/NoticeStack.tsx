@@ -5,7 +5,7 @@
 import { BOTTOM_REGION_ATTR, NOTICE_BAND_ATTR } from '@moss-multi/protocol/dom-contract';
 import { useState, type ReactNode } from 'react';
 import { RestoreNoticeBand } from '../history/HistoryView.tsx';
-import { arrangeNotices, classifyConnectionNotice, NOTICE_ACTION, standAboveTrashNotice } from '../notice-stack.ts';
+import { arrangeNotices, NOTICE_ACTION, standAboveTrashNotice } from '../notice-stack.ts';
 import { RefusalAnnouncer, useRefusalMessage } from '../surfaces/RefusalAnnouncer.tsx';
 import { BOTTOM_REGION } from './bottom-row.ts';
 import { NoticeCard, PendingCue, useNotice } from './ConnectionNotice.tsx';
@@ -34,10 +34,13 @@ export function NoticeStack({ docId, trashNotice = false }: { docId: string; tra
   const [opened, setOpened] = useState<{ docId: string; recover: boolean; restore: boolean }>({ docId, recover: false, restore: false });
   const open = opened.docId === docId ? opened : { docId, recover: false, restore: false };
   const toggle = (which: 'recover' | 'restore') => setOpened({ ...open, [which]: !open[which] });
+  const outdated = notice?.terminal === 'outdated';
   const arranged = arrangeNotices({
-    ...classifyConnectionNotice(notice),
+    terminal: notice !== null && notice.terminal !== null && !outdated,
     unsaved: payloads.length > 0 || noRoom !== null,
+    outage: notice !== null && notice.terminal === null,
     restore: restore !== null,
+    update: outdated,
     trashNotice,
   });
   // Recovery is offered only for text this window really holds.

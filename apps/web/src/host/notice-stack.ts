@@ -23,10 +23,7 @@ export const NOTICE_DISMISS = 'text-ink-faint transition-colors hover:text-ink-m
 // reachable from it. Precedence decides only what is shown; every payload stays in its own store until dismissed.
 export type NoticeKind = 'terminal' | 'unsaved' | 'outage' | 'restore' | 'update';
 export interface NoticeInputs {
-  /**
-   * The note stays closed here until the person acts: deleted, access ended, the session ended, unavailable or at its
-   * limit, or a Suggest window refused its lease (until Retry).
-   */
+  /** The note is closed for good here: deleted, access ended, the session ended, unavailable or at its limit. */
   terminal: boolean;
   /** Text a closed suggestion could not keep, or the note's no-room notice. */
   unsaved: boolean;
@@ -53,23 +50,4 @@ export function arrangeNotices(input: NoticeInputs): NoticeArrangement {
   const shown = { ...input, terminal: input.terminal && !input.trashNotice };
   const lead = ORDER.find((kind) => shown[kind]) ?? null;
   return { lead, recover: lead === 'terminal' && input.unsaved, restoreDetails: input.restore && lead !== null && lead !== 'restore' };
-}
-
-/** The connection's notice as the stack reads it (ConnectionNotice.tsx's useNotice). */
-export interface ConnectionNoticeClassInput { kind: string; terminal: string | null }
-
-/**
- * Where the connection's notice ranks (T9.56). A Suggest window refused its lease is read-only until the person asks
- * again, as at the connection limit, so its notice and Retry lead and text held meanwhile is one press away on it;
- * ranked as an outage it was hidden under the unsaved-text card. An outdated bundle is the update notice.
- */
-export function classifyConnectionNotice(notice: ConnectionNoticeClassInput | null): Pick<NoticeInputs, 'terminal' | 'outage' | 'update'> {
-  if (notice === null) return { terminal: false, outage: false, update: false };
-  const busy = notice.kind === 'suggest-busy';
-  const outdated = notice.terminal === 'outdated';
-  return {
-    terminal: busy || (notice.terminal !== null && !outdated),
-    outage: notice.terminal === null && !busy,
-    update: outdated,
-  };
 }

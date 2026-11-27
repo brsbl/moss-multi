@@ -1,10 +1,9 @@
 // j16-suggest-drop, more than one window of the person: a second Suggest window open before the cut, opened after an
 // idle or a typed cut while a suggestion is in flight, and a third idle Suggest window. Nothing honest is refused, and
-// the window the person's others leave no room for shows the note read-only and says why, also while it holds text a
-// closed suggestion could not keep (T9.56). The probe is e2e/lib/suggest-drop.ts.
-// journey-legs: 12 (the shard budget counts them; scripts/ci/journeys.mjs)
-import { BODY_BINDING_ATTR, CONNECTION_BANNER_ATTR, SUGGEST_UNSAVED_ATTR } from '../lib/contract.ts';
-import { BIND_TIMEOUT } from '../lib/suggest.ts';
+// the window the person's others leave no room for shows the note read-only and says why. The probe is
+// e2e/lib/suggest-drop.ts.
+// journey-legs: 11 (the shard budget counts them; scripts/ci/journeys.mjs)
+import { CONNECTION_BANNER_ATTR } from '../lib/contract.ts';
 import { begin, caretEnd, draftLines, pause, ROLES, START, typeAcrossCut, until } from '../lib/suggest-drop.ts';
 import { expect, test, ui } from '../lib/test.ts';
 
@@ -144,79 +143,5 @@ test('j16-suggest-drop three-tabs suggester: three idle Suggest windows of one p
     expect.soft(live.ok, 'the third window suggests once another is closed').toBe(true);
     expect.soft(live.value.banners.filter((banner) => banner.startsWith('suggest-busy:')), 'the notice is gone').toEqual([]);
     expect.soft(probe.refusals().length, 'still at most one refusal').toBeLessThanOrEqual(1);
-  });
-});
-
-test('j16-suggest-drop busy-with-card suggester: a Suggest window that holds offered-back text and is refused its first lease says why, offers Retry, and still offers the text back', async ({ actors }, testInfo) => {
-  test.setTimeout(240_000);
-  // A drop the server saw: his leases expire, so his other windows can take every one while he is down.
-  const probe = await begin(actors, testInfo, 'busy-with-card', 'suggester', 'seen');
-  await probe.run(async () => {
-    const { ada, ben, docId } = probe;
-    await probe.enterSuggest(ben);
-    await caretEnd(ben, docId, START.one);
-    await probe.type(ben, 'Aa1', 'one', { counted: false });
-    await probe.settle(ben, 'Aa1');
-    probe.cut();
-    await probe.type(ben, 'Dd4', 'one', { counted: false });
-    await pause(300);
-    // The owner rejects the suggestion he is typing into; two more of his windows open the note for suggesting.
-    const origin = new URL(ada.page.url()).origin;
-    const listed = (await (await ada.context.request.get(`/api/docs/${docId}/suggestions`)).json()) as { suggestions: { id: string }[] };
-    expect(listed.suggestions.length, 'his suggestion is open').toBe(1);
-    expect((await ada.context.request.post(`/api/docs/${docId}/suggestions/${listed.suggestions[0].id}/reject`, { headers: { origin }, data: {} })).status(), 'the owner rejects it').toBe(200);
-    const ben2 = await probe.second('ben-2');
-    await probe.enterSuggest(ben2);
-    const ben3 = await probe.second('ben-3');
-    await probe.enterSuggest(ben3);
-    probe.up();
-
-    // Back online: the closed suggestion's text is kept, and the rebuilt window is refused its first lease.
-    const busy = ui.pane(ben, docId).locator(`[${CONNECTION_BANNER_ATTR}="suggest-busy"]`);
-    const retry = busy.getByRole('button', { name: 'Retry', exact: true });
-    const recover = busy.getByRole('button', { name: 'Recover unsaved text (1)', exact: true });
-    const card = ben.page.locator(`[${SUGGEST_UNSAVED_ATTR}]`).first();
-    const show = card.getByRole('button', { name: 'Show text', exact: true });
-    await expect(busy, 'the refused window says why the note is read-only, with the kept text undismissed').toContainText(BUSY, { timeout: 30_000 });
-    await expect(retry, 'and offers Retry').toBeVisible();
-    await expect(ui.body(ben, docId), 'the note is read-only').toHaveAttribute(BODY_BINDING_ATTR, 'readonly');
-    expect(probe.refusals(), 'one refusal: the first lease').toEqual(['lease-cap (ben)']);
-
-    // The kept text is one press away, whole.
-    await recover.click();
-    await expect(recover, 'Recover shows the kept text').toHaveAttribute('aria-expanded', 'true');
-    await show.click();
-    await expect(card.locator('pre'), 'the text is offered back whole').toHaveText(`${START.one} Aa1 Dd4`);
-    probe.dismissDialogs = true;
-    const asked = probe.dialogs.length;
-    await ben.page.reload({ timeout: 5_000 }).catch(() => undefined);
-    await pause(500);
-    expect(probe.dialogs.length - asked, 'a reload asks first while the text is kept').toBe(1);
-
-    // Retry with both other windows still open is refused again: the notice and Retry come back, and the text is
-    // still one press away, whole.
-    await recover.click();
-    await expect(recover, 'Recover put away').toHaveAttribute('aria-expanded', 'false');
-    await retry.click();
-    await expect.poll(() => probe.refusals(), { message: 'Retry with both other windows open is refused again', timeout: 30_000 }).toEqual(['lease-cap (ben)', 'lease-cap (ben)']);
-    await expect(busy, 'the notice comes back').toContainText(BUSY, { timeout: 30_000 });
-    await expect(retry, 'with Retry').toBeVisible();
-    await expect(ui.body(ben, docId), 'the note is still read-only').toHaveAttribute(BODY_BINDING_ATTR, 'readonly');
-    await recover.click();
-    await expect(recover, 'Recover shows the kept text again').toHaveAttribute('aria-expanded', 'true');
-    await show.click();
-    await expect(card.locator('pre'), 'the text is still offered back whole after the refused Retry').toHaveText(`${START.one} Aa1 Dd4`);
-
-    // With another window closed, Retry suggests here, and the text is still offered.
-    await ben2.page.close();
-    await retry.click();
-    await expect(ui.body(ben, docId), 'Retry suggests here once another window is closed').toHaveAttribute(BODY_BINDING_ATTR, 'live', { timeout: BIND_TIMEOUT });
-    await expect(busy, 'the notice is gone').toHaveCount(0);
-    await expect(card, 'the kept text leads again').toBeVisible();
-    await expect(show, 'the card is a new one, with its text put away').toBeVisible();
-    await show.click();
-    await expect(card.locator('pre'), 'and is still whole after the Retry').toHaveText(`${START.one} Aa1 Dd4`);
-    expect(probe.refusals().length, 'two refusals in all').toBe(2);
-    expect(probe.cooled(), 'no 4429').toBe(false);
   });
 });
