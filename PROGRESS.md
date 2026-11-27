@@ -1,15 +1,15 @@
 # moss-multi progress
 
-**Overall: 58% done** (177 of 304 planned tasks verified)
+**Overall: 60% done** (184 of 306 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
 | M0 Foundation | Open the real moss shell from the built Worker; sign up and in; a note survives a restart | 19 / 19 | in progress |
 | M1 Two people, one note | Share a note and co-edit live with presence, cursors, shared titles | 20 / 20 | in progress |
 | M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 13 / 13 | in progress |
-| M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 75 / 75 | in progress |
-| M4 Comments | Moss's full comment experience as CRDT data | 19 / 20 | in progress |
-| M5 Suggestions | Suggest mode, vetting, accept/reject | 31 / 31 | in progress |
+| M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 78 / 75 | in progress |
+| M4 Comments | Moss's full comment experience as CRDT data | 21 / 21 | in progress |
+| M5 Suggestions | Suggest mode, vetting, accept/reject | 33 / 32 | in progress |
 | M6 History | Versions, view, diff, identity-preserving restore | 0 / 4 | |
 | M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 0 / 5 | |
 | M8 Ship | Everything on a permanent staging URL with demo content | 0 / 5 | |
@@ -211,6 +211,9 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-11-27 — T9.55 verified (sections e, f the capture guard, h and b): a GET lost while the stack's pooled connections idle out together is now answered on one replay instead of parked, a screenshot the browser refuses is skipped and recorded instead of replacing a test's findings, the macos job runs only the `@macos` selftests and legs and the `duplicated` selftest no longer depends on the pace of typing, and a note's updated time is now its last edit, so two notes written back to back keep their newest-first order.
 - 2026-11-27 — T9.52b verified: the j15 comment shortcut leg now selects its code block from the keyboard, with the caret at the end of the paragraph above, ArrowDown and the selection outline before the shortcut, because a click beside a block does not keep it selected, as in Moss.
 - 2026-11-27 — T4.X verified: comments now run on m3 with its reviewed fixes of 2026-11-27 (the cold peer of its own and plain spaces in titles, a share link that opens the shared note for someone with notes of their own, the one-replay GET, the screenshot capture guard, the macos job and the last-edit updated time), together with this layer's comment shortcut leg, with a full run green on the merged commit.
+- 2026-11-27 — T5.S16 verified: a person with one note open in two Suggest windows no longer loses text typed offline in one of them when the other reconnects first, a reconnect, a second window or a stalled connection's late frames no longer lock them out, a cooldown says suggesting is paused, keeps the text and reconnects by itself to deliver it, and offered-back text makes a reload, a sign-out or an in-app leave ask first.
+- 2026-11-27 — T9.55 verified (section d): a click on a suggestion's wedge now opens its card even when the note repaints during the click, because each standing mark keeps its element across repaints, and the preview under a resting pointer stays shown with the current text while the suggester types.
+- 2026-11-27 — T5.X verified: suggestions now run on m4 with its reviewed fixes of 2026-11-27 (the cold peer of its own and plain spaces in titles, a share link that opens the shared note for someone with notes of their own, the one-replay GET, the screenshot capture guard, the macos job, the last-edit updated time and the comment shortcut leg), together with this layer's suggester words that survive a dropped connection and wedge click that survives a repaint, with a full run green on the merged commit.
 
 ### T9.55e — a replayed GET waits until the closing connections have closed
 
@@ -345,6 +348,14 @@ On the way up:
 ## Follow-ups (P2)
 
 Parked from the M0 checker and critic passes, each with the task that owns it.
+
+### From T5.S16's checker (d612cb5, 2026-11-27)
+
+- T5.S16 (A suggester's words survive a dropped connection and the cooldown that can follow) checker P2: in `e2e/lib/suggest-drop.ts`, `secondAsks` returns null both when the second window fails to open and when its wait times out, and tab-after-idle treats null as success, while `ownerReview` swallows a failed switch to Review so `checkpoint` skips the owner assertion; a leg can therefore run less of its scenario than it claims, though its export, token, person-window, refusal and close checks can still fail and no wrong product behaviour was found. On m5 this is P2; addendum 3's rule that the journeys must fail when they cannot enter Review applies to the m9 form.
+
+### From T9.55 (section d)'s checker (31cd945, 2026-11-27)
+
+- T9.55 (The full test run fails only on a real regression, part 4) checker P2: in the opened Suggestions card after a wedge click, the Reject button shows a heavy double rounded focus ring, most visible in dark mode (medium confidence; whether it was there before is not known, because the earlier images show only the hover preview). `SuggestionsPanel.tsx` and the card styles are outside this change, which touched `paint.ts`, its test and the j16-marks and j16-review specs, so the change did not introduce it.
 
 ### From M5's Slop Cop review (PR #7 @ f2d5520, 2026-10-06)
 
