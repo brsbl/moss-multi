@@ -509,8 +509,17 @@ test('j08 link notes: when the listing read that Back starts is refused, the lin
   expect(await onlyTheLinkedNote(ben, docId, 'the edit link'), 'the edit link: the linked note opened, and only it').toBe(true);
   await ui.waitOpen(ben, docId, 'live');
 
+  // The visit reads the listing for his note; moss re-reads its list from the bridge 150 ms after it hears of that
+  // read (NOTE_LIST_SYNC_DEBOUNCE_MS), and a re-read still pending at Back would wait on the read Back starts and fail
+  // with it. A page timer of twice that, started once the visit's read has answered, fires after moss's.
+  const visited = ben.page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return url.pathname === '/api/workspace' && url.searchParams.get('doc') === older;
+  });
   await ben.page.locator(`[${SIDEBAR_ROW_ATTR}][${NAMES.docId}="${older}"]`).click();
+  await visited;
   await ui.waitLive(ben, older);
+  await ben.page.evaluate(() => new Promise<void>((done) => { setTimeout(done, 300); }));
   await expect(ben.page, 'the address names his older note').toHaveURL((at) => at.pathname === `/d/${older}`);
   softly(await everListed(ben), 'before Back: the linked note had no sidebar row').not.toContain(docId);
   await ben.page.evaluate(() => { (window as unknown as { __t954: { listed: string[] } }).__t954.listed.length = 0; });
