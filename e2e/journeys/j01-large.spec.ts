@@ -171,3 +171,44 @@ test('j01-large: each keystroke in the middle of a 32,000-line note syncs only i
   expect(big.busyPerKey, `the large note's long-task time per keystroke (${JSON.stringify(measured)})`).toBeLessThanOrEqual(BUSY_PER_KEY_MS);
   expect(big.longest, `the large note's longest task while typing (${JSON.stringify(measured)})`).toBeLessThanOrEqual(LONGEST_TASK_MS);
 });
+
+// The canvas shows its scrollbar thumb only while it scrolls (moss's `.canvas-scroll[data-scrolling]`, styles.css).
+// scrollbar-color is inherited: unless the canvas's children hold a value of their own, each start and each rest of a
+// scroll restyles every block of the note, which froze a 32,000-line note for 0.4 to 1.1 s each time.
+test('j01-large: the canvas scrolling shows its own scrollbar and restyles nothing inside the note @p:tech-8', async ({ actors, stack }) => {
+  actors.solo('one reader scrolls a note; the leg reads computed styles');
+  const ada = await actors.session(await actors.principal('ada'));
+  const note = await create(ada, stack.baseUrl, 'Scrolls', lines(CONTROL_LINES));
+  await ada.goto(`/d/${note}`);
+  await ui.waitBodyLive(ada, note, 120_000);
+  const body = ui.body(ada, note);
+  const read = () => body.evaluate((root) => {
+    const canvas = root.closest('.canvas-scroll')!;
+    return { scrolling: canvas.getAttribute('data-scrolling'), canvas: getComputedStyle(canvas).scrollbarColor, paragraph: getComputedStyle(root.children[10]).scrollbarColor };
+  });
+  await expect.poll(async () => (await read()).scrolling, { message: 'the canvas is at rest' }).toBe('false');
+  const rest = await read();
+  const point = await body.evaluate((root) => { const box = root.closest('.canvas-scroll')!.getBoundingClientRect(); return { x: box.left + box.width / 2, y: box.top + box.height / 2 }; });
+  await ada.page.mouse.move(point.x, point.y);
+  // The observer is in place before the wheel, and records at once if the canvas already scrolls.
+  await body.evaluate((root) => {
+    const canvas = root.closest('.canvas-scroll')!;
+    const seen = { canvas: '', paragraph: '' };
+    (window as unknown as { __scrollFlip: typeof seen }).__scrollFlip = seen;
+    const record = () => {
+      if (seen.canvas || canvas.getAttribute('data-scrolling') !== 'true') return;
+      seen.canvas = getComputedStyle(canvas).scrollbarColor;
+      seen.paragraph = getComputedStyle(root.children[10]).scrollbarColor;
+    };
+    new MutationObserver(record).observe(canvas, { attributes: true, attributeFilter: ['data-scrolling'] });
+    record();
+  });
+  await ada.page.mouse.wheel(0, 300);
+  const flip = () => ada.page.evaluate(() => (window as unknown as { __scrollFlip: { canvas: string; paragraph: string } }).__scrollFlip);
+  await expect.poll(async () => (await flip()).canvas, { message: 'the canvas reports that it scrolls' }).not.toBe('');
+  const during = await flip();
+  expect(during.canvas, 'the canvas shows its scrollbar thumb while it scrolls').not.toBe(rest.canvas);
+  expect(during.paragraph, `a paragraph's style does not change when the canvas scrolls (at rest ${rest.paragraph})`).toBe(rest.paragraph);
+  await expect.poll(async () => (await read()).scrolling, { message: 'the canvas comes to rest' }).toBe('false');
+  expect((await read()).paragraph, 'nor when it comes to rest').toBe(rest.paragraph);
+});
