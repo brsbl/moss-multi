@@ -566,6 +566,11 @@ test("j06-folders: the browser's Back and Forward move between the notes she ope
   const c = await api.note('Faro', trips);
   await ada.page.reload();
   await ada.page.locator(`html[${APP_STATE_ATTR}="ready"]`).waitFor({ state: 'attached', timeout: BOOT_TIMEOUT });
+  // After the reload the window opens one note by itself: the one it remembered before the reload, else the newest
+  // (T9.48a). Which one depends on how fast the creates were, so the extra open is given to the note it shows.
+  await expect.poll(() => ui.paneIds(ada), { message: 'the reloaded window shows one note by itself', timeout: BIND_TIMEOUT }).toHaveLength(1);
+  const [startup] = await ui.paneIds(ada);
+  await ui.waitLive(ada, startup);
   await expandFolder(ada, 'Trips');
   const entries = () => ada.page.evaluate(() => window.history.length);
   const at = (docId: string) => new RegExp(`/d/${docId}$`);
@@ -589,11 +594,12 @@ test("j06-folders: the browser's Back and Forward move between the notes she ope
   const marked = () => ada.page.evaluate(() => Boolean((window as unknown as { __t919?: boolean }).__t919)
     && Boolean((document.querySelector('[data-moss-app-shell]') as (Element & { __t919?: boolean }) | null)?.__t919));
   await mark();
-  // Back reaches A and B again, Forward B and C: each binds once more in this document. C, the newest note, may also
-  // have opened as the startup note after the reload.
+  // Back reaches A and B again, Forward B and C: each binds once more in this document. The note the window opened by
+  // itself after the reload binds once more too.
   ada.expectReconnects(1, a);
   ada.expectReconnects(2, b);
-  ada.expectReconnects(2, c);
+  ada.expectReconnects(1, c);
+  ada.expectReconnects(1, startup);
   const shows = async (docId: string, when: string) => {
     await expect(ada.page, `${when}: the address names the note`).toHaveURL(at(docId));
     await ui.waitLive(ada, docId);
@@ -657,14 +663,18 @@ test('j06-folders: Back through two notes trashed since she left them shows each
   const c = await api.note('Faro', trips);
   await ada.page.reload();
   await ada.page.locator(`html[${APP_STATE_ATTR}="ready"]`).waitFor({ state: 'attached', timeout: BOOT_TIMEOUT });
+  // After the reload the window opens one note by itself: the one it remembered before the reload, else the newest
+  // (T9.48a). Which one depends on how fast the creates were, so the extra open is given to the note it shows.
+  await expect.poll(() => ui.paneIds(ada), { message: 'the reloaded window shows one note by itself', timeout: BIND_TIMEOUT }).toHaveLength(1);
+  const [startup] = await ui.paneIds(ada);
+  await ui.waitLive(ada, startup);
+  ada.expectReconnects(1, startup);
   await expandFolder(ada, 'Trips');
   const at = (docId: string) => new RegExp(`/d/${docId}$`);
   for (const docId of [a, b, c]) {
     await ui.openNote(ada, docId);
     await expect(ada.page).toHaveURL(at(docId));
   }
-  // C may also have opened as the startup note after the reload.
-  ada.expectReconnects(1, c);
 
   // Her other window trashes A and B (declared setup: that window's API calls); this tab hears it live.
   const { origin } = api;
