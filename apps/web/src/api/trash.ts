@@ -11,13 +11,14 @@ import { and, eq, isNull, sql } from 'drizzle-orm';
 import { getServerByName } from 'partyserver';
 import { availableFilename } from '@moss-multi/core/filenames';
 import { can, GRANT_ROLES, roleAtLeast } from '@moss-multi/protocol/roles';
+import { LIVE_NOTE_CAP } from '@moss-multi/protocol/limits';
 import { TRASHED_ACTION } from '@moss-multi/protocol/retention';
 import { collectRecipients, publishRecipients, type FanoutEnv } from '@moss-multi/sync/fanout';
 import { shareTokenOf, type Principal } from '../auth/principal.ts';
 import { createDb, type Db } from '../db/client.ts';
 import { docs, folders } from '../db/schema.ts';
 import { json } from '../worker/route.ts';
-import { folderChain, managesDoc, reapDeadInvites, resolveDocAccess, resolveFolderAccess, type DocAccess } from './access.ts';
+import { folderChain, liveNotesBy, managesDoc, reapDeadInvites, resolveDocAccess, resolveFolderAccess, type DocAccess } from './access.ts';
 import { liveIn, upFrom, type FoldersEnv } from './folders.ts';
 import { changed, NO_STORE, notFound, refuse, signedIn, unauthenticated } from './respond.ts';
 
@@ -73,8 +74,8 @@ export async function trashDoc(request: Request, env: FoldersEnv, docId: string)
       await stub.trash(batch);
     } catch (error) {
       console.error('DocDO trash failed', error);
+      // A doc that settles open tells the editors its hold closed itself (A§8).
       await settleQuietly(stub, batch);
-      await notify(env, docId);
       return unavailable('The note couldn’t be moved to Trash right now. Try again.');
     }
     let stamped: D1Result;
@@ -84,22 +85,20 @@ export async function trashDoc(request: Request, env: FoldersEnv, docId: string)
       [stamped] = await env.DB.batch([
         env.DB.prepare(`UPDATE "docs" SET deleted_at = ?1, trash_batch_id = ?2
           WHERE id = ?3 AND deleted_at IS NULL AND ${managesDoc(3, 4)}`).bind(now, batch, docId, principal.id),
-        reapDeadInvites(env.DB, now),
+        reapDeadInvites(env.DB, now, { docId }),
       ]);
     } catch (error) {
       console.error('trash write failed', error);
+      // The hold closed every editor 4410; if the note is still live, its DocDO tells them to re-ask and reopen.
       await settleQuietly(stub, batch);
-      // The hold closed every editor 4410; if the note is still live, the change tells them to re-ask and reopen.
-      await notify(env, docId);
       return unavailable('The note couldn’t be moved to Trash right now. Try again.');
     }
     if (!changed(stamped)) {
       const [row] = await db.select({ deletedAt: docs.deletedAt }).from(docs).where(eq(docs.id, docId));
       if (row && row.deletedAt === null) {
         // Still live, so manage went away before the write: reopen the note and answer as the caller now stands.
-        // The hold closed every editor 4410, so the change tells each of them to re-ask REST and reopen.
+        // The hold closed every editor 4410; the settle's DocDO tells each of them to re-ask REST and reopen.
         await settleQuietly(stub, batch);
-        await notify(env, docId);
         return (await resolveDocAccess(db, principal, docId, shareTokenOf(request))) ? ownerTrashes() : notFound();
       }
     }
@@ -133,17 +132,31 @@ const cannotReturn = () => refuse(403, 'forbidden',
 const EDIT_ROLES = GRANT_ROLES.filter((role) => roleAtLeast(role, 'editor')).map((role) => `'${role}'`).join(', ');
 
 /**
- * The restore write (?1 destination, ?2 filename, ?3 doc, ?4 user, ?5 vault). It lands only while the caller still
- * manages the note, the destination is still live in its vault, and a relocation still goes to a folder the caller
- * can edit, so a folder trash or a revocation that commits first wins.
+ * The restore write (?1 destination, ?2 filename, ?3 doc, ?4 user, ?5 vault, ?6 the note's creator's acting user, ?7-?9
+ * the folder, batch and trash time it read). It lands only on the trash it read, while the caller still manages the
+ * note, the destination is still live in its vault, a relocation still goes to a folder the caller can edit, and the
+ * creator is under LIVE_NOTE_CAP, so a folder trash, a revocation, a create or another restore and re-trash that
+ * commits first wins. The note counts against whoever made it, as a create does.
  */
 const RESTORE = `UPDATE "docs" SET deleted_at = NULL, trash_batch_id = NULL, folder_id = ?1, filename = ?2
-  WHERE id = ?3 AND deleted_at IS NOT NULL AND ${managesDoc(3, 4)}
+  WHERE id = ?3 AND deleted_at IS NOT NULL AND folder_id = ?7 AND trash_batch_id IS ?8 AND deleted_at = ?9
+    AND ${managesDoc(3, 4)} AND ${liveNotesBy(6)} < ${LIVE_NOTE_CAP}
     AND EXISTS (WITH RECURSIVE ${upFrom(1)} SELECT 1 WHERE ${liveIn(5)}
       AND ("docs".folder_id = ?1 OR EXISTS (SELECT 1 FROM folders f WHERE f.id = ?1 AND f.owner_user_id = ?4)
         OR EXISTS (SELECT 1 FROM folder_members m JOIN up ON m.folder_id = up.id WHERE m.principal_id = ?4 AND m.role IN (${EDIT_ROLES}))))`;
 
 const RESTORE_ATTEMPTS = 5;
+
+/** The user a note's creator acts for: an agent's owner, else the creator. */
+const CREATOR_OF = `SELECT COALESCE((SELECT a.owner_user_id FROM agents a WHERE a.id = d.created_by), d.created_by) AS creator
+  FROM docs d WHERE d.id = ?1`;
+
+const trashedAgain = () => refuse(409, 'trashed-again',
+  'This note was restored and moved to Trash again while you were restoring it. Restore it again to bring it back.');
+
+const restoreCap = (own: boolean) => refuse(409, 'note-cap', own
+  ? `You have ${LIVE_NOTE_CAP.toLocaleString('en-US')} notes, the limit. Move some to Trash to restore this one.`
+  : `The person who made this note has ${LIVE_NOTE_CAP.toLocaleString('en-US')} notes, the limit, so it can’t be restored right now.`);
 
 /**
  * POST /api/docs/:id/restore: a note its manager restores comes back where it can live, under a free filename. Its
@@ -157,10 +170,16 @@ export async function restoreDoc(request: Request, env: FoldersEnv, docId: strin
   const access = await resolveDocAccess(db, principal, docId);
   if (!access || !can(access.role, 'manage') || principal.type !== 'user') return notFound();
   if (access.deleted) {
+    const creator = (await env.DB.prepare(CREATOR_OF).bind(docId).first<{ creator: string }>())?.creator ?? principal.id;
+    // The trash this request restores: once another restore ends it, a later trash is not this request's to undo.
+    let episode: { batch: string | null; at: number } | null = null;
     for (let attempt = 1; ; attempt += 1) {
-      const [doc] = await db.select({ folderId: docs.folderId, filename: docs.filename, deletedAt: docs.deletedAt }).from(docs).where(eq(docs.id, docId));
+      const [doc] = await db.select({ folderId: docs.folderId, filename: docs.filename, deletedAt: docs.deletedAt, batch: docs.trashBatchId })
+        .from(docs).where(eq(docs.id, docId));
       if (!doc) return notFound();
       if (doc.deletedAt === null) break;
+      episode ??= { batch: doc.batch, at: doc.deletedAt };
+      if (doc.batch !== episode.batch || doc.deletedAt !== episode.at) return trashedAgain();
       const home = await homeFor(db, doc.folderId);
       if (!home) return notFound();
       if (home.folderId !== doc.folderId) {
@@ -173,7 +192,8 @@ export async function restoreDoc(request: Request, env: FoldersEnv, docId: strin
       const filename = occupied.has(doc.filename) ? availableFilename(doc.filename.replace(/\.md$/, ''), occupied) : doc.filename;
       let restored: D1Result | null = null;
       try {
-        restored = await env.DB.prepare(RESTORE).bind(home.folderId, filename, docId, principal.id, home.vaultId).run();
+        restored = await env.DB.prepare(RESTORE)
+          .bind(home.folderId, filename, docId, principal.id, home.vaultId, creator, doc.folderId, doc.batch, doc.deletedAt).run();
       } catch (error) {
         if (!isUnique(error) || attempt >= RESTORE_ATTEMPTS) {
           console.error('restore write failed', error);
@@ -187,6 +207,8 @@ export async function restoreDoc(request: Request, env: FoldersEnv, docId: strin
         const now = await resolveDocAccess(db, principal, docId);
         if (!now || !can(now.role, 'manage')) return notFound();
         if (!now.deleted) break;
+        const live = await env.DB.prepare(`SELECT ${liveNotesBy(1)} AS n`).bind(creator).first<{ n: number }>();
+        if ((live?.n ?? 0) >= LIVE_NOTE_CAP) return restoreCap(creator === principal.id);
         if (attempt >= RESTORE_ATTEMPTS) return unavailable('The note couldn’t be restored right now. Try again.');
       }
     }

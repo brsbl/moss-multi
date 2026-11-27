@@ -8,7 +8,10 @@ import { migratedD1, type TestD1 } from '../test/d1.ts';
 import {
   BASE, insertAgent, insertDoc, insertFolder, insertGrant, insertLink, SECRET, signedUpUser, type AuthTestEnv, type TestUser,
 } from '../test/principals.ts';
-import { resolveDocAccess, resolveFolderAccess } from './access.ts';
+import type { Role } from '@moss-multi/protocol/roles';
+import {
+  accessibleDocs, accessibleFolders, foldDocRoles, foldFolderRoles, resolveDocAccess, resolveFolderAccess,
+} from './access.ts';
 
 let d1: TestD1;
 let env: AuthTestEnv;
@@ -138,5 +141,68 @@ describe('resolveFolderAccess', () => {
     expect((await resolveFolderAccess(createDb(d1.db), user(ben), tree.vault))).toMatchObject({ role: 'editor', kind: 'vault' });
     expect(await resolveFolderAccess(createDb(d1.db), user(cy), tree.c)).toBeNull();
     expect(await resolveFolderAccess(createDb(d1.db), user(ada), crypto.randomUUID())).toBeNull();
+  });
+});
+
+describe('discovery (accessibleFolders, accessibleDocs)', () => {
+  it('gives every live doc and folder the role the resolver gives, for people and agents, over all the fixtures above', async () => {
+    const tree = await nested();
+    const bens = await insertAgent(d1.db, ben);
+    await insertGrant(d1.db, { folderId: tree.a }, { id: bens.id, type: 'agent' }, 'editor');
+    await insertGrant(d1.db, { folderId: tree.b }, cy, 'owner');
+    await insertGrant(d1.db, { docId: tree.top }, cy, 'commenter');
+    await insertGrant(d1.db, { docId: tree.deep }, ben, 'suggester');
+    const db = createDb(d1.db);
+    const docIds = (await d1.db.prepare('SELECT id FROM docs WHERE deleted_at IS NULL').all<{ id: string }>()).results.map((r) => r.id);
+    const folderIds = (await d1.db.prepare('SELECT id FROM folders WHERE deleted_at IS NULL').all<{ id: string }>()).results.map((r) => r.id);
+    for (const principal of [user(ada), user(ben), user(cy), agentOf(ben, bens.id)]) {
+      const folders = await accessibleFolders(db, principal);
+      const docs = await accessibleDocs(db, principal, folders);
+      const folderRoles = new Map(folders.map((f) => [f.id, f.role]));
+      const docRoles = new Map(docs.map((d) => [d.id, d.role]));
+      for (const id of folderIds) {
+        expect(folderRoles.get(id) ?? null, `folder ${id} for ${principal.type} ${principal.id}`).toBe((await resolveFolderAccess(db, principal, id))?.role ?? null);
+      }
+      for (const id of docIds) {
+        expect(docRoles.get(id) ?? null, `doc ${id} for ${principal.type} ${principal.id}`).toBe((await resolveDocAccess(db, principal, id))?.role ?? null);
+      }
+    }
+  }, 120_000);
+
+  /** `items` with every element read through it counted. */
+  function counted<T extends object>(items: T[]): { items: T[]; reads: () => number } {
+    let reads = 0;
+    const proxy = new Proxy(items, {
+      get(target, key, receiver) {
+        if (typeof key === 'string' && /^\d+$/.test(key)) reads += 1;
+        return Reflect.get(target, key, receiver);
+      },
+    });
+    return { items: proxy, reads: () => reads };
+  }
+
+  it('folds doc roles in work linear in docs, grants and folders', () => {
+    const n = 4_000;
+    const folderRows = Array.from({ length: 100 }, (_, i) => ({ id: `f${i}`, role: 'viewer' as Role }));
+    const rows = Array.from({ length: n }, (_, i) => ({ id: `d${i}`, folderId: `f${i % 100}`, ownerUserId: ada.id }));
+    const grants = Array.from({ length: n }, (_, i) => ({ docId: `d${i}`, role: (i % 2 ? 'editor' : 'commenter') as Role }));
+    const [r, g, f] = [counted(rows), counted(grants), counted(folderRows)];
+    const folded = foldDocRoles(user(ben), r.items, g.items, f.items);
+    expect(folded.map((d) => d.role)).toEqual(rows.map((_, i) => (i % 2 ? 'editor' : 'commenter')));
+    expect(r.reads() + g.reads() + f.reads(), 'element reads').toBeLessThanOrEqual(2 * (rows.length + grants.length + folderRows.length));
+  });
+
+  it('folds folder roles in work linear in folders and grants', () => {
+    const n = 3_000;
+    const vault = { id: 'v', parentId: null, deletedAt: null, kind: 'vault' as const, ownerUserId: ada.id };
+    const rows = [vault, ...Array.from({ length: n }, (_, i) => ({ id: `f${i}`, parentId: i < 10 ? 'v' : `f${i % 10}`, deletedAt: null, kind: 'folder' as const, ownerUserId: ada.id }))];
+    const grants = [{ folderId: 'v', role: 'viewer' as Role }, ...Array.from({ length: n }, (_, i) => ({ folderId: `f${i}`, role: (i % 3 ? 'viewer' : 'editor') as Role }))];
+    const [r, g] = [counted(rows), counted(grants)];
+    const folded = foldFolderRoles(user(ben), r.items, g.items);
+    // A folder's role is the highest grant on it and its parent (folders below f0..f9 inherit theirs).
+    const own = (i: number) => (i % 3 ? 'viewer' : 'editor');
+    expect(folded.map((x) => x.role)).toEqual(['viewer', ...Array.from({ length: n }, (_, i) =>
+      (i < 10 ? own(i) : own(i) === 'editor' || own(i % 10) === 'editor' ? 'editor' : 'viewer'))]);
+    expect(r.reads() + g.reads(), 'element reads').toBeLessThanOrEqual(3 * (rows.length + grants.length));
   });
 });

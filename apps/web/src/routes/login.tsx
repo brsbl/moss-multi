@@ -1,5 +1,5 @@
 import { createFileRoute, redirect } from '@tanstack/react-router';
-import { loginProviders, lookupSession } from '../auth/session-fn.ts';
+import { loginOptions, lookupSession } from '../auth/session-fn.ts';
 import { asSessionAnswer, safeNext } from '../host/auth-state.ts';
 import { LoginCard } from '../host/surfaces/LoginCard.tsx';
 
@@ -11,11 +11,12 @@ export const Route = createFileRoute('/login')({
     const answer = asSessionAnswer(await lookupSession().catch(() => null));
     if (answer.kind === 'signed-in') throw redirect({ href: safeNext(search.next), replace: true });
   },
-  loader: () => loginProviders().catch(() => []),
+  loader: () => loginOptions().catch(() => ({ providers: [], minPasswordLength: null })),
   component: LoginRoute,
 });
 
 function LoginRoute() {
   const { next } = Route.useSearch();
-  return <LoginCard next={safeNext(next)} providers={Route.useLoaderData()} />;
+  const { providers, minPasswordLength } = Route.useLoaderData();
+  return <LoginCard next={safeNext(next)} providers={providers} minPasswordLength={minPasswordLength} />;
 }

@@ -1,0 +1,20 @@
+/* The editor's stylesheet: moss's fonts in main.tsx's order, then moss's styles.css (its tokens and Tailwind layers),
+   as apps/web/src/styles.css loads them. It styles the whole document, so give the editor its own frame. */
+@import '@fontsource-variable/inter/wght.css';
+@import '@fontsource-variable/inter/wght-italic.css';
+@import '@fontsource-variable/jetbrains-mono/wght.css';
+@import '@fontsource/jetbrains-mono/latin-400.css';
+@import '@fontsource/jetbrains-mono/latin-500.css';
+@import 'charter-webfont/charter.css';
+@import '../../../vendor/moss/packages/desktop/src/renderer/styles.css';
+
+/* An X post declares no color-scheme, so in a dark editor the browser paints a white canvas behind its corners. */
+[data-moss-editor] iframe[src^='https://platform.twitter.com/'] {
+  color-scheme: normal;
+}
+
+/* moss's chart skeleton (ChartNode.view ChartSkeleton, h-64) stands in for recharts' 300 px chart while its module
+   resolves, so the block grew 44 px on its first paint; at the chart's height it keeps its place (T3.12). */
+[data-moss-editor] [data-testid='chart-loading'] {
+  height: 300px;
+}

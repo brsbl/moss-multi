@@ -1,0 +1,20 @@
+diff --git a/packages/desktop/src/common/moss-html-runtime.ts b/packages/desktop/src/common/moss-html-runtime.ts
+--- a/packages/desktop/src/common/moss-html-runtime.ts
++++ b/packages/desktop/src/common/moss-html-runtime.ts
+@@ -201,13 +201,13 @@ const buildDimensionReporterScriptTag = (reportId: string): string => {
+       Math.ceil(docRect.right - originLeft),
+       Math.ceil(bodyRect.right - originLeft)
+     );
++    // moss-multi seam: content-height (T3.B13): the height is the content's, not the frame's. The document's
++    // scrollHeight and clientHeight are at least the frame's viewport, so a short default-height block reported the
++    // 900px default viewport back and never shrank to its content; explicit heights still size the body.
+     let height = Math.max(
+-      doc.scrollHeight,
+       body.scrollHeight,
+       doc.offsetHeight,
+       body.offsetHeight,
+-      doc.clientHeight,
+-      body.clientHeight,
+       Math.ceil(docRect.bottom - originTop),
+       Math.ceil(bodyRect.bottom - originTop)
+     );

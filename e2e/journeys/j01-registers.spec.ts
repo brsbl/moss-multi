@@ -336,6 +336,36 @@ test('j01 registers: picking the other same-named reference from the typeahead i
   await reloadHolds([ada, ben], id, async actor => (await total(actor))[0]?.[0] ?? '', expect.stringMatching(refersTo(b)));
 });
 
+// A typeahead pick puts the caret after the picked name at once. It used to wait for a frame, and a late frame (a loaded
+// runner) moved the caret back after Ada had typed on: `+2` landed as `2+`. The frames are held here until she has.
+test('j01 registers: typing right after a typeahead pick goes after the picked name, however late the next frame comes @p:col-1', async ({ actors, stack }) => {
+  const a = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+  const { ada, id } = await note(actors, stack.baseUrl, `Total {{2|2}} here.\n\nA {{4|4|id=${a};name=cost}} here.`);
+  await ui.body(ada, id).locator('[data-formula-node-key]').first().click();
+  await expect(formulaInput(ada)).toHaveValue('2', { timeout: PEER_TIMEOUT });
+  await expect(formulaInput(ada)).toHaveJSProperty('readOnly', false, { timeout: PEER_TIMEOUT });
+  await formulaInput(ada).press('ControlOrMeta+a');
+  await ada.page.keyboard.type('cos');
+  const option = popover(ada).getByRole('option').filter({ hasText: '4' });
+  await expect(option).toBeVisible();
+  await ada.page.evaluate(() => {
+    const w = window as unknown as { heldFrames: FrameRequestCallback[]; frame: typeof requestAnimationFrame };
+    w.heldFrames = [];
+    w.frame = window.requestAnimationFrame;
+    window.requestAnimationFrame = (callback) => { w.heldFrames.push(callback); return 0; };
+  });
+  await option.click();
+  await expect(formulaInput(ada)).toHaveValue('cost');
+  await ada.page.keyboard.type('+');
+  await ada.page.evaluate(() => {
+    const w = window as unknown as { heldFrames: FrameRequestCallback[]; frame: typeof requestAnimationFrame };
+    window.requestAnimationFrame = w.frame;
+    for (const callback of w.heldFrames.splice(0)) callback(performance.now());
+  });
+  await ada.page.keyboard.type('2');
+  await expect(formulaInput(ada), 'the 2 follows the +').toHaveValue('cost+2');
+});
+
 // Each reference token merges whole: when Ada's unwritten draft retargets A to B and Ben retargets A to C, Ada's field
 // keeps both references (Ben's first), never one token spliced from the two.
 test('j01 registers: when both people retarget the same reference and one draft is unwritten, each token is kept whole @p:col-1', async ({ actors, stack }) => {
@@ -556,6 +586,151 @@ test("j01 registers: when two references share a name, Ben's merged edit keeps t
   await reloadHolds([ada, ben], id, sources, want);
 });
 
+/** The input's selection, as [start, end]. */
+const selectionOf = (input: Locator) => input.evaluate(element => [(element as HTMLInputElement).selectionStart, (element as HTMLInputElement).selectionEnd]);
+
+// T3.B15 (B009): a popover write carries its caret, so an edit lands where it was made, and a peer's change merges into
+// a draft from the change itself, not a diff of the two texts.
+test("j01 registers: Ada's deletion of a leading operand and Ben's concurrent edit of the one she kept merge into her unfinished draft @p:col-1", async ({ actors, stack }) => {
+  const { ada, ben: principal, id } = await note(actors, stack.baseUrl, 'Total {{2+2|4}} here.');
+  const ben = await actors.session(principal, { severable: true });
+  await join(ben, id);
+  await openFormula(ben, id);
+  await expect(formulaInput(ben)).toHaveValue('2+2', { timeout: PEER_TIMEOUT });
+  await expect(formulaInput(ben)).toHaveJSProperty('readOnly', false, { timeout: PEER_TIMEOUT });
+  // Ben's edit of the second operand stays in flight while Ada edits.
+  ben.sever!.hold(id);
+  await formulaInput(ben).press('End');
+  await ben.page.keyboard.press('Backspace');
+  await ben.page.keyboard.type('3');
+  await expect.poll(() => formulas(ben, id), { timeout: PEER_TIMEOUT }).toEqual([['2+3', '5']]);
+  await ben.page.keyboard.press('Escape');
+  await expect(popover(ben)).toHaveCount(0);
+  await openFormula(ada, id);
+  await expect(formulaInput(ada)).toHaveValue('2+2', { timeout: PEER_TIMEOUT });
+  await expect(formulaInput(ada)).toHaveJSProperty('readOnly', false, { timeout: PEER_TIMEOUT });
+  await formulaInput(ada).press('Home');
+  await formulaInput(ada).press('Shift+ArrowRight');
+  await formulaInput(ada).press('Shift+ArrowRight');
+  await ada.page.keyboard.press('Backspace');
+  await expect(formulaInput(ada)).toHaveValue('2');
+  await expect.poll(() => formulas(ada, id), { message: 'Ada deletes the leading 2+', timeout: PEER_TIMEOUT }).toEqual([['2', '2']]);
+  await formulaInput(ada).press('End');
+  await ada.page.keyboard.type('*');
+  await expect(formulaInput(ada)).toHaveValue('2*');
+  ben.sever!.deliverHeld();
+  await expect(formulaInput(ada), "Ben's 3 replaces the operand Ada kept").toHaveValue('3*', { timeout: PEER_TIMEOUT });
+  await expect.poll(() => selectionOf(formulaInput(ada)), { message: "Ada's caret stays after her text" }).toEqual([2, 2]);
+  await ada.page.keyboard.type('2');
+  const want = [['3*2', '6']];
+  for (const actor of [ada, ben]) await expect.poll(() => formulas(actor, id), { message: `${actor.label} converges`, timeout: PEER_TIMEOUT }).toEqual(want);
+  await ada.page.keyboard.press('Enter');
+  await expect(popover(ada)).toHaveCount(0);
+  await reloadHolds([ada, ben], id, actor => formulas(actor, id), want);
+});
+
+for (const field of ['expression', 'name'] as const) {
+  test(`j01 registers: after Ben undoes his keystroke in a run of equal characters, Ada's ${field} caret and typing stay where she put them @p:col-1 @p:col-3`, async ({ actors, stack }) => {
+    const [markdown, run, typed] = field === 'expression' ? ['Total {{222|222}} here.', '222', '5'] : ['See {{aaa|pending}} here.', 'aaa', 'z'];
+    const input = (actor: Actor) => (field === 'expression' ? formulaInput(actor) : nameInput(actor));
+    const { ada, ben: principal, id } = await note(actors, stack.baseUrl, markdown);
+    const ben = await actors.session(principal);
+    await join(ben, id);
+    for (const actor of [ada, ben]) {
+      await openFormula(actor, id);
+      await expect(input(actor)).toHaveValue(run, { timeout: PEER_TIMEOUT });
+      await expect(input(actor)).toHaveJSProperty('readOnly', false, { timeout: PEER_TIMEOUT });
+    }
+    await input(ben).focus();
+    await input(ben).press('Home');
+    await ben.page.keyboard.type(run[0]);
+    await expect(input(ada), "Ada receives Ben's keystroke").toHaveValue(run[0].repeat(4), { timeout: PEER_TIMEOUT });
+    await input(ada).focus();
+    await input(ada).evaluate(element => (element as HTMLInputElement).setSelectionRange(1, 1));
+    await input(ben).press('ControlOrMeta+z');
+    await expect(input(ada), "Ben's undo removes his keystroke").toHaveValue(run, { timeout: PEER_TIMEOUT });
+    await expect.poll(() => selectionOf(input(ada)), { message: "Ada's caret was after Ben's character, which is gone" }).toEqual([0, 0]);
+    await ada.page.keyboard.type(typed);
+    await expect(input(ada)).toHaveValue(`${typed}${run}`);
+    await expect.poll(() => selectionOf(input(ada))).toEqual([1, 1]);
+    for (const actor of [ada, ben]) {
+      await expect.poll(async () => (await formulas(actor, id)).map(([formula]) => formula), { message: `${actor.label}: Ada's character lands where she typed it`, timeout: PEER_TIMEOUT }).toEqual([`${typed}${run}`]);
+    }
+  });
+}
+
+// T3.B15 (B040): a caret or range inside a reference's name keeps its place in the name while the reference survives a
+// peer's edit; it used to jump to the name's end.
+async function boundReference(actors: Actors, baseUrl: string) {
+  const price = '@(price#11111111-1111-4111-8111-111111111111#22222222-2222-4222-8222-222222222222)';
+  const { ada, ben: principal, id } = await note(actors, baseUrl, 'Total {{2+3|5}} here.');
+  const ben = await actors.session(principal);
+  await join(ben, id);
+  await openFormula(ben, id);
+  await expect(formulaInput(ben)).toHaveJSProperty('readOnly', false, { timeout: PEER_TIMEOUT });
+  await formulaInput(ben).press('Home');
+  await ben.page.keyboard.insertText(`${price}+`);
+  await expect.poll(async () => (await formulas(ada, id)).map(([formula]) => formula), { timeout: PEER_TIMEOUT }).toEqual([`${price}+2+3`]);
+  await ben.page.keyboard.press('Escape');
+  await expect(popover(ben)).toHaveCount(0);
+  for (const actor of [ada, ben]) {
+    await openFormula(actor, id);
+    await expect(formulaInput(actor)).toHaveValue('price+2+3', { timeout: PEER_TIMEOUT });
+    await expect(formulaInput(actor)).toHaveJSProperty('readOnly', false, { timeout: PEER_TIMEOUT });
+  }
+  await expect(formulaInput(ben)).toBeFocused();
+  await formulaInput(ada).focus();
+  return { ada, ben, id };
+}
+
+test("j01 registers: a caret or range inside a reference's name keeps its place when Ben prepends text or edits another operand @p:col-1", async ({ actors, stack }) => {
+  const { ada, ben } = await boundReference(actors, stack.baseUrl);
+  const shown = () => formulaInput(ada).evaluate(element => { const i = element as HTMLInputElement; return i.value.slice(i.selectionStart ?? 0, i.selectionEnd ?? 0); });
+  await formulaInput(ada).evaluate(element => (element as HTMLInputElement).setSelectionRange(1, 4));
+  await formulaInput(ben).press('Home');
+  await ben.page.keyboard.type('1+');
+  await expect(formulaInput(ada)).toHaveValue('1+price+2+3', { timeout: PEER_TIMEOUT });
+  await expect.poll(() => selectionOf(formulaInput(ada)), { message: 'the range moves with the name' }).toEqual([3, 6]);
+  expect(await shown(), 'the same characters stay selected').toBe('ric');
+  await formulaInput(ada).evaluate(element => (element as HTMLInputElement).setSelectionRange(4, 4));
+  await formulaInput(ben).press('End');
+  await ben.page.keyboard.press('Backspace');
+  await ben.page.keyboard.type('4');
+  await expect(formulaInput(ada)).toHaveValue('1+price+2+4', { timeout: PEER_TIMEOUT });
+  await expect.poll(() => selectionOf(formulaInput(ada)), { message: 'the caret stays between "pr" and "ice"' }).toEqual([4, 4]);
+  await ada.page.keyboard.type('X');
+  await expect(formulaInput(ada), 'typing lands where the caret is').toHaveValue('1+prXice+2+4');
+  await expect.poll(() => selectionOf(formulaInput(ada))).toEqual([5, 5]);
+});
+
+// T3.B15: a peer's edits resize Ada's open popover. Its inputs were sized in fractional pixels, and WebKit re-measured
+// the popover as it moved, a ResizeObserver loop error (page errors fail the invariants).
+test("j01 registers: Ben's edits grow and shrink Ada's open formula popover without a ResizeObserver loop @p:col-1", async ({ actors, stack }) => {
+  const { ada, ben } = await boundReference(actors, stack.baseUrl);
+  await formulaInput(ben).press('End');
+  for (let i = 0; i < 25; i += 1) {
+    await ben.page.keyboard.type('+1111');
+    await expect(formulaInput(ada)).toHaveValue('price+2+3+1111', { timeout: PEER_TIMEOUT });
+    for (let k = 0; k < 5; k += 1) await ben.page.keyboard.press('Backspace');
+    await expect(formulaInput(ada)).toHaveValue('price+2+3', { timeout: PEER_TIMEOUT });
+  }
+  const width = await popover(ada).evaluate(element => element.getBoundingClientRect().width);
+  expect(Number.isInteger(width), `the popover is ${width} px wide`).toBe(true);
+});
+
+test("j01 registers: a caret inside a reference's name goes to where it stood when Ben replaces the reference @p:col-1", async ({ actors, stack }) => {
+  const { ada, ben, id } = await boundReference(actors, stack.baseUrl);
+  await formulaInput(ada).evaluate(element => (element as HTMLInputElement).setSelectionRange(2, 2));
+  await formulaInput(ben).press('Home');
+  for (let i = 0; i < 5; i += 1) await formulaInput(ben).press('Shift+ArrowRight');
+  await ben.page.keyboard.type('5');
+  await expect(formulaInput(ada)).toHaveValue('5+2+3', { timeout: PEER_TIMEOUT });
+  await expect.poll(() => selectionOf(formulaInput(ada)), { message: 'the caret is where the reference began' }).toEqual([0, 0]);
+  await ada.page.keyboard.type('1');
+  await expect(formulaInput(ada)).toHaveValue('15+2+3');
+  for (const actor of [ada, ben]) await expect.poll(async () => (await formulas(actor, id)).map(([formula]) => formula), { message: `${actor.label} converges`, timeout: PEER_TIMEOUT }).toEqual(['15+2+3']);
+});
+
 // Executable results are per viewer (A§10.10): an open popover writes a result only with its person's own expression
 // write, never in answer to a peer's update, so two viewers whose results differ never rewrite each other's.
 test("j01 registers: a peer's result write draws no write back from Ada's open popover @p:col-1", async ({ actors, stack }) => {
@@ -632,14 +807,8 @@ const PAYLOAD_KINDS: Record<string, PayloadKind> = {
   },
   HTML: {
     markdown: 'Intro.\n\n```moss-html\n<p>seed</p>\n```', type: 'html-block', getter: 'getRawHtml', seed: '<p>seed</p>',
-    // A double-click opens the editor whatever the preview shows (its error overlay covers the Edit button); the
-    // bottom corner is clear of the header and the overlay's Retry button.
-    open: async (actor, id) => {
-      const viewport = ui.body(actor, id).locator('[data-moss-html-preview-viewport]');
-      const box = await viewport.boundingBox();
-      if (!box) throw new Error('the HTML preview has no box');
-      await viewport.dblclick({ position: { x: 8, y: box.height - 8 } });
-    },
+    // The preview is a live sandboxed frame (T3.2) that takes its own clicks, so the header's Edit opens the source.
+    open: ui.openHtmlSource,
     input: (actor, id) => ui.body(actor, id).locator('textarea.moss-codeblock-textarea'),
   },
   formula: {
@@ -689,5 +858,46 @@ for (const [kind, spec] of Object.entries(PAYLOAD_KINDS)) {
     await expect(spec.input(ben, id), "Ben's field is writable").toHaveJSProperty('readOnly', false, { timeout: PEER_TIMEOUT });
     await typeAtEnd(ben, '+4');
     for (const actor of [ada, ben]) await expect.poll(() => texts(actor), { message: `${actor.label} converges`, timeout: PEER_TIMEOUT }).toEqual([`${spec.seed}+1+2+3+4`]);
+  });
+}
+
+// T3.B15 (B011): an IME preedit lives in a private draft until compositionend. A peer's move recreates the block and
+// unmounts the field mid-composition; the preedit used to go with it.
+for (const kind of ['code', 'HTML'] as const) {
+  test(`j01 registers: Ben's uncommitted ${kind} preedit survives Ada moving the block, and a committed composition is written once @p:col-1`, async ({ actors, stack }) => {
+    const spec = PAYLOAD_KINDS[kind];
+    const { ada, ben: principal, id } = await note(actors, stack.baseUrl, `${spec.markdown}\n\nLast para.`);
+    const ben = await actors.session(principal);
+    await join(ben, id);
+    const texts = (actor: Actor) => payloadTexts(actor, id, spec.type, spec.getter);
+    /** Ada moves the block to the end of the note, or back to its start. */
+    const move = (to: 'end' | 'start') => ui.body(ada, id).evaluate((element, [type, to]) => {
+      const editor = (element as HTMLElement & { __lexicalEditor: LexicalEditor }).__lexicalEditor;
+      editor.update(() => {
+        type Block = { getType(): string; insertAfter(n: unknown): void; insertBefore(n: unknown): void };
+        const children = (editor.getEditorState()._nodeMap.get('root') as unknown as { getLatest(): { getChildren(): Block[] } }).getLatest().getChildren();
+        const block = children.find(n => n.getType() === type)!;
+        if (to === 'end') children[children.length - 1].insertAfter(block);
+        else children[0].insertBefore(block);
+      }, { discrete: true });
+    }, [spec.type, to] as const);
+    const compose = (event: 'compositionstart' | 'compositionend', data = '') =>
+      spec.input(ben, id).evaluate((input, [event, data]) => input.dispatchEvent(new CompositionEvent(event, { bubbles: true, data })), [event, data] as const);
+    await spec.open(ben, id);
+    await expect(spec.input(ben, id)).toHaveValue(spec.seed, { timeout: PEER_TIMEOUT });
+    await expect(spec.input(ben, id)).toHaveJSProperty('readOnly', false, { timeout: PEER_TIMEOUT });
+    await compose('compositionstart');
+    await spec.input(ben, id).fill(`${spec.seed}漢`);
+    await move('end');
+    await expect.poll(() => blocks(ben, id), { message: 'Ben receives the move', timeout: PEER_TIMEOUT }).toEqual(['paragraph', 'paragraph', spec.type]);
+    await expect(spec.input(ben, id), 'the field follows its block with the preedit').toHaveValue(`${spec.seed}漢`, { timeout: PEER_TIMEOUT });
+    for (const actor of [ada, ben]) await expect.poll(() => texts(actor), { message: `${actor.label}: the preedit is written`, timeout: PEER_TIMEOUT }).toEqual([`${spec.seed}漢`]);
+    await compose('compositionstart');
+    await spec.input(ben, id).fill(`${spec.seed}漢字`);
+    await compose('compositionend', '漢字');
+    await move('start');
+    await expect.poll(() => blocks(ben, id), { message: 'Ben receives the move back', timeout: PEER_TIMEOUT }).toEqual([spec.type, 'paragraph', 'paragraph']);
+    for (const actor of [ada, ben]) await expect.poll(() => texts(actor), { message: `${actor.label}: the committed text is written once`, timeout: PEER_TIMEOUT }).toEqual([`${spec.seed}漢字`]);
+    await expect(spec.input(ben, id)).toHaveValue(`${spec.seed}漢字`);
   });
 }

@@ -1,6 +1,12 @@
 // ported-from: packages/desktop/src/renderer/editor/plugins/FileLinkPlugin.tsx @ 762abb777
 // moss-multi seam: local-view (A§10): access-dependent resolution is local paint, never a tree write.
-import { $isBoundEditor, setNodeView } from '@moss-multi/host/collab/view-state';
+import { $isBoundEditor, isBoundEditor, setNodeView } from '@moss-multi/host/collab/view-state';
+// moss-multi seam: wiki-stem (A§15): a normalized title, then a filename stem, resolves too.
+import { resolveWikiTarget } from '@moss-multi/host/wiki-links';
+// moss-multi seam: unresolved-paint (A§15): a bound note marks a link that resolves to nothing once the listing has
+// loaded, and re-checks when a link is added, instead of waiting for a hover.
+import { notesHydratedAtom } from '@moss/shared/state/note-atoms';
+import { FileLinkNode as FileLinkNodeClass } from '../nodes/FileLinkNode';
 import { useEffect, useCallback, useState, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { useLexicalComposerContext } from '@lexical/react/LexicalComposerContext';
@@ -213,7 +219,9 @@ function resolveExternalSiblingByFilename(
  */
 function resolveNoteByTitleFromAtoms(
   noteTitle: string,
-  store: ReturnType<typeof useStore>
+  store: ReturnType<typeof useStore>,
+  // moss-multi seam: wiki-stem (A§15): the source note scopes the fallback to its vault.
+  sourceId?: string | null
 ): LinkResolutionCacheEntry {
   const normalizedTitle = noteTitle.trim().toLowerCase();
   const noteIds = store.get(noteIdsAtom);
@@ -231,6 +239,19 @@ function resolveNoteByTitleFromAtoms(
         folderPath: entity.folderPath
       };
     }
+  }
+
+  // moss-multi seam: wiki-stem (A§15)
+  const stemId = resolveWikiTarget(noteTitle, sourceId);
+  const stemEntity = stemId && noteIds.has(stemId) ? store.get(noteEntityAtom(stemId)) : null;
+  if (stemEntity) {
+    return {
+      noteId: stemEntity.id,
+      noteTitle: stemEntity.title,
+      isResolved: true,
+      updatedAt: stemEntity.updatedAt,
+      folderPath: stemEntity.folderPath
+    };
   }
 
   // Note not found
@@ -299,7 +320,7 @@ function resolveAndCache(
     result = resolvePathLikeExternalTarget(noteTitle, sourceEntity, store);
   } else {
     // Resolve via client-side atom lookup (synchronous, no IPC)
-    result = resolveNoteByTitleFromAtoms(noteTitle, store);
+    result = resolveNoteByTitleFromAtoms(noteTitle, store, sourceEntity?.id); // moss-multi seam: wiki-stem (A§15)
   }
 
   // Fallback: filename-based resolution for external sibling files
@@ -966,6 +987,11 @@ export function FileLinkPlugin({ onNavigateToNote }: FileLinkPluginProps) {
   const previewLoadGenerationRef = useRef(0);
   const pluginMountedRef = useRef(true);
   const previewTextCacheRef = useRef<Map<string, string>>(new Map());
+  // moss-multi seam: unresolved-paint (A§15)
+  const [linksAdded, setLinksAdded] = useState(0);
+  useEffect(() => editor.registerMutationListener(FileLinkNodeClass, (mutations) => {
+    if ([...mutations.values()].includes('created')) setLinksAdded((n) => n + 1);
+  }), [editor]);
 
   const invalidatePreviewLoads = useCallback(() => {
     previewLoadGenerationRef.current += 1;
@@ -1366,6 +1392,10 @@ export function FileLinkPlugin({ onNavigateToNote }: FileLinkPluginProps) {
 
           const result = resolveAndCache(noteTitle, store, sourceEntity);
           if (!result.isResolved) {
+            // moss-multi seam: unresolved-paint (A§15)
+            if (isBoundEditor(editor) && store.get(notesHydratedAtom) && !sourceEntity?.externalFilePath) {
+              updates.push({ nodeKey, noteId: null, isResolved: false, resolutionState: 'not_found' });
+            }
             return;
           }
 
@@ -1410,7 +1440,7 @@ export function FileLinkPlugin({ onNavigateToNote }: FileLinkPluginProps) {
         }
       }
     }, EDITOR_UPDATE_TAGS.ignored.skipDirty);
-  }, [currentNoteId, editor, noteList, store]);
+  }, [currentNoteId, editor, noteList, store, linksAdded]);
 
   const handleHoverShow = useCallback(
     ({ element, nodeKey }: { element: HTMLElement; nodeKey: string }) => {
@@ -1758,6 +1788,7 @@ export const fileLinkPluginTestUtils = {
 function $setLinkView(node: FileLinkNode, view: { noteId?: string | null; isResolved?: boolean; noteTitle?: string; resolutionState?: LinkResolutionState }): void {
   if ($isBoundEditor()) {
     setNodeView(node.getKey(), {
+      ...(view.isResolved !== undefined ? { noteId: view.noteId ?? null, isResolved: view.isResolved } : {}),
       ...(view.noteTitle !== undefined ? { noteTitle: view.noteTitle } : {}),
       ...(view.resolutionState !== undefined ? { resolutionState: view.resolutionState } : {}),
     });

@@ -1,7 +1,7 @@
 diff --git a/packages/desktop/src/renderer/panels/NotesListPanelContent.tsx b/packages/desktop/src/renderer/panels/NotesListPanelContent.tsx
 --- a/packages/desktop/src/renderer/panels/NotesListPanelContent.tsx
 +++ b/packages/desktop/src/renderer/panels/NotesListPanelContent.tsx
-@@ -48,6 +48,18 @@ import { formatRelativeTime } from './notesPanelUtils';
+@@ -48,6 +48,20 @@ import { formatRelativeTime } from './notesPanelUtils';
  import { FolderGroup } from './FolderGroup';
  import { SystemFolderSection } from './SystemFolderSection';
  import { foldersApi } from '../api/electron';
@@ -10,7 +10,9 @@ diff --git a/packages/desktop/src/renderer/panels/NotesListPanelContent.tsx b/pa
 +import { canDuplicateNote } from '@moss-multi/host/duplicate';
 +import { FolderMenuItems, surfacedShared, surfacedFolder } from '@moss-multi/host/slots';
 +// moss-multi seam: folders (T2.2): folder controls follow the caller's role; a refusal reads as the server's sentence.
-+import { canCreateFolder, canCreateNote, canEditFolder, canMoveItems, canTrashFolder, folderRefusal } from '@moss-multi/host/folders';
++import {
++  canCreateFolder, canCreateNote, canDropInto, canEditFolder, canMoveFolder, canMoveNote, canTrashFolder, folderRefusal, noteTargetFolder
++} from '@moss-multi/host/folders';
 +// moss-multi seam: capabilities (T2.6): every note action follows the caller's role; an unknown role gets none.
 +import { noteCan } from '@moss-multi/host/capabilities';
 +// moss-multi seam: trash (T2.3): only the owner trashes a note; trash copy comes from the one module
@@ -20,7 +22,7 @@ diff --git a/packages/desktop/src/renderer/panels/NotesListPanelContent.tsx b/pa
  
  const NOTES_FOLDER_NAME = 'Notes';
  const nowInSeconds = (): number => Math.floor(Date.now() / 1000);
-@@ -134,8 +146,15 @@ function NoteContextMenuItems({
+@@ -134,8 +148,15 @@ function NoteContextMenuItems({
    onDuplicateNote,
    onDeleteNote
  }: NoteContextMenuItemsProps) {
@@ -37,7 +39,7 @@ diff --git a/packages/desktop/src/renderer/panels/NotesListPanelContent.tsx b/pa
        <ContextMenuItem onSelect={() => handleOpenInNewWindow(noteId)}>
          <ExternalLink className="h-3.5 w-3.5 text-ink-muted" />
          <span>Open in New Window</span>
-@@ -148,17 +167,21 @@ function NoteContextMenuItems({
+@@ -148,17 +169,21 @@ function NoteContextMenuItems({
          <span>Open in Split Tab</span>
        </ContextMenuItem>
        <ContextMenuSeparator />
@@ -62,7 +64,7 @@ diff --git a/packages/desktop/src/renderer/panels/NotesListPanelContent.tsx b/pa
          <ContextMenuItem onSelect={() => onDuplicateNote(noteId)}>
            <Copy className="h-3.5 w-3.5 text-ink-muted" />
            <span>Duplicate</span>
-@@ -169,10 +192,13 @@ function NoteContextMenuItems({
+@@ -169,10 +194,13 @@ function NoteContextMenuItems({
          <Link className="h-3.5 w-3.5 text-ink-muted" />
          <span>Copy Link</span>
        </ContextMenuItem>
@@ -76,7 +78,7 @@ diff --git a/packages/desktop/src/renderer/panels/NotesListPanelContent.tsx b/pa
        {externalFilePath ? (
          <>
            <ContextMenuSeparator />
-@@ -181,7 +207,7 @@ function NoteContextMenuItems({
+@@ -181,7 +209,7 @@ function NoteContextMenuItems({
              <span>Close</span>
            </ContextMenuItem>
          </>
@@ -85,17 +87,17 @@ diff --git a/packages/desktop/src/renderer/panels/NotesListPanelContent.tsx b/pa
          <>
            <ContextMenuSeparator />
            <ContextMenuItem onSelect={() => onDeleteNote(noteId)}>
-@@ -239,7 +265,8 @@ const NoteListItemWithMenu = memo(function NoteListItemWithMenu({
+@@ -239,7 +267,8 @@ const NoteListItemWithMenu = memo(function NoteListItemWithMenu({
  }: NoteListItemWithMenuProps) {
    const isActive = useIsActiveNote(note.id);
    const [isContextMenuOpen, setIsContextMenuOpen] = useState(false);
 -  const draggable = options?.draggable ?? true;
-+  // moss-multi seam: shared-rows (A§11: a surfaced shared row offers no move); only the vault's owner moves (A§8)
-+  const draggable = (options?.draggable ?? true) && !surfacedShared(note.id) && canMoveItems(note.id);
++  // moss-multi seam: shared-rows (A§11: a surfaced shared row offers no move); whoever manages the note moves it (A§8)
++  const draggable = (options?.draggable ?? true) && !surfacedShared(note.id) && canMoveNote(note.id);
    const showActiveState = options?.showActiveState ?? true;
    const isVisuallyActive = showActiveState && isActive;
    const cardRef = options?.isSelected
-@@ -251,7 +278,13 @@ const NoteListItemWithMenu = memo(function NoteListItemWithMenu({
+@@ -251,7 +280,13 @@ const NoteListItemWithMenu = memo(function NoteListItemWithMenu({
    return (
      <ContextMenu onOpenChange={setIsContextMenuOpen}>
        <ContextMenuTrigger asChild>
@@ -110,7 +112,7 @@ diff --git a/packages/desktop/src/renderer/panels/NotesListPanelContent.tsx b/pa
            <NoteCard
              id={note.id}
              title={note.title}
-@@ -336,7 +369,12 @@ const SearchResultNoteCard = memo(function SearchResultNoteCard({
+@@ -336,7 +371,12 @@ const SearchResultNoteCard = memo(function SearchResultNoteCard({
    return (
      <ContextMenu onOpenChange={setIsContextMenuOpen}>
        <ContextMenuTrigger asChild>
@@ -124,7 +126,17 @@ diff --git a/packages/desktop/src/renderer/panels/NotesListPanelContent.tsx b/pa
            <NoteCard
              id={result.id}
              title={result.title}
-@@ -756,7 +794,7 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
+@@ -404,6 +444,9 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
+     const [expandedFolders, setExpandedFolders] = useAtom(expandedFoldersAtom);
+     const store = useStore();
+     const setActiveFolderPath = useSetAtom(activeFolderPathAtom);
++    // moss-multi seam: capabilities (T3.B17): "+ Note" asks the folder the note would land in.
++    const activeFolderPath = useAtomValue(activeFolderPathAtom);
++    const backendFolders = useAtomValue(backendFoldersAtom);
+     const [sortMode, setSortMode] = useAtom(notesSortModeAtom);
+     const [sortDirection, setSortDirection] = useAtom(notesSortDirectionAtom);
+     const pinnedNotes = useAtomValue(pinnedNotesAtom);
+@@ -756,7 +799,7 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
          isSubmittingRef.current = false;
        } catch (err) {
          console.warn('[FolderCreate] Failed to create folder:', err);
@@ -133,7 +145,85 @@ diff --git a/packages/desktop/src/renderer/panels/NotesListPanelContent.tsx b/pa
          isSubmittingRef.current = false;
        }
      }, [newFolderName, folderList, creatingFolderParentPath, fetchBackendFolders, setExpandedFolders]);
-@@ -1188,6 +1226,7 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
+@@ -954,8 +997,9 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
+               updates: { folderPath: snap.folderPath }
+             });
+           }
++          // moss-multi seam: folders (T3.B17): the move is undone above, and the refusal says why, once.
++          refuseInput(folderRefusal(err));
+           await fetchBackendFolders();
+-          console.error('[DragDrop] Failed to move folder:', err);
+         }
+       },
+       [fetchBackendFolders, noteList, store, setExpandedFolders, setActiveFolderPath]
+@@ -971,11 +1015,9 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
+           setDragOverTarget(null);
+           setDraggingFolderPath(null);
+           if (!isFolderDropValid(folderPath, targetPath)) return;
+-          try {
+-            await moveFolderToParent(folderPath, targetPath);
+-          } catch (err) {
+-            console.error('[DragDrop] Failed to move folder:', err);
+-          }
++          // moss-multi seam: folders (T3.B17): the server's move rule, the folder's manage and the target's edit.
++          if (!canMoveFolder(folderPath) || !canDropInto(targetPath)) return;
++          await moveFolderToParent(folderPath, targetPath); // moss-multi seam: folders (T3.B17): it announces its own refusal
+           return;
+         }
+ 
+@@ -994,17 +1036,20 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
+ 
+         setDragOverTarget(null);
+         setDraggingNoteId(null);
++        // moss-multi seam: folders (T3.B17): the server's move rule, the note's manage and the target's edit.
++        if (!canMoveNote(noteId) || !canDropInto(targetPath)) return;
+ 
+         try {
+           await moveNoteToFolder(noteId, targetPath);
+         } catch (err) {
+-          console.error('[DragDrop] Failed to move note:', err);
++          refuseInput(folderRefusal(err)); // moss-multi seam: folders (T3.B17): the move is undone; say why
+         }
+       },
+       [moveNoteToFolder, moveFolderToParent, isFolderDropValid, noteList]
+     );
+ 
+     const handleRootDragOver = useCallback((e: React.DragEvent) => {
++      if (!canDropInto(NOTES_FOLDER_NAME)) return; // moss-multi seam: folders (T3.B17): no drop where the caller can't add
+       e.preventDefault();
+       e.dataTransfer.dropEffect = 'move';
+       // Show drop feedback for notes inside a folder or folders not already at root
+@@ -1044,11 +1089,9 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
+           const segments = folderPath.split('/');
+           if (segments.length <= 2) return; // already at root
+           if (!isFolderDropValid(folderPath, NOTES_FOLDER_NAME)) return;
+-          try {
+-            await moveFolderToParent(folderPath, NOTES_FOLDER_NAME);
+-          } catch (err) {
+-            console.error('[DragDrop] Failed to move folder to root:', err);
+-          }
++          // moss-multi seam: folders (T3.B17): the server's move rule, the folder's manage and the root's edit.
++          if (!canMoveFolder(folderPath) || !canDropInto(NOTES_FOLDER_NAME)) return;
++          await moveFolderToParent(folderPath, NOTES_FOLDER_NAME); // moss-multi seam: folders (T3.B17): it announces its own refusal
+           return;
+         }
+ 
+@@ -1065,11 +1108,13 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
+ 
+         setDragOverTarget(null);
+         setDraggingNoteId(null);
++        // moss-multi seam: folders (T3.B17): the server's move rule, the note's manage and the root's edit.
++        if (!canMoveNote(noteId) || !canDropInto(NOTES_FOLDER_NAME)) return;
+ 
+         try {
+           await moveNoteToFolder(noteId, NOTES_FOLDER_NAME);
+         } catch (err) {
+-          console.error('[DragDrop] Failed to move note to root:', err);
++          refuseInput(folderRefusal(err)); // moss-multi seam: folders (T3.B17): the move is undone; say why
+         }
+       },
+       [moveNoteToFolder, moveFolderToParent, isFolderDropValid, noteList]
+@@ -1188,6 +1233,7 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
          await fetchBackendFolders();
        } catch (err) {
          console.warn('[NotesListPanel] Failed to trash folder:', err);
@@ -141,19 +231,19 @@ diff --git a/packages/desktop/src/renderer/panels/NotesListPanelContent.tsx b/pa
        }
        setTrashFolderTarget(null);
      }, [trashFolderTarget, fetchBackendFolders]);
-@@ -1205,7 +1244,10 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
+@@ -1205,7 +1251,10 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
          const isExpanded = expandedFolders.has(folder.path);
          // Show inline subfolder creation input if creating inside this folder
          const showSubfolderInput = isCreatingFolder && creatingFolderParentPath === folder.path;
 -        const isFolderDraggable = folder.type !== 'system';
 +        // moss-multi seam: surfaced shares never offer folder mutations, and only editors change folders (T2.2).
 +        const mutable = !surfacedFolder(folder.path) && canEditFolder(folder.path);
-+        // moss-multi seam: folders: a move changes who can open the subtree, so only the vault's owner drags (A§8).
-+        const isFolderDraggable = mutable && canMoveItems() && folder.type !== 'system';
++        // moss-multi seam: folders: a move changes who can open the subtree, so whoever manages the folder drags (A§8).
++        const isFolderDraggable = canMoveFolder(folder.path) && folder.type !== 'system';
  
          return (
            <ContextMenu key={folder.path}>
-@@ -1217,9 +1259,9 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
+@@ -1217,9 +1266,9 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
              noteCount={folder.noteCount}
              depth={depth}
              isDragOver={dragOverTarget === folder.path && (draggingNoteId != null || (draggingFolderPath != null && isFolderDropTargetValid))}
@@ -165,7 +255,7 @@ diff --git a/packages/desktop/src/renderer/panels/NotesListPanelContent.tsx b/pa
              draggable={isFolderDraggable}
              onDragStart={(e) => {
                e.dataTransfer.setData('application/x-moss-folder', folder.path);
-@@ -1232,8 +1274,8 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
+@@ -1232,8 +1281,8 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
              }}
              isDragging={draggingFolderPath === folder.path}
              onFolderClick={() => setActiveFolderPath(folder.path)}
@@ -176,7 +266,7 @@ diff --git a/packages/desktop/src/renderer/panels/NotesListPanelContent.tsx b/pa
                await foldersApi.rename.invoke({
                  currentPath: folder.path,
                  newName
-@@ -1253,7 +1295,7 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
+@@ -1253,7 +1302,7 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
                    updates: { folderPath: updatedFolderPath }
                  });
                }
@@ -185,7 +275,7 @@ diff --git a/packages/desktop/src/renderer/panels/NotesListPanelContent.tsx b/pa
            >
              {/* Subfolder creation input */}
              {isExpanded && showSubfolderInput && (
-@@ -1306,15 +1348,23 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
+@@ -1306,15 +1355,23 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
            </div>
            </ContextMenuTrigger>
            <ContextMenuContent>
@@ -210,7 +300,7 @@ diff --git a/packages/desktop/src/renderer/panels/NotesListPanelContent.tsx b/pa
            </ContextMenuContent>
            </ContextMenu>
          );
-@@ -1323,7 +1373,8 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
+@@ -1323,7 +1380,8 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
      );
  
      const renderedNotes = useMemo(() => {
@@ -220,12 +310,12 @@ diff --git a/packages/desktop/src/renderer/panels/NotesListPanelContent.tsx b/pa
          return (
            <div className="rounded-xl border border-dashed border-border-subtle bg-surface-raised-card p-4 text-sm text-ink-muted">
              Notes you create will appear here.
-@@ -1643,11 +1694,12 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
+@@ -1643,11 +1701,12 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
          <NotesListPanel
            ref={panelRef}
            className="flex h-full min-w-0 w-full"
 -          onCreateNote={onCreateNote}
-+          onCreateNote={canCreateNote() ? onCreateNote : undefined /* moss-multi seam: capabilities (T2.6) */}
++          onCreateNote={canCreateNote(noteTargetFolder(activeFolderPath, backendFolders)) ? onCreateNote : undefined /* moss-multi seam: capabilities (T2.6, T3.B17) */}
            onCollapse={onCollapse}
            showTitle={false}
            sortContent={sortDropdown}
@@ -235,7 +325,7 @@ diff --git a/packages/desktop/src/renderer/panels/NotesListPanelContent.tsx b/pa
              <DropdownMenu open={folderActionsOpen} onOpenChange={setFolderActionsOpen}>
                <TooltipProvider>
                  <Tooltip>
-@@ -1666,14 +1718,18 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
+@@ -1666,14 +1725,18 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
                  </Tooltip>
                </TooltipProvider>
                <DropdownMenuContent align="start" side="bottom" sideOffset={6} className="min-w-0 w-max">
@@ -254,7 +344,7 @@ diff --git a/packages/desktop/src/renderer/panels/NotesListPanelContent.tsx b/pa
                </DropdownMenuContent>
              </DropdownMenu>
            ) : undefined}
-@@ -1693,7 +1749,7 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
+@@ -1693,7 +1756,7 @@ const NotesListPanelContentComponent = forwardRef<NotesListPanelContentHandle, N
            open={trashFolderTarget !== null}
            onOpenChange={(open) => { if (!open) setTrashFolderTarget(null); }}
            title="Trash folder?"

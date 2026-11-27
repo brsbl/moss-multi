@@ -5,7 +5,7 @@ import { basename } from 'node:path';
 import type { Browser, BrowserContext, Page, TestInfo } from '@playwright/test';
 import { APP_STATE_ATTR, NAMES } from './contract.ts';
 import { observeEditor } from './detectors.js';
-import { assertNotInfra, InfraBlocked } from './infra.ts';
+import { assertNotInfra, closeEachConnection, InfraBlocked } from './infra.ts';
 import {
   actorFindings, domFindings, principalFindings, typedFindings, type ActorView, type DeclaredHttp, type Finding,
 } from './invariants.ts';
@@ -125,6 +125,7 @@ export class Actors {
     const context = await this.browser.newContext(
       size ? { viewport: { width: size.width, height: size.height }, deviceScaleFactor: 2, isMobile: !!size.mobile, hasTouch: !!size.mobile } : {},
     );
+    closeEachConnection(context.request);
     let telemetry: Telemetry | null = null;
     // A routed page's doc sockets are counted by the proxy, which sees them open and close (Telemetry.install).
     const sever = options.severable
@@ -191,9 +192,7 @@ export class Actors {
   async checkpoint(name: string): Promise<void> {
     const findings = (await Promise.all(this.list.map((actor) => domFindings(actor)))).flat();
     if (this.testInfo.tags.includes('@evidence')) {
-      for (const actor of this.list.filter((a) => !a.page.isClosed())) {
-        await this.testInfo.attach(`${name}-${actor.label}.png`, { body: await actor.page.screenshot(), contentType: 'image/png' });
-      }
+      for (const actor of this.list.filter((a) => !a.page.isClosed())) await this.capture(actor, `${name}-${actor.label}.png`);
     }
     if (findings.length > 0) await this.fail(findings, `checkpoint ${name}`);
   }
@@ -230,15 +229,22 @@ export class Actors {
     if (findings.length > 0) await this.fail(findings, 'invariants');
   }
 
+  /** Evidence only: a capture the browser refuses is skipped and noted, never thrown in place of the findings. */
+  private async capture(actor: Actor, name: string): Promise<void> {
+    const shot = await actor.page.screenshot().catch((error: Error) => {
+      this.testInfo.annotations.push({ type: 'capture-skipped', description: `${name}: ${error.message.split('\n')[0]}` });
+      return null;
+    });
+    if (shot) await this.testInfo.attach(name, { body: shot, contentType: 'image/png' });
+  }
+
   /** Attaches the census and a 2x PNG of each offending actor, then fails the test. */
   private async fail(findings: Finding[], where: string): Promise<never> {
     const census = this.list.map((actor) => ({ label: actor.label, url: actor.page.isClosed() ? null : actor.page.url(), ...actor.telemetry }));
     await this.testInfo.attach(`${where}-census.json`, { body: JSON.stringify({ findings, census }, null, 2), contentType: 'application/json' });
     for (const label of new Set(findings.map((f) => f.actor))) {
       const actor = this.list.find((a) => a.label === label);
-      if (actor && !actor.page.isClosed()) {
-        await this.testInfo.attach(`${where}-${label}.png`, { body: await actor.page.screenshot(), contentType: 'image/png' });
-      }
+      if (actor && !actor.page.isClosed()) await this.capture(actor, `${where}-${label}.png`);
     }
     const lines = findings.map((f) => `  invariant ${f.invariant} [${f.actor}] ${f.detail}`);
     throw new Error(`${where}: ${findings.length} finding(s)\n${lines.join('\n')}`);

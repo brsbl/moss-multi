@@ -4,6 +4,7 @@ import * as encoding from 'lib0/encoding';
 import { applyAwarenessUpdate, encodeAwarenessUpdate, removeAwarenessStates, type Awareness } from 'y-protocols/awareness';
 import type { Connection } from 'partyserver';
 import { isRole } from '@moss-multi/protocol/roles';
+import { isRelativePositionJSON } from '@moss-multi/protocol/sync';
 import type { Attachment } from './admission.ts';
 
 type State = Record<string, unknown>;
@@ -67,6 +68,7 @@ export function receivePresence(awareness: Awareness, connection: Connection, me
     if (state !== null) {
       const user = state.user;
       if (!user || !(user.principalId === identity.principalId && user.name === identity.name && user.isAgent === (identity.kind === 'agent') && state.name === identity.name) || state.color !== user.color || typeof user.color !== 'string' || user.color.length > 100 || typeof user.colorSettled !== 'boolean') return;
+      if (!isRelativePositionJSON(state.anchorPos) || !isRelativePositionJSON(state.focusPos)) return;
     } else if (owned !== id) return;
     const previousOwners = connections.filter(peer => peer !== connection && !superseded(peer) && clientId(peer) === id);
     if (previousOwners.some(peer => {

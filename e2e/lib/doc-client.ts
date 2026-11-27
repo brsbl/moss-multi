@@ -54,6 +54,8 @@ export interface DocClient {
   type(text: string): void;
   /** Resolves once a server ack covers everything this client wrote. */
   acked(): Promise<void>;
+  /** Appends one paragraph per text, through the binding, in one update. */
+  paragraphs(texts: string[]): void;
   /** Idempotent. */
   close(): void;
 }
@@ -129,6 +131,13 @@ export async function openDocClient(baseUrl: string, docId: string, cookie: stri
           return [...local].every(([client, clock]) => (acked.get(client) ?? 0) >= clock);
         });
       }),
+    paragraphs: (texts) => {
+      flush();
+      editor.update(() => {
+        const root = $getRoot();
+        for (const text of texts) root.append($createParagraphNode().append($createTextNode(text)));
+      }, { discrete: true });
+    },
     close: () => {
       if (closed) return;
       closed = true;

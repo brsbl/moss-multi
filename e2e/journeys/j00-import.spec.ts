@@ -46,16 +46,19 @@ for (const mime of ['text/markdown', 'text/plain']) {
 }
 
 for (const name of readdirSync(fixtures).filter((name) => name.endsWith('.md')).sort()) {
-  test(`j00 G1: ${name} server import equals UI paste @p:tech-4 @p:note-1`, async ({ actors, stack }) => {
+  test(`j00 G1: ${name} server import equals UI paste @p:tech-4@1 @p:note-1`, async ({ actors, stack }) => {
     const markdown = readFileSync(new URL(name, fixtures), 'utf8');
     const imported = await actors.session(await actors.principal('imported'));
     const pasted = await actors.session(await actors.principal('pasted'));
+    const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR4nGP4DwQACfsD/fteaysAAAAASUVORK5CYII=', 'base64');
     for (const actor of [imported, pasted]) {
       // Fixture media is synthetic. Keep the renderer's resource path while answering it deterministically.
       await actor.page.route('https://**/*', (route) => route.request().resourceType() === 'image'
-        ? route.fulfill({ status: 200, contentType: 'image/png', body: Buffer.from(
-          'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR4nGP4DwQACfsD/fteaysAAAAASUVORK5CYII=', 'base64') })
+        ? route.fulfill({ status: 200, contentType: 'image/png', body: png })
         : route.fulfill({ status: 200, contentType: 'text/html', body: '' }));
+      // The fixtures' local `assets/` media was never uploaded; its asset route (T3.1) is answered the same way.
+      await actor.page.route((url) => /^\/api\/docs\/[^/]+\/assets\/[^/]+$/.test(url.pathname),
+        (route) => route.fulfill({ status: 200, contentType: 'image/png', body: png }));
     }
     const create = async (actor: typeof imported, content?: string) => {
       const response = await actor.context.request.post('/api/docs', {
@@ -74,6 +77,9 @@ for (const name of readdirSync(fixtures).filter((name) => name.endsWith('.md')).
     await expect(ui.pane(pasted, pastedId)).toHaveAttribute('data-sync-unacked', '0');
     const authored = await renderedBody(pasted, pastedId);
     expect(authored, 'the paste changes the empty document (positive control)').not.toEqual(empty);
+    // The paste's click leaves the pointer where a chart can render under it, and a hovered chart shows its tooltip
+    // (WebKit, run 38337313073): the pointer leaves both bodies before they are compared.
+    for (const actor of [imported, pasted]) await actor.page.mouse.move(0, 0);
     await expect(async () => {
       expect(await renderedBody(imported, importedId)).toEqual(await renderedBody(pasted, pastedId));
     }).toPass({ timeout: 10_000 });

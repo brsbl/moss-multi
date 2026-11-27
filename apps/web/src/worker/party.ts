@@ -6,6 +6,7 @@ import { CLOSE, encodePartyPrincipal, TRUSTED, type PartyPrincipal } from '@moss
 import { epochKey } from '@moss-multi/sync/access-epoch';
 import { resolveDocAccess } from '../api/access.ts';
 import type { AuthEnv } from '../auth/auth.ts';
+import { addressBucket } from '../auth/client-address.ts';
 import { resolvePrincipal, shareTokenOf } from '../auth/principal.ts';
 import { createDb } from '../db/client.ts';
 import { crossOriginCookie } from './origin-gate.ts';
@@ -33,6 +34,9 @@ export async function authenticateParty(request: Request, docId: string, env: Au
     [TRUSTED.epoch]: epoch,
   };
   if (principal.type === 'user') headers[TRUSTED.session] = principal.sessionId;
+  // Anonymous answer budgets and socket caps are per link and address (T3.B25).
+  const address = principal.type === 'anonymous' ? addressBucket(request.headers.get('cf-connecting-ip')) : null;
+  if (address) headers[TRUSTED.address] = address;
   // The role and the link's mark come from one read: a socket the link lifted carries it, so revoking the link closes
   // it even when the revocation lands mid-admission; one the link did not lift is not closed by a dead link.
   if (share && (principal.type === 'anonymous' || access.viaLink)) headers[TRUSTED.share] = share;

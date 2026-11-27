@@ -1,7 +1,37 @@
 diff --git a/packages/desktop/src/renderer/editor/plugins/TabBarPlugin.tsx b/packages/desktop/src/renderer/editor/plugins/TabBarPlugin.tsx
 --- a/packages/desktop/src/renderer/editor/plugins/TabBarPlugin.tsx
 +++ b/packages/desktop/src/renderer/editor/plugins/TabBarPlugin.tsx
-@@ -1011,6 +1011,10 @@ function TabBar({
+@@ -552,6 +552,29 @@ function TabBar({
+     [editor, nodeKey, closeOptionsMenu]
+   );
+ 
++  // moss-multi seam: read-only-tabs (T3.B17): a focused tab's own keys (the arrows, Home and End) switch tabs and focus
++  // follows, the tablist pattern. Switching writes nothing (the active tab is local), so a read-only body keeps it.
++  const handleTabKeyDown = useCallback(
++    (event: ReactKeyboardEvent<HTMLDivElement>, index: number) => {
++      if (editingTabKey !== null || event.target !== event.currentTarget) return;
++      const count = tabData.length;
++      const next =
++        event.key === 'ArrowRight' ? (index + 1) % count
++          : event.key === 'ArrowLeft' ? (index - 1 + count) % count
++            : event.key === 'Home' ? 0
++              : event.key === 'End' ? count - 1
++                : -1;
++      if (next < 0 || count < 2) return;
++      event.preventDefault();
++      stopLexicalRootEvent(event);
++      if (next !== index) handleTabClick(next);
++      const focusTab = () => tabBarRef.current?.querySelectorAll<HTMLElement>('[data-tab-item]')[next]?.focus();
++      focusTab();
++      requestAnimationFrame(focusTab);
++    },
++    [editingTabKey, handleTabClick, tabData.length]
++  );
++
+   const handleAddTab = useCallback(() => {
+     editor.update(() => {
+       const node = $getNodeByKey(nodeKey);
+@@ -1011,6 +1034,10 @@ function TabBar({
  
    const handleTabPointerDown = useCallback(
      (event: ReactPointerEvent<HTMLDivElement>, tabKey: string, tabIndex: number) => {
@@ -12,7 +42,7 @@ diff --git a/packages/desktop/src/renderer/editor/plugins/TabBarPlugin.tsx b/pac
        if ((event.button != null && event.button !== 0) || editingTabKey === tabKey) {
          return;
        }
-@@ -1037,7 +1041,7 @@ function TabBar({
+@@ -1037,7 +1064,7 @@ function TabBar({
          hasDragged: false
        };
      },
@@ -21,7 +51,7 @@ diff --git a/packages/desktop/src/renderer/editor/plugins/TabBarPlugin.tsx b/pac
    );
  
    const handleTabPointerMove = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
-@@ -1063,13 +1067,15 @@ function TabBar({
+@@ -1063,13 +1090,15 @@ function TabBar({
  
    const startRename = useCallback(
      (tabKey: string, currentLabel: string) => {
@@ -38,7 +68,15 @@ diff --git a/packages/desktop/src/renderer/editor/plugins/TabBarPlugin.tsx b/pac
    );
  
    const handleTitleTouchEnd = useCallback(
-@@ -1721,7 +1727,8 @@ function TabBar({
+@@ -1671,6 +1700,7 @@ function TabBar({
+               onPointerUp={endTabReorderDrag}
+               onPointerCancel={endTabReorderDrag}
+               onLostPointerCapture={endTabReorderDrag}
++              onKeyDown={(event) => handleTabKeyDown(event, index)}
+               onClick={(event) => {
+                 if (skipNextTabClickRef.current) {
+                   skipNextTabClickRef.current = false;
+@@ -1721,7 +1751,8 @@ function TabBar({
                </span>
              )}
  
@@ -48,7 +86,16 @@ diff --git a/packages/desktop/src/renderer/editor/plugins/TabBarPlugin.tsx b/pac
                <>
                  <div className="relative ml-1 flex h-5 w-5 items-center justify-center">
                    <button
-@@ -1863,6 +1870,8 @@ function TabBar({
+@@ -1828,7 +1859,7 @@ function TabBar({
+             {index < tabData.length - 1 && (
+               <div
+                 role="separator"
+-                tabIndex={isEditorEditable ? 0 : -1}
++                tabIndex={isEditorEditable ? 0 : undefined /* moss-multi seam: read-only-tabs (T3.B17): never focusable read-only */}
+                 aria-disabled={isEditorEditable ? undefined : true}
+                 aria-orientation="vertical"
+                 aria-label={`Resize ${tab.label} tab title`}
+@@ -1863,6 +1894,8 @@ function TabBar({
            );
          })}
  
@@ -57,7 +104,7 @@ diff --git a/packages/desktop/src/renderer/editor/plugins/TabBarPlugin.tsx b/pac
          <button
            className="mb-px flex h-7 w-7 items-center justify-center rounded text-ink-muted hover:bg-border-subtle hover:text-ink-default"
            onClick={handleAddTab}
-@@ -1870,6 +1879,7 @@ function TabBar({
+@@ -1870,6 +1903,7 @@ function TabBar({
          >
            <Plus size={16} />
          </button>

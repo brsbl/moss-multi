@@ -1,0 +1,111 @@
+diff --git a/packages/desktop/src/renderer/editor/plugins/ExternalImagePastePlugin.tsx b/packages/desktop/src/renderer/editor/plugins/ExternalImagePastePlugin.tsx
+--- a/packages/desktop/src/renderer/editor/plugins/ExternalImagePastePlugin.tsx
++++ b/packages/desktop/src/renderer/editor/plugins/ExternalImagePastePlugin.tsx
+@@ -19,11 +19,8 @@ import { $generateNodesFromDOM } from '@lexical/html';
+ import { useLexicalComposerContext } from '@lexical/react/LexicalComposerContext';
+ import { objectKlassEquals } from '@lexical/utils';
+ import {
+-  $createRangeSelection,
+-  $getNodeByKey,
+   $getSelection,
+   $isRangeSelection,
+-  $setSelection,
+   COMMAND_PRIORITY_NORMAL,
+   PASTE_COMMAND,
+   type LexicalEditor
+@@ -37,46 +34,19 @@ import {
+   preflightRemoteImageUrl
+ } from '../utils/remote-image-url';
+ import { useCurrentNoteId } from '../CurrentNoteIdContext';
++// moss-multi seam: web-assets (A§16)
++import { webAssetsInHtml } from '@moss-multi/host/media/web-asset-url';
++import { $holdInsertionPoint, type HeldInsertionPoint } from '@moss-multi/host/media/held-insertion';
+ 
+ const CROSS_NOTE_ASSET_PASTE_CONCURRENCY = 2;
+ 
+-type SavedRangeSelection = {
+-  anchorKey: string;
+-  anchorOffset: number;
+-  anchorType: 'text' | 'element';
+-  focusKey: string;
+-  focusOffset: number;
+-  focusType: 'text' | 'element';
+-};
+-
+-function captureRangeSelection(): SavedRangeSelection | null {
+-  const selection = $getSelection();
+-  if (!$isRangeSelection(selection)) {
+-    return null;
+-  }
+-
+-  return {
+-    anchorKey: selection.anchor.key,
+-    anchorOffset: selection.anchor.offset,
+-    anchorType: selection.anchor.type,
+-    focusKey: selection.focus.key,
+-    focusOffset: selection.focus.offset,
+-    focusType: selection.focus.type
+-  };
++// moss-multi seam: held-insertion (A§16): a replayed range deleted text typed during the copy; a held point follows it
++function captureRangeSelection(): HeldInsertionPoint | null {
++  return $holdInsertionPoint();
+ }
+ 
+-function restoreRangeSelection(saved: SavedRangeSelection): boolean {
+-  const anchorNode = $getNodeByKey(saved.anchorKey);
+-  const focusNode = $getNodeByKey(saved.focusKey);
+-  if (!anchorNode || !focusNode) {
+-    return false;
+-  }
+-
+-  const selection = $createRangeSelection();
+-  selection.anchor.set(saved.anchorKey, saved.anchorOffset, saved.anchorType);
+-  selection.focus.set(saved.focusKey, saved.focusOffset, saved.focusType);
+-  $setSelection(selection);
+-  return true;
++function restoreRangeSelection(saved: HeldInsertionPoint): boolean {
++  return saved.$restore();
+ }
+ 
+ type MossAssetInfo = {
+@@ -127,6 +97,13 @@ function extractAllMossAssetsFromHtml(html: string): MossAssetInfo[] {
+     seenUrls.add(fullUrl);
+     results.push(parsed);
+   }
++  // moss-multi seam: web-assets (A§16): on the web a copied note's media is an asset route URL naming its note
++  for (const asset of webAssetsInHtml(html)) {
++    if (!seenUrls.has(asset.url)) {
++      seenUrls.add(asset.url);
++      results.push(asset);
++    }
++  }
+   return results;
+ }
+ 
+@@ -309,6 +286,8 @@ export function registerExternalImagePaste(editor: LexicalEditor, noteId: string
+             });
+           } catch (err) {
+             console.warn('[ExternalImagePastePlugin] Cross-note paste failed:', err);
++          } finally {
++            insertionPoint.release();
+           }
+         })();
+ 
+@@ -364,6 +343,8 @@ export function registerExternalImagePaste(editor: LexicalEditor, noteId: string
+             });
+           } catch (err) {
+             console.warn('[ExternalImagePastePlugin] External image paste failed:', err);
++          } finally {
++            insertionPoint.release();
+           }
+         })();
+ 
+@@ -415,7 +396,7 @@ export function registerExternalImagePaste(editor: LexicalEditor, noteId: string
+           const imageNode = $createImageNode(saved.relativePath, extractAltFromUrl(pastedUrl));
+           selection.insertNodes([imageNode]);
+         });
+-      });
++      }).finally(() => insertionPoint.release());
+ 
+       return true;
+     },

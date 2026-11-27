@@ -1,7 +1,7 @@
 // Real severs (S-test §3.6). setOffline and CDP offline never close an open WebSocket (L§4.20), so a severable
 // actor's doc sockets run through a routeWebSocket proxy; the whole-server half-open is Stack.pause().
 import type { BrowserContext, WebSocketRoute } from '@playwright/test';
-import { CUSTOM_PREFIX, PAYLOAD_MESSAGE } from '../../packages/protocol/src/sync.ts';
+import { CLOSE, CUSTOM_PREFIX, PAYLOAD_MESSAGE } from '../../packages/protocol/src/sync.ts';
 import { DOC_SOCKET_PATH } from './contract.ts';
 
 interface Conn {
@@ -37,6 +37,13 @@ export interface Sever {
   hold(docId: string): void;
   /** Delivers the held frames in order and stops holding. */
   deliverHeld(): void;
+  /**
+   * Once the DocDO closes one of `docId`'s sockets 4409 (a refused write), the writes the page sends on its later
+   * sockets (sync step 2s, updates and payload frames) wait undelivered; its step 1s still cross, so it binds.
+   */
+  holdWritesAfterRefusal(docId: string): void;
+  /** Stops holding and drops every held frame undelivered, as a closed tab loses them. */
+  dropHeld(): void;
   /** Queues every payload frame the DocDO sends (a block's text still in flight) until `releasePayloads`. */
   holdPayloads(): void;
   releasePayloads(): void;
@@ -53,6 +60,9 @@ const isAck = (message: string | Buffer): boolean => {
 };
 
 const isPayload = (message: string | Buffer): boolean => typeof message !== 'string' && message[0] === PAYLOAD_MESSAGE;
+/** A sync step 2 or update (y-protocols: message 0, then 1 or 2), or a payload frame: a write, not a step 1. */
+const isWrite = (message: string | Buffer): boolean =>
+  typeof message !== 'string' && ((message[0] === 0 && (message[1] === 1 || message[1] === 2)) || message[0] === PAYLOAD_MESSAGE);
 
 const DOC_SOCKET = new RegExp(DOC_SOCKET_PATH.replace(/\//g, '\\/'));
 
@@ -60,6 +70,7 @@ export async function makeSeverable(context: BrowserContext, census?: SocketCens
   const ctl = {
     mode: 'up' as 'up' | 'blackhole', swallowCloses: false, conns: [] as Conn[], dropped: { out: 0, in: 0 }, losingAcks: false, acksLost: 0,
     holding: null as string | null, payloads: null as [Conn, Buffer][] | null,
+    writesOnly: false, holdOnRefusal: null as string | null,
   };
   const heldDoc = (conn: Conn) => {
     const path = new URL(conn.page.url()).pathname;
@@ -70,7 +81,7 @@ export async function makeSeverable(context: BrowserContext, census?: SocketCens
     conn.server = server;
     conn.page.onMessage((message) => {
       if (ctl.mode !== 'up') ctl.dropped.out++;
-      else if (conn.held) conn.held.push(message);
+      else if (conn.held && (!ctl.writesOnly || isWrite(message))) conn.held.push(message);
       else server.send(message);
     });
     server.onMessage((message) => {
@@ -80,6 +91,11 @@ export async function makeSeverable(context: BrowserContext, census?: SocketCens
       else conn.page.send(message);
     });
     server.onClose((code, reason) => {
+      if (code === CLOSE.writeRefused && ctl.holdOnRefusal !== null) {
+        ctl.holding = ctl.holdOnRefusal;
+        ctl.writesOnly = true;
+        ctl.holdOnRefusal = null;
+      }
       if (ctl.mode === 'blackhole' && ctl.swallowCloses) {
         conn.lost = true;
         return;
@@ -151,11 +167,20 @@ export async function makeSeverable(context: BrowserContext, census?: SocketCens
     },
     deliverHeld() {
       ctl.holding = null;
+      ctl.writesOnly = false;
       for (const conn of ctl.conns.filter((c) => c.held)) {
         const frames = conn.held ?? [];
         conn.held = null;
         if (!conn.closed && conn.server) for (const frame of frames) conn.server.send(frame);
       }
+    },
+    holdWritesAfterRefusal(docId) {
+      ctl.holdOnRefusal = docId;
+    },
+    dropHeld() {
+      ctl.holding = null;
+      ctl.writesOnly = false;
+      for (const conn of ctl.conns) conn.held = null;
     },
     holdPayloads() {
       ctl.payloads ??= [];

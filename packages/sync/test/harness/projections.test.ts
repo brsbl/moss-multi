@@ -9,8 +9,18 @@ import { bindLexical, connect, openDoc, start, wake, type Opened, type TestClien
 interface Write { kind: 'title' | 'touch'; docId: string; value: string | number; at: number }
 
 let writes: Write[] = [];
+/** Title writes still to fail, and a gate the empty name's write waits on. */
+let failTitles = 0;
+let failedAt: number[] = [];
+let emptyGate: Promise<void> | null = null;
 const target: ProjectionTarget = {
   title: async (docId, title) => {
+    if (failTitles > 0) {
+      failTitles -= 1;
+      failedAt.push(Date.now());
+      throw new Error('D1 unavailable');
+    }
+    if (title === '' && emptyGate) await emptyGate;
     writes.push({ kind: 'title', docId, value: title, at: Date.now() });
   },
   touch: async (docId, at) => {
@@ -28,6 +38,9 @@ const touches = () => writes.filter((w) => w.kind === 'touch');
 beforeEach(() => {
   vi.useFakeTimers();
   writes = [];
+  failTitles = 0;
+  failedAt = [];
+  emptyGate = null;
 });
 afterEach(() => {
   vi.clearAllTimers();
@@ -107,19 +120,72 @@ describe('title projection', () => {
   });
 });
 
+describe('title projection failures', () => {
+  it('a failed title write retries on its own, though a touch landed after it and nothing else was typed', async () => {
+    const opened = await open();
+    const client = await editor(opened);
+    // Fails at ~0.75 s, ~1.75 s and ~3.75 s, so the trailing touch (~5 s) lands while the title is still failing.
+    failTitles = 3;
+    await typeTitle(client, 'Retried', 10);
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(failedAt.length).toBe(3);
+    const landed = writes.find((w) => w.kind === 'title');
+    expect(landed?.value, 'the retry projected the title').toBe('Retried');
+    expect(touches().some((w) => w.at > failedAt[2] && w.at < landed!.at), 'a touch landed between the last failure and the retry').toBe(true);
+  });
+
+  it('a wake reconciles a title whose write failed before the eviction', async () => {
+    const opened = await open();
+    const client = await editor(opened);
+    failTitles = Number.POSITIVE_INFINITY;
+    await typeTitle(client, 'Healed', 10);
+    await vi.advanceTimersByTimeAsync(800);
+    expect(titles()).toEqual([]);
+    failTitles = 0;
+    const woken = await start(wake(opened));
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(woken.dobj.document.getText('title').toString()).toBe('Healed');
+    expect(titles(), 'the woken DO projected the title D1 lacked').toEqual(['Healed']);
+    writes = [];
+    await start(wake(woken));
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(writes, 'a title D1 already has is not projected again').toEqual([]);
+  });
+
+  it("create's empty name lands before a title projected while its write was in flight", async () => {
+    const opened = await open();
+    let release = () => {};
+    emptyGate = new Promise<void>((done) => { release = done; });
+    const created = opened.dobj.create({ folderId: 'folder-1', ownerId: 'user-1' });
+    await vi.advanceTimersByTimeAsync(0);
+    const client = await editor(opened);
+    await typeTitle(client, 'Newer', 10);
+    await vi.advanceTimersByTimeAsync(800);
+    release();
+    await created;
+    await vi.advanceTimersByTimeAsync(800);
+    expect(titles().at(-1), 'the newer title is the last write, so its title and filename win').toBe('Newer');
+  });
+});
+
 describe('updated_at', () => {
   it('a principal edit touches updated_at at once, then at most every 5 s with a trailing touch', async () => {
     const opened = await open();
     const client = await editor(opened);
     const body = bindLexical(client.doc);
     await client.hello();
+    let edited = 0;
     for (let i = 0; i < 12; i += 1) {
       body.type(`word ${i} `);
       await client.flush();
+      edited = Date.now();
       await vi.advanceTimersByTimeAsync(1_000);
     }
     await vi.advanceTimersByTimeAsync(6_000);
-    const at = touches().map((w) => w.at);
+    const stamps = touches();
+    expect(stamps.at(-1)?.value, 'the trailing touch stamps the last edit, not the time its timer fired').toBe(edited);
+    for (const w of stamps) expect(w.value, 'no stamp is later than its write').toBeLessThanOrEqual(w.at);
+    const at = stamps.map((w) => w.at);
     expect(at.length, '12 edits over 12 s touch 3 or 4 times').toBeGreaterThanOrEqual(3);
     expect(at.length).toBeLessThanOrEqual(4);
     for (let i = 1; i < at.length; i += 1) expect(at[i] - at[i - 1]).toBeGreaterThanOrEqual(5_000);

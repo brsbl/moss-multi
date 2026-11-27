@@ -36,7 +36,7 @@ async function note(actors: Actors, owner: Principal, peer: Principal, label: st
   return { actor, docId, frames };
 }
 
-test('j04-hibernation: a UI-authored note reopens non-empty after a process restart @p:col-6 @p:tech-6', async ({ actors, stack }, info) => {
+test('j04-hibernation: a UI-authored note reopens non-empty after a process restart @p:col-6@1 @p:tech-6', async ({ actors, stack }, info) => {
   const owner = await actors.principal('ada');
   const peer = await actors.principal('ben');
   const { actor, docId } = await note(actors, owner, peer, 'creator');
@@ -52,16 +52,30 @@ test('j04-hibernation: a UI-authored note reopens non-empty after a process rest
   await live(reader, docId);
 });
 
-test('j04-hibernation: reopen and warm creator with a cold peer after shared idle; presence both ways @hibernate @slow @p:col-6 @p:tech-6 @p:col-2', async ({ actors, stack }, info) => {
+test('j04-hibernation: reopen and warm creator with a cold peer after shared idle; presence both ways @hibernate @slow @p:col-6@1 @p:tech-6 @p:col-2', async ({ actors, stack }, info) => {
   test.setTimeout(240_000);
   info.annotations.push({ type: 'quiescence', description: 'simulated document visibility; real surviving WebSocket' });
   const owner = await actors.principal('ada');
   const peer = await actors.principal('ben');
+  // The cold peer is a third person: a page load reads every note its person can list (the formula index), so a
+  // reopen peer that also listed the warm note would wake it before the cold peer arrives.
+  const coldPeer = await actors.principal('cy');
   const closed = await note(actors, owner, peer, 'closed-creator');
-  const warm = await note(actors, owner, peer, 'warm-creator');
+  const warm = await note(actors, owner, coldPeer, 'warm-creator');
   const reader = await actors.session(peer, { label: 'reopen-peer' });
-  const joiner = await actors.session(peer, { label: 'cold-peer' });
+  const joiner = await actors.session(coldPeer, { label: 'cold-peer' });
   const incoming = awarenessFrames(joiner);
+  // Every request and socket naming the warm note, from each page that could wake it.
+  const asked: { actor: string; at: number; what: string }[] = [];
+  for (const actor of [warm.actor, reader, joiner]) {
+    const record = (kind: string, address: string) => {
+      const url = new URL(address);
+      const path = `${url.pathname}${url.search}`;
+      if (path.includes(warm.docId)) asked.push({ actor: actor.label, at: Date.now(), what: `${kind} ${path.replaceAll(warm.docId, '<warm>')}` });
+    };
+    actor.page.on('request', (request) => record(request.method(), request.url()));
+    actor.page.on('websocket', (socket) => record('WS', socket.url()));
+  }
   await expect.poll(() => warm.frames.sent.size).toBe(1);
   const [creatorId] = warm.frames.sent.keys();
   const baseline = await Promise.all([stack.docInstance(closed.docId), stack.docInstance(warm.docId)]);
@@ -73,14 +87,21 @@ test('j04-hibernation: reopen and warm creator with a cold peer after shared idl
   await new Promise((resolve) => setTimeout(resolve, IDLE_MS));
   expect(socket?.closedAt, 'the warm creator socket survives idle').toBeNull();
   expect(warm.frames.sent.get(creatorId), 'hidden presence does not keep the DO awake').toBe(clock);
+  const idleEnd = Date.now();
 
   for (const [index, scenario, actor] of [[0, closed, reader], [1, warm, joiner]] as const) {
     const decisiveAt = Date.now();
     await actor.goto(`/d/${scenario.docId}`);
     await live(actor, scenario.docId);
+    const decisiveEnd = Date.now();
     const after = await stack.docInstance(scenario.docId);
     const proof = { docId: scenario.docId, base: baseline[index], after, decisiveAt, idleMs: IDLE_MS };
     await info.attach(`idle-${index}-instance.json`, { body: JSON.stringify(proof), contentType: 'application/json' });
+    if (scenario === warm) {
+      const others = asked.filter((entry) => entry.actor !== joiner.label && entry.at >= idleEnd && entry.at <= decisiveEnd);
+      await info.attach('warm-requests.json', { body: JSON.stringify({ decisiveAt, constructedAt: after.constructedAt, asked }), contentType: 'application/json' });
+      expect(others.map((entry) => `${entry.actor} ${entry.what} (${entry.at - decisiveAt} ms from the cold peer's action)`), 'only the cold peer asks for the warm note after the idle').toEqual([]);
+    }
     expect(inductionProblems(baseline[index], after, decisiveAt), 'hibernation must be induced').toEqual([]);
     expect(after.instanceId).not.toBe(baseline[index].instanceId);
   }

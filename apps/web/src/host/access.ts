@@ -2,6 +2,7 @@
 // pane gates editing on it and the top bar offers Share on it; both read roles.ts, as the server does.
 import { isRole, type Role } from '@moss-multi/protocol/roles';
 import { useEffect, useSyncExternalStore } from 'react';
+import { heldRead } from './leave.ts';
 
 /** A doc's listing fields as `GET /api/docs/:id` returns them (epoch ms). */
 export interface AccessibleDoc {
@@ -53,26 +54,44 @@ export function askDocAccess(docId: string, fetcher: typeof fetch = (input, init
   return pending;
 }
 
+type OpenAnswer = Extract<DocAnswer, { kind: 'open' }>;
+
+/** The route gate's open answer for the note this document loaded on, until moss's boot takes it (T9.54). */
+let gateAnswer: { docId: string; answer: OpenAnswer } | null = null;
+
+/** The route gate's ask (routes/d.$docId.tsx): an open answer is kept for moss's boot, which starts right behind it. */
+export async function askDocAccessAtGate(docId: string): Promise<DocAnswer> {
+  const answer = await askDocAccess(docId);
+  gateAnswer = answer.kind === 'open' ? { docId, answer } : null;
+  return answer;
+}
+
+/** The gate's open answer for `docId`, once: the server's answer of this document load and never an older one. */
+export function takeGateAnswer(docId: string): OpenAnswer | null {
+  const kept = gateAnswer?.docId === docId ? gateAnswer.answer : null;
+  gateAnswer = null;
+  return kept;
+}
+
+const ACCESS_TIMEOUT_MS = 10_000;
+
+/** Held while the page leaves and asked again if it stays, so a reload never cuts it off (leave.ts). */
 async function readDocAccess(docId: string, fetcher: typeof fetch): Promise<DocAnswer> {
   const share = shareParam();
-  let response: Response;
   try {
-    response = await fetcher(`/api/docs/${encodeURIComponent(docId)}`, {
+    return await heldRead((signal) => fetcher(`/api/docs/${encodeURIComponent(docId)}`, {
       credentials: 'same-origin',
       headers: { accept: 'application/json', ...(share ? { 'x-moss-share': share } : {}) },
-      signal: AbortSignal.timeout(10_000),
-    });
-  } catch {
-    return { kind: 'unavailable' };
-  }
-  if (response.status === 404) return { kind: 'denied' };
-  if (response.status === 401) return { kind: 'signed-out' };
-  if (!response.ok) return { kind: 'unavailable' };
-  try {
-    const body = (await response.json()) as { role?: unknown; doc?: AccessibleDoc };
-    if (!isRole(body.role) || !body.doc) return { kind: 'unavailable' };
-    rememberRole(docId, body.role);
-    return { kind: 'open', role: body.role, doc: body.doc };
+      signal,
+    }), async (response): Promise<DocAnswer> => {
+      if (response.status === 404) return { kind: 'denied' };
+      if (response.status === 401) return { kind: 'signed-out' };
+      if (!response.ok) return { kind: 'unavailable' };
+      const body = (await response.json()) as { role?: unknown; doc?: AccessibleDoc };
+      if (!isRole(body.role) || !body.doc) return { kind: 'unavailable' };
+      rememberRole(docId, body.role);
+      return { kind: 'open', role: body.role, doc: body.doc };
+    }, { timeoutMs: ACCESS_TIMEOUT_MS });
   } catch {
     return { kind: 'unavailable' };
   }
@@ -82,14 +101,15 @@ async function readDocAccess(docId: string, fetcher: typeof fetch): Promise<DocA
 export async function askFolderAccess(folderId: string, fetcher: typeof fetch = (input, init) => fetch(input, init)): Promise<{ kind: 'open' | 'denied' | 'signed-out' | 'unavailable' }> {
   const share = shareParam();
   try {
-    const response = await fetcher(`/api/folders/${encodeURIComponent(folderId)}`, {
+    return await heldRead((signal) => fetcher(`/api/folders/${encodeURIComponent(folderId)}`, {
       credentials: 'same-origin',
       headers: { accept: 'application/json', ...(share ? { 'x-moss-share': share } : {}) },
-      signal: AbortSignal.timeout(10_000),
-    });
-    if (response.status === 404) return { kind: 'denied' };
-    if (response.status === 401) return { kind: 'signed-out' };
-    return { kind: response.ok ? 'open' : 'unavailable' };
+      signal,
+    }), async (response) => {
+      if (response.status === 404) return { kind: 'denied' as const };
+      if (response.status === 401) return { kind: 'signed-out' as const };
+      return { kind: response.ok ? 'open' as const : 'unavailable' as const };
+    }, { timeoutMs: ACCESS_TIMEOUT_MS });
   } catch {
     return { kind: 'unavailable' };
   }

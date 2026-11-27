@@ -1,7 +1,7 @@
 // ported-from: packages/desktop/src/renderer/editor/nodes/FileLinkNode.tsx @ 762abb777
 import type { JSX } from 'react';
 // moss-multi seam: local-view (A§10): resolution depends on the viewer's access.
-import { useNodeView } from '@moss-multi/host/collab/view-state';
+import { nodeView, useNodeView } from '@moss-multi/host/collab/view-state';
 import {
   $applyNodeReplacement,
   DecoratorNode,
@@ -227,7 +227,9 @@ export class FileLinkNode extends DecoratorNode<JSX.Element> {
   }
 
   getNoteId(): string | null {
-    return this.__noteId;
+    // moss-multi seam: local-view (A§10): activation and preview open the note this viewer resolved.
+    const view = nodeView(this.__key);
+    return view?.isResolved !== undefined ? (view.noteId ?? null) : this.__noteId;
   }
 
   getNoteTitle(): string {
@@ -241,7 +243,7 @@ export class FileLinkNode extends DecoratorNode<JSX.Element> {
   }
 
   isResolved(): boolean {
-    return this.__isResolved;
+    return nodeView(this.__key)?.isResolved ?? this.__isResolved;
   }
 
   setResolved(noteId: string | null, isResolved: boolean): FileLinkNode {

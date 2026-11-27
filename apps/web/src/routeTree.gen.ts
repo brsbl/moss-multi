@@ -10,7 +10,9 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as DeviceRouteImport } from './routes/device'
 import { Route as LoginRouteImport } from './routes/login'
+import { Route as PdfExportRouteImport } from './routes/pdf-export'
 import { Route as DDocIdRouteImport } from './routes/d.$docId'
 import { Route as FFolderIdRouteImport } from './routes/f.$folderId'
 import { Route as InviteTokenRouteImport } from './routes/invite.$token'
@@ -20,9 +22,19 @@ const IndexRoute = IndexRouteImport.update({
   path: '/',
   getParentRoute: () => rootRouteImport,
 } as any)
+const DeviceRoute = DeviceRouteImport.update({
+  id: '/device',
+  path: '/device',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const LoginRoute = LoginRouteImport.update({
   id: '/login',
   path: '/login',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const PdfExportRoute = PdfExportRouteImport.update({
+  id: '/pdf-export',
+  path: '/pdf-export',
   getParentRoute: () => rootRouteImport,
 } as any)
 const DDocIdRoute = DDocIdRouteImport.update({
@@ -43,14 +55,18 @@ const InviteTokenRoute = InviteTokenRouteImport.update({
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/device': typeof DeviceRoute
   '/login': typeof LoginRoute
+  '/pdf-export': typeof PdfExportRoute
   '/d/$docId': typeof DDocIdRoute
   '/f/$folderId': typeof FFolderIdRoute
   '/invite/$token': typeof InviteTokenRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/device': typeof DeviceRoute
   '/login': typeof LoginRoute
+  '/pdf-export': typeof PdfExportRoute
   '/d/$docId': typeof DDocIdRoute
   '/f/$folderId': typeof FFolderIdRoute
   '/invite/$token': typeof InviteTokenRoute
@@ -58,20 +74,38 @@ export interface FileRoutesByTo {
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/device': typeof DeviceRoute
   '/login': typeof LoginRoute
+  '/pdf-export': typeof PdfExportRoute
   '/d/$docId': typeof DDocIdRoute
   '/f/$folderId': typeof FFolderIdRoute
   '/invite/$token': typeof InviteTokenRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/login' | '/d/$docId' | '/f/$folderId' | '/invite/$token'
+  fullPaths:
+    | '/'
+    | '/device'
+    | '/login'
+    | '/pdf-export'
+    | '/d/$docId'
+    | '/f/$folderId'
+    | '/invite/$token'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/login' | '/d/$docId' | '/f/$folderId' | '/invite/$token'
+  to:
+    | '/'
+    | '/device'
+    | '/login'
+    | '/pdf-export'
+    | '/d/$docId'
+    | '/f/$folderId'
+    | '/invite/$token'
   id:
     | '__root__'
     | '/'
+    | '/device'
     | '/login'
+    | '/pdf-export'
     | '/d/$docId'
     | '/f/$folderId'
     | '/invite/$token'
@@ -79,7 +113,9 @@ export interface FileRouteTypes {
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  DeviceRoute: typeof DeviceRoute
   LoginRoute: typeof LoginRoute
+  PdfExportRoute: typeof PdfExportRoute
   DDocIdRoute: typeof DDocIdRoute
   FFolderIdRoute: typeof FFolderIdRoute
   InviteTokenRoute: typeof InviteTokenRoute
@@ -94,11 +130,25 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof IndexRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/device': {
+      id: '/device'
+      path: '/device'
+      fullPath: '/device'
+      preLoaderRoute: typeof DeviceRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/login': {
       id: '/login'
       path: '/login'
       fullPath: '/login'
       preLoaderRoute: typeof LoginRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/pdf-export': {
+      id: '/pdf-export'
+      path: '/pdf-export'
+      fullPath: '/pdf-export'
+      preLoaderRoute: typeof PdfExportRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/d/$docId': {
@@ -127,7 +177,9 @@ declare module '@tanstack/react-router' {
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  DeviceRoute: DeviceRoute,
   LoginRoute: LoginRoute,
+  PdfExportRoute: PdfExportRoute,
   DDocIdRoute: DDocIdRoute,
   FFolderIdRoute: FFolderIdRoute,
   InviteTokenRoute: InviteTokenRoute,

@@ -553,6 +553,29 @@ function TabBar({
     [editor, nodeKey, closeOptionsMenu]
   );
 
+  // moss-multi seam: read-only-tabs (T3.B17): a focused tab's own keys (the arrows, Home and End) switch tabs and focus
+  // follows, the tablist pattern. Switching writes nothing (the active tab is local), so a read-only body keeps it.
+  const handleTabKeyDown = useCallback(
+    (event: ReactKeyboardEvent<HTMLDivElement>, index: number) => {
+      if (editingTabKey !== null || event.target !== event.currentTarget) return;
+      const count = tabData.length;
+      const next =
+        event.key === 'ArrowRight' ? (index + 1) % count
+          : event.key === 'ArrowLeft' ? (index - 1 + count) % count
+            : event.key === 'Home' ? 0
+              : event.key === 'End' ? count - 1
+                : -1;
+      if (next < 0 || count < 2) return;
+      event.preventDefault();
+      stopLexicalRootEvent(event);
+      if (next !== index) handleTabClick(next);
+      const focusTab = () => tabBarRef.current?.querySelectorAll<HTMLElement>('[data-tab-item]')[next]?.focus();
+      focusTab();
+      requestAnimationFrame(focusTab);
+    },
+    [editingTabKey, handleTabClick, tabData.length]
+  );
+
   const handleAddTab = useCallback(() => {
     editor.update(() => {
       const node = $getNodeByKey(nodeKey);
@@ -1678,6 +1701,7 @@ function TabBar({
               onPointerUp={endTabReorderDrag}
               onPointerCancel={endTabReorderDrag}
               onLostPointerCapture={endTabReorderDrag}
+              onKeyDown={(event) => handleTabKeyDown(event, index)}
               onClick={(event) => {
                 if (skipNextTabClickRef.current) {
                   skipNextTabClickRef.current = false;
@@ -1836,7 +1860,7 @@ function TabBar({
             {index < tabData.length - 1 && (
               <div
                 role="separator"
-                tabIndex={isEditorEditable ? 0 : -1}
+                tabIndex={isEditorEditable ? 0 : undefined /* moss-multi seam: read-only-tabs (T3.B17): never focusable read-only */}
                 aria-disabled={isEditorEditable ? undefined : true}
                 aria-orientation="vertical"
                 aria-label={`Resize ${tab.label} tab title`}

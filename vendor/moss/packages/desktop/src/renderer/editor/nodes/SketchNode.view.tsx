@@ -8,6 +8,9 @@ import { Undo2, Redo2, Eraser, Check, X, CopyPlus, Minus, Pen, Type, StickyNote 
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@moss/shared/components/ui/tooltip';
 // moss-multi seam: hide-registry (A§9)
 import { hidden } from '@moss-multi/host/affordances';
+// moss-multi seam: register payloads (A§10.10): peer strokes reach an open canvas; local writes carry their base.
+import { useSketchPeerSync, type Rebase } from '@moss-multi/host/collab/sketch-sync';
+import { useMapRegisterWritable } from '@moss-multi/host/collab/register-input';
 // moss-multi seam: converter-split (A§12; S-conv §2.3)
 import { OPEN_BLOCK_COMMENT_COMMAND } from '../commands';
 import { EDITOR_CHROME_COLORS } from '../colors';
@@ -16,6 +19,8 @@ import {
   BLOCK_SURFACE_CLASSNAME,
   BlockNodeShell
 } from '../components/block-node-primitives';
+// moss-multi seam: read-only-decorators (T3.8)
+import { useIsEditorEditable } from '../components/media-primitives';
 import { insertParagraphAdjacentToBlock } from '../utils/block-node-insertion';
 import {
   registerDecoratorDraftFlusher,
@@ -959,8 +964,11 @@ function SketchWrapper({
 
   // Check if grid is empty to auto-enter edit mode
   const isInitialEmpty = initialGrid.every((v) => !v);
+  // moss-multi seam: register payloads (A§10.10): a canvas whose payload has not arrived only looks empty; it is
+  // read-only until then, as a text field is, so no stroke is drawn against nothing.
+  const payloadWritable = useMapRegisterWritable(editor, nodeKey);
 
-  const [isEditing, setIsEditing] = useState(isInitialEmpty);
+  const [isEditing, setIsEditing] = useState(isInitialEmpty && payloadWritable);
   const [grid, setGrid] = useState<boolean[]>(initialGrid);
   const [labels, setLabels] = useState<TextLabel[]>(initialLabels);
   const [undoStack, setUndoStack] = useState<SketchSnapshot[]>([]);
@@ -980,6 +988,8 @@ function SketchWrapper({
   redoRef.current = redoStack;
 
   const isGridEmpty = grid.every((v) => !v);
+  // moss-multi seam: read-only-decorators (T3.8): a read-only canvas offers no Draw, Duplicate, comment or gap.
+  const editable = useIsEditorEditable() && payloadWritable;
 
   const handleEditClick = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
@@ -1008,11 +1018,29 @@ function SketchWrapper({
     [isSelected, setSelected, clearSelection]
   );
 
+  // moss-multi seam: register payloads (A§10.10)
+  const applyPeerChange = useCallback((rebase: Rebase) => {
+    const local = rebase({ grid: gridRef.current, labels: labelsRef.current });
+    gridRef.current = local.grid;
+    labelsRef.current = local.labels;
+    setGrid(local.grid);
+    setLabels(local.labels);
+    const baseline = rebase({ grid: editBaselineGridRef.current, labels: editBaselineLabelsRef.current });
+    editBaselineGridRef.current = baseline.grid;
+    editBaselineLabelsRef.current = baseline.labels;
+    const moveSnapshot = (snapshot: SketchSnapshot) => ({ ...snapshot, grid: rebase({ grid: snapshot.grid, labels: [] as TextLabel[] }).grid });
+    undoRef.current = undoRef.current.map(moveSnapshot);
+    redoRef.current = redoRef.current.map(moveSnapshot);
+    setUndoStack(undoRef.current);
+    setRedoStack(redoRef.current);
+  }, []);
+  const peerSync = useSketchPeerSync(nodeKey, initialGrid, initialLabels, applyPeerChange);
+
   const persistSketchDraft = useCallback(
-    (nextGrid: boolean[], nextLabels: TextLabel[] = labelsRef.current) => {
-      commitSketchDraftToNode(editor, nodeKey, nextGrid, nextLabels);
+    (nextGrid: boolean[], nextLabels: TextLabel[] = labelsRef.current, base = { grid: gridRef.current, labels: labelsRef.current }) => {
+      peerSync.write(() => commitSketchDraftToNode(editor, nodeKey, nextGrid, nextLabels, base));
     },
-    [editor, nodeKey]
+    [editor, nodeKey, peerSync]
   );
 
   const handleDone = useCallback(() => {
@@ -1055,6 +1083,7 @@ function SketchWrapper({
   }, [editor._key, handleDone, isEditing, nodeKey]);
 
   const handleCancel = useCallback(() => {
+    const base = { grid: gridRef.current, labels: labelsRef.current };
     const baselineGrid = editBaselineGridRef.current;
     const baselineLabels = editBaselineLabelsRef.current;
     setGrid(baselineGrid);
@@ -1063,7 +1092,7 @@ function SketchWrapper({
     labelsRef.current = baselineLabels;
     setUndoStack([]);
     setRedoStack([]);
-    persistSketchDraft(baselineGrid, baselineLabels);
+    persistSketchDraft(baselineGrid, baselineLabels, base);
     setIsEditing(false);
   }, [persistSketchDraft]);
 
@@ -1073,40 +1102,44 @@ function SketchWrapper({
   // depend on the toolbar Done path.
   // Undo/redo is grid-only — labels are not part of the undo history.
   const handleGridChange = useCallback((newGrid: boolean[]) => {
+    const base = { grid: gridRef.current, labels: labelsRef.current };
     setUndoStack([...undoRef.current.slice(-49), { grid: gridRef.current }]);
     setRedoStack([]);
     setGrid(newGrid);
     gridRef.current = newGrid;
-    persistSketchDraft(newGrid);
+    persistSketchDraft(newGrid, labelsRef.current, base);
   }, [persistSketchDraft]);
 
   const handleUndo = useCallback(() => {
     const stack = undoRef.current;
     if (stack.length === 0) return;
     const snapshot = stack[stack.length - 1];
+    const base = { grid: gridRef.current, labels: labelsRef.current };
     setRedoStack([...redoRef.current, { grid: gridRef.current }]);
     setGrid(snapshot.grid);
     setUndoStack(stack.slice(0, -1));
     gridRef.current = snapshot.grid;
-    persistSketchDraft(snapshot.grid);
+    persistSketchDraft(snapshot.grid, labelsRef.current, base);
   }, [persistSketchDraft]);
 
   const handleRedo = useCallback(() => {
     const stack = redoRef.current;
     if (stack.length === 0) return;
     const snapshot = stack[stack.length - 1];
+    const base = { grid: gridRef.current, labels: labelsRef.current };
     setUndoStack([...undoRef.current, { grid: gridRef.current }]);
     setGrid(snapshot.grid);
     setRedoStack(stack.slice(0, -1));
     gridRef.current = snapshot.grid;
-    persistSketchDraft(snapshot.grid);
+    persistSketchDraft(snapshot.grid, labelsRef.current, base);
   }, [persistSketchDraft]);
 
   const handleLabelsChange = useCallback(
     (nextLabels: TextLabel[]) => {
+      const base = { grid: gridRef.current, labels: labelsRef.current };
       setLabels(nextLabels);
       labelsRef.current = nextLabels;
-      persistSketchDraft(gridRef.current, nextLabels);
+      persistSketchDraft(gridRef.current, nextLabels, base);
     },
     [persistSketchDraft]
   );
@@ -1169,11 +1202,11 @@ function SketchWrapper({
       selected={isSelected}
       beforeLabel="Insert paragraph before canvas"
       afterLabel="Insert paragraph after canvas"
-      onGapClick={handleGapClick}
+      onGapClick={editable ? handleGapClick : undefined /* moss-multi seam: read-only-decorators (T3.8) */}
       className="my-6 outline-none"
       data-block-decorator-key={nodeKey}
       onClick={handleContainerClick}
-      tabIndex={-1}
+      tabIndex={editable ? -1 : undefined /* moss-multi seam: read-only-decorators (T3.8) */}
     >
       <div
         className={`outline-none transition-colors ${BLOCK_SURFACE_CLASSNAME}`}
@@ -1291,7 +1324,7 @@ function SketchWrapper({
                   </Tooltip>
                 </div>
               </TooltipProvider>
-            ) : (
+            ) : !editable ? null /* moss-multi seam: read-only-decorators (T3.8) */ : (
               <TooltipProvider delayDuration={200}>
                 <div className="flex items-center gap-1">
                   <Tooltip>
@@ -1366,7 +1399,8 @@ export function commitSketchDraftToNode(
   editor: LexicalEditor,
   nodeKey: NodeKey,
   grid: boolean[],
-  labels: TextLabel[]
+  labels: TextLabel[],
+  base?: { grid: boolean[]; labels: TextLabel[] }
 ): void {
   // Commit synchronously: note-switch cleanup saves immediately after flushing
   // decorator drafts. A non-discrete update can defer dirty notification until
@@ -1375,8 +1409,8 @@ export function commitSketchDraftToNode(
     () => {
       const node = $getNodeByKey(nodeKey);
       if (node && $isSketchNode(node)) {
-        node.setGrid(grid);
-        node.setLabels(labels);
+        node.setGrid(grid, base?.grid);
+        node.setLabels(labels, base?.labels);
       }
     },
     { discrete: true }
@@ -1385,5 +1419,5 @@ export function commitSketchDraftToNode(
 
 // moss-multi seam: node-views (A§12)
 registerNodeView(SketchNode.getType(), function decorate(this: SketchNode): JSX.Element {
-    return <SketchWrapper grid={this.__grid} labels={this.__labels} nodeKey={this.__key} commentIds={this.__commentIds} />;
+    return <SketchWrapper grid={this.getGrid()} labels={this.getLabels()} nodeKey={this.__key} commentIds={this.__commentIds} />;
   });

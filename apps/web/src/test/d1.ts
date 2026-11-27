@@ -18,6 +18,8 @@ export const statements = (sql: string) =>
 
 export interface TestD1 {
   db: D1Database;
+  /** The ASSETS R2 bucket (A§16), local to this Miniflare. */
+  assets: R2Bucket;
   dispose: () => Promise<void>;
 }
 
@@ -27,12 +29,39 @@ export async function migratedD1(): Promise<TestD1> {
     script: 'export default { fetch: () => new Response(null) }',
     compatibilityDate: '2025-09-02',
     d1Databases: ['DB'],
+    r2Buckets: ['ASSETS'],
   });
-  const db = (await mf.getD1Database('DB')) as unknown as D1Database;
+  const db = keepingBatches((await mf.getD1Database('DB')) as unknown as D1Database);
+  const assets = (await mf.getR2Bucket('ASSETS')) as unknown as R2Bucket;
   for (const { sql } of migrations()) {
     for (const statement of statements(sql)) await db.prepare(statement).run();
   }
-  return { db, dispose: () => mf.dispose() };
+  return { db, assets, dispose: () => mf.dispose() };
+}
+
+/**
+ * `db` with each batch's statements kept referenced until the batch settles. Miniflare's proxy client sends a
+ * statement's address and then holds no reference to it; when the garbage collector finalizes the statement the client
+ * tells the proxy server to free the address, and a batch still in flight then fails inside Miniflare
+ * (`assert(heapValue !== undefined)`, proxy.worker.ts) before D1 runs anything. A single statement's first `run`,
+ * `all` or `first` is a blocking call, so it cannot be freed mid-call; `batch` on the long-lived handle is the
+ * asynchronous call that takes statements as arguments. Two gaps stay, both unused today: `withSession()` is passed
+ * through raw, so a batch on a session handle is not kept; and a statement used for a second `run`, `all` or `first`
+ * is asynchronous with itself as the target and is not kept either.
+ */
+function keepingBatches(db: D1Database): D1Database {
+  const inFlight = new Set<D1PreparedStatement[]>();
+  return {
+    prepare: (query: string) => db.prepare(query),
+    batch: (list: D1PreparedStatement[]) => {
+      const settled = db.batch(list);
+      inFlight.add(list);
+      return settled.finally(() => inFlight.delete(list));
+    },
+    exec: (query: string) => db.exec(query),
+    dump: () => db.dump(),
+    withSession: (constraint?: string) => db.withSession(constraint as never),
+  } as unknown as D1Database;
 }
 
 /** D1 allows at most this many bound parameters per statement. */
@@ -60,4 +89,55 @@ export function countingBinds(db: D1Database): { db: D1Database; binds: number[]
     },
   });
   return { db: wrapped, binds, prepared: () => prepared };
+}
+
+/**
+ * `db` with every row D1 hands back counted (`rows`) and every round trip, a statement or a batch, counted (`trips`).
+ * `after`, when given, runs once a statement's rows are in hand and before its caller sees them.
+ */
+export function countingRows(db: D1Database, after?: (rows: unknown) => Promise<void> | void) {
+  let rows = 0;
+  let trips = 0;
+  const real = new WeakMap<object, D1PreparedStatement>();
+  const seen = async <T>(result: T, count: number): Promise<T> => {
+    rows += count;
+    if (after) await after(result);
+    return result;
+  };
+  const wrap = (statement: D1PreparedStatement): D1PreparedStatement => {
+    const wrapped = new Proxy(statement, {
+      get(target, name) {
+        if (name === 'bind') return (...values: unknown[]) => wrap(target.bind(...values));
+        if (name === 'all') return async () => { trips += 1; const result = await target.all(); return seen(result, result.results.length); };
+        if (name === 'run') return async () => { trips += 1; const result = await target.run(); return seen(result, result.results?.length ?? 0); };
+        if (name === 'first') return async (column?: string) => {
+          trips += 1;
+          const result = await (column === undefined ? target.first() : target.first(column));
+          return seen(result, result === null ? 0 : 1);
+        };
+        if (name === 'raw') return async (options?: { columnNames?: boolean }) => {
+          trips += 1;
+          const result = await target.raw(options as { columnNames: true });
+          return seen(result, result.length - (options?.columnNames ? 1 : 0));
+        };
+        const value = Reflect.get(target, name, target);
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    });
+    real.set(wrapped, statement);
+    return wrapped;
+  };
+  const wrapped = new Proxy(db, {
+    get(target, key) {
+      if (key === 'prepare') return (query: string) => wrap(target.prepare(query));
+      if (key === 'batch') return async (statements: D1PreparedStatement[]) => {
+        trips += 1;
+        const results = await target.batch(statements.map((statement) => real.get(statement) ?? statement));
+        return seen(results, results.reduce((sum, result) => sum + (result.results?.length ?? 0), 0));
+      };
+      const value = Reflect.get(target, key, target);
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  });
+  return { db: wrapped, rows: () => rows, trips: () => trips };
 }

@@ -22,9 +22,8 @@ import { $createImageNode } from '../nodes/ImageNode';
 import { $createVideoNode } from '../nodes/VideoNode';
 import { imagesApi } from '../../api/electron';
 import { EDITOR_CHROME_COLORS } from '../colors';
-// moss-multi seam: hide-registry (A§9)
-import { hidden } from '@moss-multi/host/affordances';
-import { MEDIA_UPLOAD_REFUSED, refuseInput } from '@moss-multi/host/refusal';
+// moss-multi seam: web-assets (A§16)
+import { AnnouncedRefusal } from '@moss-multi/host/refusal';
 import {
   extractAltFromUrl,
   isHttpsImageUrl,
@@ -553,11 +552,6 @@ export function registerMediaDrop(
 
       if (mediaFiles.length > 0) {
         event.preventDefault();
-        // moss-multi seam: hide-registry (A§9): uploads land in M3; until then a dropped file is refused visibly
-        if (hidden('media-upload')) {
-          refuseInput(MEDIA_UPLOAD_REFUSED);
-          return true;
-        }
         const droppedLocalMediaReferences = dataTransfer.types.includes('text/uri-list')
           ? parseLocalMediaReferencesFromUriList(dataTransfer.getData('text/uri-list'))
           : [];
@@ -626,7 +620,8 @@ export function registerMediaDrop(
                 $insertMediaAtPosition(imageNode, dropTarget);
               });
             } catch (error) {
-              console.error('[MediaDropPlugin] Failed to process dropped media:', error);
+              // moss-multi seam: web-assets (A§16): a refused upload is already announced in the notice band
+              if (!(error instanceof AnnouncedRefusal)) console.error('[MediaDropPlugin] Failed to process dropped media:', error);
             }
           }
         })();

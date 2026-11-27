@@ -19,6 +19,11 @@ class NodeViewBoundary extends Component<{ type: string; children?: ReactNode },
     return { failed: true };
   }
 
+  // A node's next render (a peer's edit, a register arriving after its node) gets a fresh try.
+  componentDidUpdate(previous: { children?: ReactNode }): void {
+    if (this.state.failed && previous.children !== this.props.children) this.setState({ failed: false });
+  }
+
   componentDidCatch(error: Error, info: ErrorInfo): void {
     console.error(`[node-view] ${this.props.type} failed to render`, error, info.componentStack);
   }

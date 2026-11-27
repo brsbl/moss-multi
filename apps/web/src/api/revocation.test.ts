@@ -1,7 +1,7 @@
 // The one kick path over REST (T2.5; A§7, A§8): lowering or removing a member, revoking a link, moving a note or a
 // folder out from under a grant or link, and signing out each reach every recipient DocDO through an awaited recheck
 // before the call returns, and a DO that does not acknowledge fails the call with 503 so the owner can retry.
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { migratedD1, type TestD1 } from '../test/d1.ts';
 import {
   BASE, insertAgent, insertDoc, insertFolder, insertGrant, insertLink, SECRET, signedUpUser, type AuthTestEnv, type TestUser,
@@ -16,6 +16,7 @@ interface Recheck { principalIds?: string[]; tokens?: string[]; sessions?: strin
 const rechecks: { docId: string; input: Recheck }[] = [];
 const failing = new Set<string>();
 const ended: { principalId: string; sessionId: string }[] = [];
+const published: { principalId: string; event: unknown }[] = [];
 let endFails = false;
 
 const DocDO = {
@@ -34,7 +35,7 @@ const PrincipalDO = {
   idFromName: (name: string) => ({ name, toString: () => name }),
   get: (id: { name: string }) => ({
     setName: async () => undefined,
-    publish: async () => undefined,
+    publish: async (event: unknown) => { published.push({ principalId: id.name, event }); },
     endSession: async (sessionId: string) => {
       if (endFails) throw new Error('PrincipalDO unavailable');
       ended.push({ principalId: id.name, sessionId });
@@ -60,6 +61,7 @@ beforeEach(() => {
   rechecks.length = 0;
   failing.clear();
   ended.length = 0;
+  published.length = 0;
   endFails = false;
   race = null;
 });
@@ -132,6 +134,34 @@ describe('members: lowering and removing access kicks @p:ppl-2', () => {
     expect(kicked(docId)).toHaveLength(1);
     expect([...(kicked(docId)[0].input.principalIds ?? [])].sort()).toEqual([agent.id, fay.id].sort());
     expect(kicked(docId)[0].input.at).toBeGreaterThanOrEqual(before);
+  });
+
+  it('the sidebar invalidation reaches a removed or lowered person’s live agents too, never a revoked one', async () => {
+    const fay = await signedUpUser(env, 'kick-fay-agents', 'Fay');
+    const agent = await insertAgent(d1.db, fay);
+    const retired = await insertAgent(d1.db, fay);
+    await d1.db.prepare('UPDATE agents SET revoked_at = ? WHERE id = ?').bind(Date.now(), retired.id).run();
+    const heard = (principalId: string) => published.filter((p) => p.principalId === principalId).map((p) => p.event);
+
+    const docId = await insertDoc(d1.db, ada);
+    await insertGrant(d1.db, { docId }, fay, 'editor');
+    expect((await call('DELETE', `/api/docs/${docId}/members`, ada.cookie, { principalId: fay.id })).status).toBe(200);
+    const meta = { type: 'meta', docIds: [docId], folderIds: [] };
+    await vi.waitFor(() => {
+      expect(heard(fay.id)).toContainEqual(meta);
+      expect(heard(agent.id), 'the live agent').toContainEqual(meta);
+    });
+    expect(heard(retired.id), 'a revoked agent').toEqual([]);
+
+    published.length = 0;
+    const folder = await insertFolder(d1.db, ada, ada.homeId);
+    await insertGrant(d1.db, { folderId: folder }, fay, 'editor');
+    expect((await call('PATCH', `/api/folders/${folder}/members`, ada.cookie, { principalId: fay.id, role: 'viewer' })).status).toBe(200);
+    await vi.waitFor(() => {
+      expect(heard(fay.id)).toContainEqual({ type: 'vaults' });
+      expect(heard(agent.id), 'the live agent').toContainEqual({ type: 'vaults' });
+    });
+    expect(heard(retired.id), 'a revoked agent').toEqual([]);
   });
 
   it('a raise kicks nobody: a promotion takes effect on reload', async () => {
