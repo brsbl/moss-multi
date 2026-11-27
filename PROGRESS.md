@@ -1,18 +1,18 @@
 # moss-multi progress
 
-**Overall: 79% done** (241 of 304 planned tasks verified)
+**Overall: 81% done** (251 of 309 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
 | M0 Foundation | Open the real moss shell from the built Worker; sign up and in; a note survives a restart | 19 / 19 | in progress |
 | M1 Two people, one note | Share a note and co-edit live with presence, cursors, shared titles | 20 / 20 | in progress |
 | M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 13 / 13 | in progress |
-| M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 75 / 75 | in progress |
-| M4 Comments | Moss's full comment experience as CRDT data | 19 / 20 | in progress |
-| M5 Suggestions | Suggest mode, vetting, accept/reject | 31 / 31 | in progress |
-| M6 History | Versions, view, diff, identity-preserving restore | 20 / 20 | in progress |
-| M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 26 / 26 | in progress |
-| M8 Ship | Everything on a permanent staging URL with demo content | 18 / 19 | |
+| M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 78 / 75 | in progress |
+| M4 Comments | Moss's full comment experience as CRDT data | 21 / 21 | in progress |
+| M5 Suggestions | Suggest mode, vetting, accept/reject | 33 / 32 | in progress |
+| M6 History | Versions, view, diff, identity-preserving restore | 21 / 21 | in progress |
+| M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 27 / 27 | in progress |
+| M8 Ship | Everything on a permanent staging URL with demo content | 19 / 20 | |
 
 A task counts only after an independent checker passes it on green CI. Each milestone also ends with the cumulative journey suite green in Chromium and WebKit and a naive-user critic pass.
 
@@ -274,6 +274,9 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-11-27 — T5.X verified: suggestions now run on m4 with its reviewed fixes of 2026-11-27 (the cold peer of its own and plain spaces in titles, a share link that opens the shared note for someone with notes of their own, the one-replay GET, the screenshot capture guard, the macos job, the last-edit updated time and the comment shortcut leg), together with this layer's suggester words that survive a dropped connection and wedge click that survives a repaint, with a full run green on the merged commit.
 - 2026-11-27 — T6.X verified: history now runs on m5 with its reviewed fixes of 2026-11-27 (the cold peer of its own and plain spaces in titles, a share link that opens the shared note for someone with notes of their own, the one-replay GET, the screenshot capture guard, the macos job, the last-edit updated time, the comment shortcut leg, the suggester words that survive a dropped connection and the wedge click that survives a repaint), with a full run green on the merged commit.
 - 2026-11-27 — T7.X verified: agent sync, Bot presence and the watch daemon now run on m6 with its reviewed fixes of 2026-11-27 (the cold peer of its own and plain spaces in titles, a share link that opens the shared note for someone with notes of their own, the one-replay GET, the screenshot capture guard, the macos job, the last-edit updated time, the comment shortcut leg, the suggester words that survive a dropped connection and the wedge click that survives a repaint), with a full run green on the merged commit.
+- 2026-11-27 — T5.S16 verified (its form for m8): a person with one note open in two Suggest windows keeps what they typed offline through a reconnect and a cooldown, as on m5, and on the staging build the outdated notice's Reload now asks about offered-back text once, as it does about unsynced edits, and "Reload anyway" reloads without the browser asking a second time.
+- 2026-11-27 — T9.55 verified (sections f the control, h): the recording selftest's control no longer fails when Chromium refuses a screenshot, because it counts each capture the harness asks for and returns a fixed image, and the `rebind-keeps-text` fixture rebinds when the selftest asks after typing rather than after 200 ms of quiet, so a pause between keys no longer fails it.
+- 2026-11-27 — T8.X verified: the staging build now runs on m7 with its reviewed fixes of 2026-11-27 (the cold peer of its own and plain spaces in titles, a share link that opens the shared note for someone with notes of their own, the one-replay GET, the screenshot capture guard, the macos job, the last-edit updated time, the comment shortcut leg, the suggester words that survive a dropped connection and the wedge click that survives a repaint), together with this layer's outdated-notice Reload that asks about offered-back text and the recording control and rebind fixture that no longer fail on their own, with a full run green on the merged commit.
 
 ### T9.55e — a replayed GET waits until the closing connections have closed
 
