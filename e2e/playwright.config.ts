@@ -7,6 +7,11 @@ import { existsSync, readFileSync } from 'node:fs';
 import { defineConfig, type ReporterDescription } from '@playwright/test';
 import { ALL, journeyMatch } from '../scripts/ci/journeys.mjs';
 import { CANARY_REPORTER, isLoopback, RECORD_FAILURES, recordingFor } from '../scripts/deploy/canary-artifacts.mjs';
+import { ownConnections } from './lib/infra.ts';
+
+// Every worker of every project loads this file before its first request, whatever its specs import `test` from: the
+// parity, viewer and editor specs take it from @playwright/test itself and never load e2e/lib/test.ts (infra.ts).
+ownConnections();
 
 const statePath = process.env.STACK_STATE;
 const stack = statePath && existsSync(statePath) ? (JSON.parse(readFileSync(statePath, 'utf8')) as { baseUrl: string }) : null;
