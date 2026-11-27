@@ -487,12 +487,14 @@ test('j08 link notes: when the listing read that Back starts is refused, the lin
   const { own } = await ownNotes(actors, benPrincipal, stack.baseUrl, ['Ben older', 'Ben newer']);
   const [older, newer] = own;
 
-  // The listing read that the return starts is refused once; a 5xx would itself fail invariant 1, so it is a 429.
+  // The listing read that the return starts is refused once; a 5xx would itself fail invariant 1, so it is a 429. That
+  // read names the note returned to (`doc`); moss's own re-read of the list, which a visit just before can still have
+  // pending, names none, and refusing it would be a different case (moss logs its failed hydrate).
   const ben = await actors.session(benPrincipal, { label: 'ben-refused-back' });
   let refuse = 0;
   let refused = 0;
   await ben.page.route((url) => url.pathname === '/api/workspace', async (route: Route) => {
-    if (refuse > 0) {
+    if (refuse > 0 && new URL(route.request().url()).searchParams.get('doc') === docId) {
       refuse -= 1;
       refused += 1;
       await route.fulfill({ status: 429, contentType: 'text/plain', body: 'Too many requests' });
