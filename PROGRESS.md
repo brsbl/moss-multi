@@ -1,16 +1,16 @@
 # moss-multi progress
 
-**Overall: 65% done** (197 of 304 planned tasks verified)
+**Overall: 66% done** (205 of 307 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
 | M0 Foundation | Open the real moss shell from the built Worker; sign up and in; a note survives a restart | 19 / 19 | in progress |
 | M1 Two people, one note | Share a note and co-edit live with presence, cursors, shared titles | 20 / 20 | in progress |
 | M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 13 / 13 | in progress |
-| M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 75 / 75 | in progress |
-| M4 Comments | Moss's full comment experience as CRDT data | 19 / 20 | in progress |
-| M5 Suggestions | Suggest mode, vetting, accept/reject | 31 / 31 | in progress |
-| M6 History | Versions, view, diff, identity-preserving restore | 20 / 20 | in progress |
+| M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 78 / 75 | in progress |
+| M4 Comments | Moss's full comment experience as CRDT data | 21 / 21 | in progress |
+| M5 Suggestions | Suggest mode, vetting, accept/reject | 33 / 32 | in progress |
+| M6 History | Versions, view, diff, identity-preserving restore | 21 / 21 | in progress |
 | M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 0 / 5 | |
 | M8 Ship | Everything on a permanent staging URL with demo content | 0 / 5 | |
 
@@ -235,6 +235,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-11-27 — T5.S16 verified: a person with one note open in two Suggest windows no longer loses text typed offline in one of them when the other reconnects first, a reconnect, a second window or a stalled connection's late frames no longer lock them out, a cooldown says suggesting is paused, keeps the text and reconnects by itself to deliver it, and offered-back text makes a reload, a sign-out or an in-app leave ask first.
 - 2026-11-27 — T9.55 verified (section d): a click on a suggestion's wedge now opens its card even when the note repaints during the click, because each standing mark keeps its element across repaints, and the preview under a resting pointer stays shown with the current text while the suggester types.
 - 2026-11-27 — T5.X verified: suggestions now run on m4 with its reviewed fixes of 2026-11-27 (the cold peer of its own and plain spaces in titles, a share link that opens the shared note for someone with notes of their own, the one-replay GET, the screenshot capture guard, the macos job, the last-edit updated time and the comment shortcut leg), together with this layer's suggester words that survive a dropped connection and wedge click that survives a repaint, with a full run green on the merged commit.
+- 2026-11-27 — T6.X verified: history now runs on m5 with its reviewed fixes of 2026-11-27 (the cold peer of its own and plain spaces in titles, a share link that opens the shared note for someone with notes of their own, the one-replay GET, the screenshot capture guard, the macos job, the last-edit updated time, the comment shortcut leg, the suggester words that survive a dropped connection and the wedge click that survives a repaint), with a full run green on the merged commit.
 
 ### T9.55e — a replayed GET waits until the closing connections have closed
 
