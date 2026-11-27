@@ -1,13 +1,13 @@
 # moss-multi progress
 
-**Overall: 50% done** (153 of 305 planned tasks verified)
+**Overall: 50% done** (154 of 306 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
 | M0 Foundation | Open the real moss shell from the built Worker; sign up and in; a note survives a restart | 19 / 19 | in progress |
 | M1 Two people, one note | Share a note and co-edit live with presence, cursors, shared titles | 20 / 20 | in progress |
 | M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 13 / 13 | in progress |
-| M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 78 / 75 | in progress |
+| M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 79 / 76 | in progress |
 | M4 Comments | Moss's full comment experience as CRDT data | 21 / 21 | in progress |
 | M5 Suggestions | Suggest mode, vetting, accept/reject | 2 / 5 | in progress |
 | M6 History | Versions, view, diff, identity-preserving restore | 0 / 4 | |
