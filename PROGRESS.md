@@ -1,14 +1,14 @@
 # moss-multi progress
 
-**Overall: 49% done** (148 of 304 planned tasks verified)
+**Overall: 50% done** (153 of 305 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
 | M0 Foundation | Open the real moss shell from the built Worker; sign up and in; a note survives a restart | 19 / 19 | in progress |
 | M1 Two people, one note | Share a note and co-edit live with presence, cursors, shared titles | 20 / 20 | in progress |
 | M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 13 / 13 | in progress |
-| M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 75 / 75 | in progress |
-| M4 Comments | Moss's full comment experience as CRDT data | 19 / 20 | in progress |
+| M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 78 / 75 | in progress |
+| M4 Comments | Moss's full comment experience as CRDT data | 21 / 21 | in progress |
 | M5 Suggestions | Suggest mode, vetting, accept/reject | 2 / 5 | in progress |
 | M6 History | Versions, view, diff, identity-preserving restore | 0 / 4 | |
 | M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 0 / 5 | |
@@ -174,6 +174,8 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-11-27 — T9.52 verified (sections a and c): j04's hibernation leg now gives its cold peer a person of its own and checks that only the cold peer asks for the warm note after the idle, and a space typed first in a title or before a pasted word is now stored as a plain space rather than U+00A0, because the title field keeps spaces as typed.
 - 2026-11-27 — T9.54h verified: a person signed in with notes of their own who opens a share link to someone else's note now sees that note, at the link's role and with no sidebar row, instead of their own newest note, and the new link-notes journey covers view, comment and edit links, sign-in from a link, a held or failed first listing, refused links and a link revoked while open.
 - 2026-11-27 — T9.55 verified (sections e, f the capture guard, h and b): a GET lost while the stack's pooled connections idle out together is now answered on one replay instead of parked, a screenshot the browser refuses is skipped and recorded instead of replacing a test's findings, the macos job runs only the `@macos` selftests and legs and the `duplicated` selftest no longer depends on the pace of typing, and a note's updated time is now its last edit, so two notes written back to back keep their newest-first order.
+- 2026-11-27 — T9.52b verified: the j15 comment shortcut leg now selects its code block from the keyboard, with the caret at the end of the paragraph above, ArrowDown and the selection outline before the shortcut, because a click beside a block does not keep it selected, as in Moss.
+- 2026-11-27 — T4.X verified: comments now run on m3 with its reviewed fixes of 2026-11-27 (the cold peer of its own and plain spaces in titles, a share link that opens the shared note for someone with notes of their own, the one-replay GET, the screenshot capture guard, the macos job and the last-edit updated time), together with this layer's comment shortcut leg, with a full run green on the merged commit.
 
 ### T9.55e — a replayed GET waits until the closing connections have closed
 
