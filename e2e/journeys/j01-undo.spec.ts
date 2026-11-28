@@ -291,11 +291,12 @@ test('j01 undo: Ada creates a line and deletes Ben\'s words from it within one u
     await expect(paragraph(ben, id, 'x*Alpha')).toBeVisible({ timeout: PEER_TIMEOUT });
     await caretAtEnd(ben, id, 'x*Alpha'); await ben.page.keyboard.type(' BEN');
   })();
-  for (let i = 0; !(await docText(ada, id)).includes(' BEN'); i++) {
-    expect(i, 'Ben\'s words reach Ada').toBeLessThan(80);
+  let i = 0;
+  do {
+    expect(i++, 'Ben\'s words reach Ada').toBeLessThan(80);
     await ada.page.keyboard.type('x');
     await ada.page.waitForTimeout(200);
-  }
+  } while (!(await docText(ada, id)).includes(' BEN'));
   await benTypes;
   await selectEnd(ada, id, 'x*Alpha', ' BEN'.length);
   await ada.page.keyboard.press('Backspace');
