@@ -55,16 +55,38 @@ export function newPrincipal(runToken: string, label: string, n: number): Princi
 /** Signs up `mm-<runToken>-<label>-<n>@example.invalid` with a same-origin Origin (better-auth 403s without it). */
 export async function mintPrincipal(baseUrl: string, runToken: string, label: string, n: number): Promise<Principal> {
   const { email, name, password } = newPrincipal(runToken, label, n);
-  const response = await fetch(`${baseUrl}/api/auth/sign-up/email`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json', origin: baseUrl },
-    body: JSON.stringify({ email, password, name }),
-    signal: AbortSignal.timeout(15_000),
-  });
-  const text = await response.text();
+  const { response, text, lost } = await setupPost(baseUrl, '/api/auth/sign-up/email', { email, password, name });
+  // A sign-up lost after the Worker stored it is answered "already exists" on the resend: sign in for its id.
+  if (lost && !response.ok && /already exists/i.test(text)) {
+    const signedIn = await setupPost(baseUrl, '/api/auth/sign-in/email', { email, password });
+    if (!signedIn.response.ok) throw new Error(`sign-in for ${email}: ${signedIn.response.status} ${signedIn.text.slice(0, 200)}`);
+    return { label, name, email, password, id: (JSON.parse(signedIn.text) as { user?: { id?: string } }).user?.id ?? null };
+  }
   if (!response.ok) throw new Error(`sign-up for ${email}: ${response.status} ${text.slice(0, 200)}`);
   const id = (JSON.parse(text) as { user?: { id?: string } }).user?.id ?? null;
   return { label, name, email, password, id };
+}
+
+// wrangler dev's proxy answers a POST whose forward was lost on a closing keep-alive connection with this 503 (see
+// patches/wrangler@4.113.0.patch); a local workerd busy with a large doc's work widens that race.
+const LOST_FORWARD = 'Your worker restarted mid-request';
+
+/**
+ * A declared-setup auth POST, sent once more if wrangler's proxy lost its forward. `lost` says a resend happened, so
+ * the first may have been applied.
+ */
+async function setupPost(baseUrl: string, path: string, body: object): Promise<{ response: Response; text: string; lost: boolean }> {
+  const send = () => fetch(`${baseUrl}${path}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', origin: baseUrl },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(15_000),
+  });
+  const first = await send();
+  const text = await first.text();
+  if (first.status !== 503 || !text.startsWith(LOST_FORWARD)) return { response: first, text, lost: false };
+  const again = await send();
+  return { response: again, text: await again.text(), lost: true };
 }
 
 export function parseSetCookie(header: string, url: string): SessionCookie {
@@ -88,13 +110,8 @@ export function parseSetCookie(header: string, url: string): SessionCookie {
 /** One fresh session per browser context: session tokens are single-issue (L§4.20). */
 export async function signIn(baseUrl: string, principal: Principal): Promise<SessionCookie[]> {
   assertTestEmail(principal.email);
-  const response = await fetch(`${baseUrl}/api/auth/sign-in/email`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json', origin: baseUrl },
-    body: JSON.stringify({ email: principal.email, password: principal.password }),
-    signal: AbortSignal.timeout(15_000),
-  });
-  if (!response.ok) throw new Error(`sign-in for ${principal.email}: ${response.status} ${(await response.text()).slice(0, 200)}`);
+  const { response, text } = await setupPost(baseUrl, '/api/auth/sign-in/email', { email: principal.email, password: principal.password });
+  if (!response.ok) throw new Error(`sign-in for ${principal.email}: ${response.status} ${text.slice(0, 200)}`);
   const cookies = response.headers.getSetCookie().map((header) => parseSetCookie(header, baseUrl));
   if (cookies.length === 0) throw new Error(`sign-in for ${principal.email} set no cookie`);
   return cookies;

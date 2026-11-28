@@ -3,7 +3,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { fromDisplaySrc, toDisplaySrc } from './asset-url.ts';
 import { buildMediaServerUrl } from './media-server-url.ts';
-import { parseWebAssetUrl, webAssetsInHtml } from './web-asset-url.ts';
+import { parseWebAssetUrl, versionPreviewNoteId, webAssetsInHtml } from './web-asset-url.ts';
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -12,6 +12,13 @@ describe('toDisplaySrc', () => {
     expect(toDisplaySrc('assets/pattern.png', 'd1')).toBe('/api/docs/d1/assets/pattern.png');
     expect(toDisplaySrc('./assets/clip.webm', 'd1')).toBe('/api/docs/d1/assets/clip.webm');
     expect(toDisplaySrc('assets/a b.png', 'doc/2')).toBe('/api/docs/doc%2F2/assets/a%20b.png');
+  });
+
+  it("resolves a version shown in History against its note's files (T6.3)", () => {
+    const preview = versionPreviewNoteId('d1', 'v9');
+    expect(preview).not.toBe('d1');
+    expect(toDisplaySrc('assets/pattern.png', preview)).toBe('/api/docs/d1/assets/pattern.png');
+    expect(buildMediaServerUrl('assets/clip.webm', preview)).toBe('/api/docs/d1/assets/clip.webm');
   });
 
   it('threads the share link a reader opened the note with', () => {

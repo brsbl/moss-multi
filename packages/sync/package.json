@@ -14,6 +14,7 @@
     "./fanout": "./src/fanout.ts",
     "./access-epoch": "./src/access-epoch.ts",
     "./registers": "./src/registers.ts",
+    "./restore-base": "./src/restore-base.ts",
     "./search": "./src/search-core.ts",
     "./paste-rollback": "./src/paste-rollback.ts",
     "./suggest/client": "./src/suggest/client.ts",

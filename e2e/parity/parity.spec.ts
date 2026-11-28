@@ -6,7 +6,9 @@ import { join } from 'node:path';
 import { expect, test, type Browser, type Page } from '@playwright/test';
 import { PNG } from 'pngjs';
 import { AFFORDANCES } from '../../apps/web/src/host/affordances.ts';
-import { APP_STATE_ATTR, DOC_STATE_ATTR, EDITOR_PANE_ATTR } from '../lib/contract.ts';
+import {
+  APP_STATE_ATTR, DOC_STATE_ATTR, EDITOR_PANE_ATTR, HISTORY_BUTTON_ATTR, HISTORY_VIEW_ATTR, VERSION_CONTENT_ATTR,
+} from '../lib/contract.ts';
 import { InfraBlocked } from '../lib/infra.ts';
 import { mintPrincipal, signIn } from '../lib/principals.ts';
 import { Stack } from '../lib/stack.ts';
@@ -109,7 +111,7 @@ async function capture(page: Page, target: Target): Promise<Buffer> {
   // An overlay or dialog target keeps it open (Escape would close it); a comment thread also keeps its focus where moss
   // puts it (the reply composer autofocuses).
   if (!target.crop) await page.keyboard.press('Escape');
-  if (!target.crop || target.prepare === 'open-settings') {
+  if (!target.crop || bare(target)) {
     await page.evaluate(() => {
       (document.activeElement as HTMLElement | null)?.blur();
       window.getSelection()?.removeAllRanges();
@@ -244,6 +246,38 @@ async function openThreadFromList(page: Page, detach: boolean): Promise<void> {
   await expect(commentPopover(page), 'the list opens the thread').toBeVisible();
 }
 
+interface HistoryFixture { title: string; versions: { id: string }[]; version: string; current: string }
+
+/**
+ * The History target's note: a real doc whose History is served the fixture's versions and current text, so the
+ * candidate shows what the reference story shows. Returns its path.
+ */
+async function historyNote(page: Page): Promise<string> {
+  const fixture = JSON.parse(readFileSync(join(FIXTURES, 'history.json'), 'utf8')) as HistoryFixture;
+  const created = await page.request.post(new URL('/api/docs', stack.baseUrl).href, {
+    data: { title: fixture.title, markdown: fixture.version },
+    headers: { origin: new URL(stack.baseUrl).origin },
+  });
+  if (created.status() !== 201) throw new Error(`POST /api/docs for the History note: ${created.status()}`);
+  const id = ((await created.json()) as { doc: { id: string } }).doc.id;
+  const docPath = `/api/docs/${id}`;
+  await page.route((url) => url.pathname === `${docPath}/versions`, (route) =>
+    route.request().method() === 'GET' ? route.fulfill({ json: { versions: fixture.versions } }) : route.fallback());
+  await page.route((url) => url.pathname.startsWith(`${docPath}/versions/`), (route) =>
+    route.fulfill({ json: { version: { title: fixture.title, markdown: fixture.version } } }));
+  await page.route((url) => url.pathname === `${docPath}/content`, (route) =>
+    route.fulfill({ status: 200, contentType: 'text/markdown; charset=utf-8', body: fixture.current }));
+  return `/d/${encodeURIComponent(id)}`;
+}
+
+/** History from the note's top bar, settled on the newest version's Diff vs current. */
+async function openHistory(page: Page): Promise<void> {
+  await page.locator(`[${EDITOR_PANE_ATTR}][${DOC_STATE_ATTR}="live"]`).waitFor({ timeout: 30_000 });
+  await page.locator(`[${HISTORY_BUTTON_ATTR}]`).click();
+  await expect(page.locator(`[${HISTORY_VIEW_ATTR}]`)).toHaveAttribute(HISTORY_VIEW_ATTR, 'ready', { timeout: 15_000 });
+  await expect(page.locator(`[${VERSION_CONTENT_ATTR}="diff"] ins`).first(), 'the diff renders').toBeVisible({ timeout: 15_000 });
+}
+
 /**
  * The candidate's comment highlight paints a background: inside the commented range's first line box, most pixels
  * change when the highlight is taken away. The dark theme masks the commented line (deviation 30), so without this a
@@ -294,10 +328,12 @@ async function prepare(page: Page, target: Target, side: 'oracle' | 'candidate')
   if (target.prepare === 'open-detached-thread') await openThreadFromList(page, side === 'candidate');
   // The settings story opens its dialog itself.
   if (target.prepare === 'open-settings' && side === 'candidate') await openSettings(page, target);
+  // The History story renders its view itself.
+  if (target.prepare === 'open-history' && side === 'candidate') await openHistory(page);
 }
 
-/** A story that renders a dialog without moss's App: no notes bridge, and no html[data-theme] of its own. */
-const bare = (target: Target) => target.prepare === 'open-settings';
+/** A story that renders a surface without moss's App: no notes bridge, and no html[data-theme] of its own. */
+const bare = (target: Target) => target.prepare === 'open-settings' || target.prepare === 'open-history';
 
 /** The open note's title field (moss's title is the first textbox in the shell). */
 const openTitle = (page: Page) => page.evaluate((crop) => document.querySelector(`${crop} [role="textbox"]`)?.textContent ?? null, CROP);
@@ -327,7 +363,7 @@ async function captureOracle(browser: Browser, target: Target, theme: Theme, sec
 type Mutation = (page: Page) => Promise<void>;
 
 /** The candidate's capture; `sections` are its web sections' rects and `heights` their CSS heights. */
-interface CandidateCapture { png: Buffer; masks: Rect[]; sections: Rect[]; heights: number[] }
+interface CandidateCapture { png: Buffer; masks: Rect[]; sections: Rect[]; heights: number[]; controls: { name: string; png: Buffer }[] }
 
 async function captureCandidate(
   browser: Browser, target: Target, theme: Theme, oracleState: Pick<OracleCapture, 'listing' | 'openTitle'>, mutate?: Mutation,
@@ -379,6 +415,7 @@ async function captureCandidate(
       await page.route('**/api/workspace*', (route) => route.fulfill({ json: { vault: { id: 'parity-vault', name: 'Home', role: 'owner', owned: true }, folders: [], docs: docs() } }));
       path = `/d/${encodeURIComponent(ids.get(listing[0].id) ?? '')}`;
     }
+    if (target.prepare === 'open-history') path = await historyNote(page);
     await page.goto(new URL(path, stack.baseUrl).href);
     await page.locator(`html[${APP_STATE_ATTR}="ready"]`).waitFor({ state: 'attached', timeout: 30_000 });
     if (target.seed === 'story-listing' && oracleState.openTitle && oracleState.openTitle !== listing[0].title) {
@@ -398,12 +435,20 @@ async function captureCandidate(
     const png = await capture(page, target);
     // Measured in the captured state: the docked toolbar's chrome shows only once the editor is focused.
     const masks = await maskRects(page, target.crop ?? CROP, [...target.masks, ...(theme === 'dark' ? (target.darkMasks ?? []) : [])]);
+    // Each negative control breaks the captured state's layout once, then is taken back out.
+    const controls: CandidateCapture['controls'] = [];
+    for (const control of target.controls ?? []) {
+      const style = await page.addStyleTag({ content: control.css });
+      controls.push({ name: control.name, png: await capture(page, target) });
+      await style.evaluate((element) => (element as HTMLElement).remove());
+    }
     const selector = target.webSections?.selector;
     return {
       png,
       masks,
       sections: selector ? await maskRects(page, target.crop ?? CROP, [selector]) : [],
       heights: selector ? await page.locator(selector).evaluateAll((els) => els.map((el) => el.getBoundingClientRect().height)) : [],
+      controls,
     };
   } finally {
     await page.context().close();
@@ -478,6 +523,11 @@ for (const target of TARGETS) {
         testInfo.annotations.push({ type: 'near-threshold', description: `${metrics.diffPct.toFixed(4)}%: read diff.png and explain` });
       }
       expect(misses(target, measured), `${target.id} ${theme}`).toEqual([]);
+      for (const control of candidate.controls) {
+        const broken = compare(first.png, control.png, candidate.masks, [...candidate.sections, ...first.spacers]);
+        writeFileSync(join(dir, `control-${control.name.replace(/\W+/g, '-')}.json`), `${JSON.stringify(broken.metrics, null, 2)}\n`);
+        expect(misses(target, { first, candidate, comparison: broken }), `${target.id} ${theme}: the gate fails with the ${control.name}`).not.toEqual([]);
+      }
     });
   }
 }

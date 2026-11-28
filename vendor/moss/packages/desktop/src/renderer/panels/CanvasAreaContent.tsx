@@ -4906,8 +4906,9 @@ export const CanvasAreaContent = forwardRef<CanvasAreaContentHandle, CanvasAreaC
     >
       {!hideTopBar && staticTopBar}
       {mossMultiPane.noticeBand /* moss-multi seam: connection notices in flow below the top bar */}
+      {mossMultiPane.history /* moss-multi seam: history (A§14): the History view occupies the pane; the editor stays mounted */}
       <CanvasArea
-        className="relative min-w-0 flex-1"
+        className={cn('relative min-w-0 flex-1', mossMultiPane.history ? 'hidden' : undefined)}
         responsiveLayout
         wideContent={isFocusMode}
         innerClassName="flex w-full flex-col gap-1"

@@ -1,0 +1,10 @@
+{
+  "title": "History note",
+  "versions": [
+    { "id": "v-named", "kind": "named", "name": "First checkpoint", "createdAt": 1736416800000, "title": "History note", "bytes": 653 },
+    { "id": "v-restore", "kind": "restore-point", "name": null, "createdAt": 1736334000000, "title": "History note", "bytes": 1270 },
+    { "id": "v-auto", "kind": "auto", "name": null, "createdAt": 1736164800000, "title": "History note", "bytes": 2600000 }
+  ],
+  "version": "The quick brown fox jumps over the lazy dog.\n\nA second line, as it was.\n",
+  "current": "The quick brown fox jumps over the lazy dog.\n\nA second line, and Ben was here.\n"
+}

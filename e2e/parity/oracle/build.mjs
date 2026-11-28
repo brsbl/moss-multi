@@ -53,6 +53,9 @@ function main(out) {
   // The comment parity story (T4.3) and its note with one thread; oracle-only, never vendored.
   copyFileSync(join(HERE, 'CommentNote.stories.tsx'), join(TREE, 'packages/desktop/stories/CommentNote.stories.tsx'));
   for (const file of ['comment-note.md', 'comment-note.comments.json']) copyFileSync(join(REPO, 'e2e/fixtures', file), join(TREE, 'packages/desktop/stories', file));
+  // The History reference (T6.B3): glyphdown's history page in moss's DS, and the versions it shows; oracle-only.
+  copyFileSync(join(HERE, 'HistoryPage.stories.tsx'), join(TREE, 'packages/desktop/stories/HistoryPage.stories.tsx'));
+  copyFileSync(join(REPO, 'e2e/fixtures/history.json'), join(TREE, 'packages/desktop/stories/history.json'));
   const outDir = resolve(out);
   // Ladle joins --outDir onto its cwd.
   const viteConfig = join(HERE, 'vite.oracle.mjs');
