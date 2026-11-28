@@ -1,6 +1,6 @@
 # moss-multi progress
 
-**Overall: 75% done** (236 of 312 planned tasks verified)
+**Overall: 75% done** (237 of 313 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
@@ -11,7 +11,7 @@
 | M4 Comments | Moss's full comment experience as CRDT data | 22 / 22 | in progress |
 | M5 Suggestions | Suggest mode, vetting, accept/reject | 34 / 33 | in progress |
 | M6 History | Versions, view, diff, identity-preserving restore | 22 / 22 | in progress |
-| M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 27 / 27 | in progress |
+| M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 28 / 28 | in progress |
 | M8 Ship | Everything on a permanent staging URL with demo content | 0 / 5 | |
 
 A task counts only after an independent checker passes it on green CI. Each milestone also ends with the cumulative journey suite green in Chromium and WebKit and a naive-user critic pass.
@@ -267,7 +267,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-11-27 — T4.Y verified: comments now run on m3 with T9.56 sections e, a, b and c (the D1 handle that keeps a batch's statements, the undo leg that types before it reads, the share leg that waits for Lexical's caret, and a long note's scroll that no longer restyles every block); the share leg's retry block is m3's, whole. `j15-comments-drafts` now runs in a group of its own, `commentDrafts`, so that `large` (now `j01-large` only) stays within the shard budget.
 - 2026-11-27 — T5.Y verified: suggestions now run on m4 with T9.56 sections e, a, b and c (the D1 handle that keeps a batch's statements, the undo leg that types before it reads, the share leg that waits for Lexical's caret, and a long note's scroll that no longer restyles every block) and m4's `commentDrafts` journey group.
 - 2026-11-27 — T6.Y verified: history now runs on m5 with T9.56 sections e, a, b and c (the D1 handle that keeps a batch's statements, the undo leg that types before it reads, the share leg that waits for Lexical's caret, and a long note's scroll that no longer restyles every block) and m4's `commentDrafts` journey group.
-- 2026-11-27 — T7.Y: agent sync, Bot presence and the watch daemon now run on m6 with T9.56 sections e, a, b and c (the D1 handle that keeps a batch's statements, the undo leg that types before it reads, the share leg that waits for Lexical's caret, and a long note's scroll that no longer restyles every block) and m4's `commentDrafts` journey group.
+- 2026-11-27 — T7.Y verified: agent sync, Bot presence and the watch daemon now run on m6 with T9.56 sections e, a, b and c (the D1 handle that keeps a batch's statements, the undo leg that types before it reads, the share leg that waits for Lexical's caret, and a long note's scroll that no longer restyles every block) and m4's `commentDrafts` journey group.
 
 ### T9.55e — a replayed GET waits until the closing connections have closed
 
@@ -1233,3 +1233,6 @@ Local browser verification remains assigned to the independent checker under the
 - T9.56 (The full test run fails only on a real regression, part 5) checker P2: in 9 of 20 WebKit undo-probe readbacks the text read back after the loss is 'Intro https://line.types/ on' instead of 'Intro line. types on'; an autolink seems to fire while the space is briefly missing → separate follow-up, not investigated.
 - T6.Y (Restack m6 on the fifth batch of test-run fixes) checker P2: stale comment above the `large` journey group in `scripts/ci/journeys.mjs`; it still says the group holds comments on blocks and what a comment composer keeps, which now sit in `commentDrafts` (text from T4.Y; no effect on CI).
 - T6.Y (Restack m6 on the fifth batch of test-run fixes) checker P2: no run with slow legs on the m6 head; the full lane and the repeat runs excluded `@slow` legs, which the task did not require (slow legs are required on the m3 and m9 heads only).
+- T7.Y (Restack m7 on the fifth batch of test-run fixes) checker P2: the report leaves out the WebKit registers re-run in the full lane; attempt 1 also failed in e2e (webkit, registers) at j01-registers.spec.ts:867 with 'WebSocket network error: Network process crashed' on both of Ben's sockets, a known WebKit engine crash that passed on its one re-run.
+- T7.Y (Restack m7 on the fifth batch of test-run fixes) checker P2: the stale comment above the `large` group in `scripts/ci/journeys.mjs` was carried up; it still says the group holds the comment and composer tests, which now run in `commentDrafts` (no effect on CI).
+- T7.Y integration P2: on the m7 merge `180bc586` the checks job of push run 46093909857 (job 140820867322) failed in the SP2 converter step, "entity tabs, 2097154 B: importCpuMs 280 ms over the 250 ms line budget"; the same commit measured 230 ms and passed in run 46093915013, and the tree is the reviewed head's. Seen once, not diagnosed, not re-run.
