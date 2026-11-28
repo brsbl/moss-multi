@@ -22,8 +22,10 @@ const TYPED = 'abcdefghijklmnopqrst';
  * Calibrated on CI runners (T3.B13). Sync time per keystroke with the unpatched binding: 31 ms in Chromium and 92 ms in
  * WebKit (run 38321927817); patched, 6 ms and 11-12 ms (run 38323194734).
  * Input-to-paint: 176-232 ms before the patch and 120-184 ms after (runs 38301848192, 38301850762, 38311128561,
- * 38314448516, 38319353253, 38323194734); long tasks 142-251 ms per key before and 94-185 after, the longest up to 715 ms.
- * The sync budget is per engine.
+ * 38314448516, 38319353253, 38323194734); long tasks 142-251 ms per key before and 94-185 after.
+ * The longest task is the largest main-thread task of 50 ms or more from the first key to 1 s after the last. Until
+ * T9.56c it was not a keystroke but one restyle of the whole note when the canvas's scrolling flag flipped (up to
+ * 1,060 ms); since then it is one keystroke. The sync budget is per engine.
  */
 const SYNC_MS = { chromium: 12, webkit: 36 };
 const INPUT_TO_PAINT_MS = 240;
@@ -170,4 +172,45 @@ test('j01-large: each keystroke in the middle of a 32,000-line note syncs only i
   expect(big.inputToPaint, `the large note's input-to-paint (${JSON.stringify(measured)})`).toBeLessThanOrEqual(INPUT_TO_PAINT_MS);
   expect(big.busyPerKey, `the large note's long-task time per keystroke (${JSON.stringify(measured)})`).toBeLessThanOrEqual(BUSY_PER_KEY_MS);
   expect(big.longest, `the large note's longest task while typing (${JSON.stringify(measured)})`).toBeLessThanOrEqual(LONGEST_TASK_MS);
+});
+
+// The canvas shows its scrollbar thumb only while it scrolls (moss's `.canvas-scroll[data-scrolling]`, styles.css).
+// scrollbar-color is inherited: unless the canvas's children hold a value of their own, each start and each rest of a
+// scroll restyles every block of the note, which froze a 32,000-line note for 0.4 to 1.1 s each time.
+test('j01-large: the canvas scrolling shows its own scrollbar and restyles nothing inside the note @p:tech-8', async ({ actors, stack }) => {
+  actors.solo('one reader scrolls a note; the leg reads computed styles');
+  const ada = await actors.session(await actors.principal('ada'));
+  const note = await create(ada, stack.baseUrl, 'Scrolls', lines(CONTROL_LINES));
+  await ada.goto(`/d/${note}`);
+  await ui.waitBodyLive(ada, note, 120_000);
+  const body = ui.body(ada, note);
+  const read = () => body.evaluate((root) => {
+    const canvas = root.closest('.canvas-scroll')!;
+    return { scrolling: canvas.getAttribute('data-scrolling'), canvas: getComputedStyle(canvas).scrollbarColor, paragraph: getComputedStyle(root.children[10]).scrollbarColor };
+  });
+  await expect.poll(async () => (await read()).scrolling, { message: 'the canvas is at rest' }).toBe('false');
+  const rest = await read();
+  const point = await body.evaluate((root) => { const box = root.closest('.canvas-scroll')!.getBoundingClientRect(); return { x: box.left + box.width / 2, y: box.top + box.height / 2 }; });
+  await ada.page.mouse.move(point.x, point.y);
+  // The observer is in place before the wheel, and records at once if the canvas already scrolls.
+  await body.evaluate((root) => {
+    const canvas = root.closest('.canvas-scroll')!;
+    const seen = { canvas: '', paragraph: '' };
+    (window as unknown as { __scrollFlip: typeof seen }).__scrollFlip = seen;
+    const record = () => {
+      if (seen.canvas || canvas.getAttribute('data-scrolling') !== 'true') return;
+      seen.canvas = getComputedStyle(canvas).scrollbarColor;
+      seen.paragraph = getComputedStyle(root.children[10]).scrollbarColor;
+    };
+    new MutationObserver(record).observe(canvas, { attributes: true, attributeFilter: ['data-scrolling'] });
+    record();
+  });
+  await ada.page.mouse.wheel(0, 300);
+  const flip = () => ada.page.evaluate(() => (window as unknown as { __scrollFlip: { canvas: string; paragraph: string } }).__scrollFlip);
+  await expect.poll(async () => (await flip()).canvas, { message: 'the canvas reports that it scrolls' }).not.toBe('');
+  const during = await flip();
+  expect(during.canvas, 'the canvas shows its scrollbar thumb while it scrolls').not.toBe(rest.canvas);
+  expect(during.paragraph, `a paragraph's style does not change when the canvas scrolls (at rest ${rest.paragraph})`).toBe(rest.paragraph);
+  await expect.poll(async () => (await read()).scrolling, { message: 'the canvas comes to rest' }).toBe('false');
+  expect((await read()).paragraph, 'nor when it comes to rest').toBe(rest.paragraph);
 });
