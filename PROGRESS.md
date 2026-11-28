@@ -1,6 +1,6 @@
 # moss-multi progress
 
-**Overall: 81% done** (257 of 315 planned tasks verified)
+**Overall: 81% done** (258 of 316 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
@@ -12,7 +12,7 @@
 | M5 Suggestions | Suggest mode, vetting, accept/reject | 34 / 33 | in progress |
 | M6 History | Versions, view, diff, identity-preserving restore | 22 / 22 | in progress |
 | M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 28 / 28 | in progress |
-| M8 Ship | Everything on a permanent staging URL with demo content | 20 / 21 | |
+| M8 Ship | Everything on a permanent staging URL with demo content | 21 / 22 | |
 
 A task counts only after an independent checker passes it on green CI. Each milestone also ends with the cumulative journey suite green in Chromium and WebKit and a naive-user critic pass.
 
@@ -283,7 +283,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-11-27 — T5.Y verified: suggestions now run on m4 with T9.56 sections e, a, b and c (the D1 handle that keeps a batch's statements, the undo leg that types before it reads, the share leg that waits for Lexical's caret, and a long note's scroll that no longer restyles every block) and m4's `commentDrafts` journey group.
 - 2026-11-27 — T6.Y verified: history now runs on m5 with T9.56 sections e, a, b and c (the D1 handle that keeps a batch's statements, the undo leg that types before it reads, the share leg that waits for Lexical's caret, and a long note's scroll that no longer restyles every block) and m4's `commentDrafts` journey group.
 - 2026-11-27 — T7.Y verified: agent sync, Bot presence and the watch daemon now run on m6 with T9.56 sections e, a, b and c (the D1 handle that keeps a batch's statements, the undo leg that types before it reads, the share leg that waits for Lexical's caret, and a long note's scroll that no longer restyles every block) and m4's `commentDrafts` journey group.
-- 2026-11-27 — T8.Y: the staging build now runs on m7 with T9.56 sections e, a, b and c (the D1 handle that keeps a batch's statements, the undo leg that types before it reads, the share leg that waits for Lexical's caret, and a long note's scroll that no longer restyles every block) and m4's `commentDrafts` journey group, beside this layer's section d.
+- 2026-11-27 — T8.Y verified: the staging build now runs on m7 with T9.56 sections e, a, b and c (the D1 handle that keeps a batch's statements, the undo leg that types before it reads, the share leg that waits for Lexical's caret, and a long note's scroll that no longer restyles every block) and m4's `commentDrafts` journey group, beside this layer's section d; m8 now holds T9.56 sections a, b, c, d and e.
 
 ### T9.55e — a replayed GET waits until the closing connections have closed
 
@@ -1418,3 +1418,4 @@ Local browser verification remains assigned to the independent checker under the
 - T7.Y (Restack m7 on the fifth batch of test-run fixes) checker P2: the report leaves out the WebKit registers re-run in the full lane; attempt 1 also failed in e2e (webkit, registers) at j01-registers.spec.ts:867 with 'WebSocket network error: Network process crashed' on both of Ben's sockets, a known WebKit engine crash that passed on its one re-run.
 - T7.Y (Restack m7 on the fifth batch of test-run fixes) checker P2: the stale comment above the `large` group in `scripts/ci/journeys.mjs` was carried up; it still says the group holds the comment and composer tests, which now run in `commentDrafts` (no effect on CI).
 - T7.Y integration P2: on the m7 merge `180bc586` the checks job of push run 46093909857 (job 140820867322) failed in the SP2 converter step, "entity tabs, 2097154 B: importCpuMs 280 ms over the 250 ms line budget"; the same commit measured 230 ms and passed in run 46093915013, and the tree is the reviewed head's. Seen once, not diagnosed, not re-run.
+- T8.Y (Restack m8 on the fifth batch of test-run fixes) checker P2: the header counts T9.56 once per layer part; its m3 part (sections e, a, b and c) is counted under M3 and its m8 part (section d) under M8, as each part has its own BUILDPLAN entry and earlier restacks counted the same way.
