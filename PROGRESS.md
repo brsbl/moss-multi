@@ -1,6 +1,6 @@
 # moss-multi progress
 
-**Overall: 96% done** (309 of 319 planned tasks verified)
+**Overall: 96% done** (310 of 320 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
@@ -13,7 +13,7 @@
 | M6 History | Versions, view, diff, identity-preserving restore | 22 / 22 | in progress |
 | M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 28 / 28 | in progress |
 | M8 Ship | Everything on a permanent staging URL with demo content | 21 / 22 | |
-| M9 Polish | Understand every control without help: fixes found by using the whole product | 51 / 46 | |
+| M9 Polish | Understand every control without help: fixes found by using the whole product | 52 / 47 | |
 
 A task counts only after an independent checker passes it on green CI. Each milestone also ends with the cumulative journey suite green in Chromium and WebKit and a naive-user critic pass.
 
@@ -345,6 +345,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-11-27 — T9.56 built on m9 (sections g, f, i, k): the parity job no longer fails on "the slash menu inserts a table" (its helper types the last letter once the menu shows Table) or in setup with "socket hang up" (every worker stops pooling sockets); the browser's Back or Forward to a note opened by a share link no longer draws that note as an extra, selected sidebar row; and the two T9.19 Back-and-Forward legs allow the extra socket open to the note the reloaded window opened by itself. Details under T9.56 below.
 - 2026-11-27 — T9.56 verified on m9 (sections g, f, i and k): the parity job no longer fails on the slash-menu table or with "socket hang up" in setup, Back and Forward to a note opened by a share link draw no sidebar row for it, and the two Back-and-Forward legs give their extra socket open to the note the reloaded window opened by itself.
 - 2026-11-27 — T9.Y: the polish build now runs on m8 with T9.56 sections e, a, b and c (the D1 handle that keeps a batch's statements, the undo leg that types before it reads, the share leg that waits for Lexical's caret, and a long note's scroll that no longer restyles every block), m4's `commentDrafts` journey group and m8's section d, beside this layer's sections g, f, i and k.
+- 2026-11-27 — T9.Y verified: the polish build now runs on m8 with its fifth batch of test-run fixes; m9 holds T9.56 sections a, b, c, d, e, f, g, i and k, so the D1 batch, undo, read-only share, long-note scroll, security-sweep, slash-table, setup-socket and Back-and-Forward legs fail only on a real regression, and Back or Forward to a note opened by a share link draws no sidebar row for it.
 
 ### T9.55e — a replayed GET waits until the closing connections have closed
 
