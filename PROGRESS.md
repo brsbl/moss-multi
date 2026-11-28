@@ -1,6 +1,6 @@
 # moss-multi progress
 
-**Overall: 67% done** (208 of 310 planned tasks verified)
+**Overall: 67% done** (209 of 311 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
@@ -10,7 +10,7 @@
 | M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 79 / 76 | in progress |
 | M4 Comments | Moss's full comment experience as CRDT data | 22 / 22 | in progress |
 | M5 Suggestions | Suggest mode, vetting, accept/reject | 34 / 33 | in progress |
-| M6 History | Versions, view, diff, identity-preserving restore | 21 / 21 | in progress |
+| M6 History | Versions, view, diff, identity-preserving restore | 22 / 22 | in progress |
 | M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 0 / 5 | |
 | M8 Ship | Everything on a permanent staging URL with demo content | 0 / 5 | |
 
@@ -239,7 +239,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-11-27 — T9.56 verified (sections e, a, b and c): the unit tests' D1 handle keeps a batch's statements until the batch settles, so a batch in flight no longer fails inside the test proxy; the undo leg always types its x before it reads; the read-only share leg presses Enter only once the editor has taken its click; and scrolling a long note no longer restyles every block inside it.
 - 2026-11-27 — T4.Y verified: comments now run on m3 with T9.56 sections e, a, b and c (the D1 handle that keeps a batch's statements, the undo leg that types before it reads, the share leg that waits for Lexical's caret, and a long note's scroll that no longer restyles every block); the share leg's retry block is m3's, whole. `j15-comments-drafts` now runs in a group of its own, `commentDrafts`, so that `large` (now `j01-large` only) stays within the shard budget.
 - 2026-11-27 — T5.Y verified: suggestions now run on m4 with T9.56 sections e, a, b and c (the D1 handle that keeps a batch's statements, the undo leg that types before it reads, the share leg that waits for Lexical's caret, and a long note's scroll that no longer restyles every block) and m4's `commentDrafts` journey group.
-- 2026-11-27 — T6.Y: history now runs on m5 with T9.56 sections e, a, b and c (the D1 handle that keeps a batch's statements, the undo leg that types before it reads, the share leg that waits for Lexical's caret, and a long note's scroll that no longer restyles every block) and m4's `commentDrafts` journey group.
+- 2026-11-27 — T6.Y verified: history now runs on m5 with T9.56 sections e, a, b and c (the D1 handle that keeps a batch's statements, the undo leg that types before it reads, the share leg that waits for Lexical's caret, and a long note's scroll that no longer restyles every block) and m4's `commentDrafts` journey group.
 
 ### T9.55e — a replayed GET waits until the closing connections have closed
 
@@ -1053,3 +1053,5 @@ Local browser verification remains assigned to the independent checker under the
 - T9.56 (The full test run fails only on a real regression, part 5) checker P2: the report's count of full-lane jobs is wrong; run 46038671083 has 64 jobs, 63 succeeded and the macOS job skipped, not 50 of 50 (the run is still green).
 - T9.56 (The full test run fails only on a real regression, part 5) checker P2: section c's stills do not prove every nested scroller's thumb is hidden; the code-block and chart captures show no overflow, the HTML source is a clipped strip and WebKit draws no thumbs, so only the tab bar and canvas edge show the change; code and chart header controls differ slightly in hover-fade opacity, not attributed to the rule.
 - T9.56 (The full test run fails only on a real regression, part 5) checker P2: in 9 of 20 WebKit undo-probe readbacks the text read back after the loss is 'Intro https://line.types/ on' instead of 'Intro line. types on'; an autolink seems to fire while the space is briefly missing → separate follow-up, not investigated.
+- T6.Y (Restack m6 on the fifth batch of test-run fixes) checker P2: stale comment above the `large` journey group in `scripts/ci/journeys.mjs`; it still says the group holds comments on blocks and what a comment composer keeps, which now sit in `commentDrafts` (text from T4.Y; no effect on CI).
+- T6.Y (Restack m6 on the fifth batch of test-run fixes) checker P2: no run with slow legs on the m6 head; the full lane and the repeat runs excluded `@slow` legs, which the task did not require (slow legs are required on the m3 and m9 heads only).
