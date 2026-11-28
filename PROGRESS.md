@@ -283,6 +283,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-11-27 — T5.Y verified: suggestions now run on m4 with T9.56 sections e, a, b and c (the D1 handle that keeps a batch's statements, the undo leg that types before it reads, the share leg that waits for Lexical's caret, and a long note's scroll that no longer restyles every block) and m4's `commentDrafts` journey group.
 - 2026-11-27 — T6.Y verified: history now runs on m5 with T9.56 sections e, a, b and c (the D1 handle that keeps a batch's statements, the undo leg that types before it reads, the share leg that waits for Lexical's caret, and a long note's scroll that no longer restyles every block) and m4's `commentDrafts` journey group.
 - 2026-11-27 — T7.Y verified: agent sync, Bot presence and the watch daemon now run on m6 with T9.56 sections e, a, b and c (the D1 handle that keeps a batch's statements, the undo leg that types before it reads, the share leg that waits for Lexical's caret, and a long note's scroll that no longer restyles every block) and m4's `commentDrafts` journey group.
+- 2026-11-27 — T8.Y: the staging build now runs on m7 with T9.56 sections e, a, b and c (the D1 handle that keeps a batch's statements, the undo leg that types before it reads, the share leg that waits for Lexical's caret, and a long note's scroll that no longer restyles every block) and m4's `commentDrafts` journey group, beside this layer's section d.
 
 ### T9.55e — a replayed GET waits until the closing connections have closed
 
