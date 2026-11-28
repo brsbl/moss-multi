@@ -36,7 +36,9 @@ export const GROUPS = {
   registers: ['j01-registers', 'j01-autolink'],
   // Typing in a 40,000-line note against a small control (T3.B13); comments on blocks and what a comment composer
   // keeps (the meaning and media WebKit shards are full).
-  large: ['j01-large', 'j15-comments-drafts'],
+  large: ['j01-large'],
+  // Comments on blocks and what a comment composer keeps (large was full).
+  commentDrafts: ['j15-comments-drafts'],
   // Large markdown pastes, up to 2 MB, each landing whole for a peer.
   paste: ['j01-paste'],
   // Pastes of very many short blocks, into an empty note and between two paragraphs.
