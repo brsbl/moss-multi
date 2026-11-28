@@ -747,3 +747,41 @@ describe("the T9.19 bridge: the browser's Back and Forward move between notes (A
     t.off();
   });
 });
+
+describe('the T9.56 bridge: a note opened by its address and not listed', () => {
+  const doc = (id: string) => ({ id, title: id.toUpperCase(), createdAt: 1_700_000_000_000, updatedAt: 1_700_000_100_000 });
+  /** A tab whose listing carries `listed`, and whose `GET /api/docs/x` opens x at editor; x's backlinks read is a 404. */
+  function tab() {
+    const listed = [doc('d1')];
+    const fetch = vi.fn<typeof globalThis.fetch>(async (input) => {
+      const path = String(input).split('?')[0];
+      if (path === '/api/docs/x') return Response.json({ role: 'editor', doc: doc('x') });
+      if (path === '/api/docs/x/backlinks') return new Response('{}', { status: 404 });
+      if (path.endsWith('/backlinks')) return Response.json({ backlinks: [] });
+      return Response.json({ vault: LISTING.vault, docs: listed });
+    });
+    return { api: createBridge({ pathname: () => '/', fetch }), listed, fetch };
+  }
+
+  it('is outside the listing once the gate admits it, until a listing carries it', async () => {
+    const { api, listed } = tab();
+    await api.notes.getAll();
+    api[WORKSPACE].admit(doc('x'));
+    expect(api[WORKSPACE].outsideListing('x'), 'an admitted note').toBe(true);
+    expect(api[WORKSPACE].outsideListing('d1'), 'a listed note').toBe(false);
+    expect(api[WORKSPACE].outsideListing('y'), 'a note the tab never learned by its address').toBe(false);
+    listed.push(doc('x'));
+    await api.system.setFocusedNoteId('x');
+    await vi.waitFor(() => expect(api[WORKSPACE].outsideListing('x'), 'the same note once a listing carries it').toBe(false));
+  });
+
+  it('stays outside the listing after the backlinks read that drops it from the admitted notes', async () => {
+    const { api, fetch } = tab();
+    await api.notes.getAll();
+    expect((await api.notes.getById('x'))?.id, 'byId opens it by its address').toBe('x');
+    expect(api[WORKSPACE].outsideListing('x')).toBe(true);
+    await vi.waitFor(() => expect(fetch.mock.calls.map(([input]) => String(input).split('?')[0])).toContain('/api/docs/x/backlinks'));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(api[WORKSPACE].outsideListing('x'), 'after the backlinks 404').toBe(true);
+  });
+});

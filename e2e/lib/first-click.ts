@@ -26,13 +26,23 @@ const caretCell = (root: Locator): Promise<[number, number] | null> => root.eval
   return cell ? [(cell.parentElement as HTMLTableRowElement).rowIndex, cell.cellIndex] : null;
 });
 
-/** "/table" and Enter, once the menu's first command is Table. */
+/**
+ * "/table" and Enter, with the last letter typed once the menu's first command is Table (T9.56). Pristine moss binds
+ * the menu's keys in an effect that runs after the menu repaints, so Enter straight after a repaint can run the list
+ * before it: none (a new line) or its first row (Tabs). Do not press Enter straight after the poll again.
+ * - A letter binds the keys again in its own task, before the next key arrives (the menu passes a new trigger on every
+ *   render and the key effect depends on it).
+ * - Once the poll has passed, the lists that can be bound at Enter are the unfiltered one, "tabl" and "table", and
+ *   Table is first in all three: each letter cancels the search before it, and a "t", "ta" or "tab" result (Tabs first)
+ *   already set is drawn by the next letter, where the poll reads Tabs and tries again.
+ */
 export async function slashTable(page: Page, root: Locator): Promise<Locator> {
   const tables = await root.locator('table').count();
-  await page.keyboard.type('/table');
+  await page.keyboard.type('/tabl');
   await expect.poll(() => page.locator('button[data-index] .text-sm.font-medium').first().textContent().then((label) => label?.trim()), {
-    message: '/table puts Table first in the slash menu',
+    message: '/tabl puts Table first in the slash menu',
   }).toBe('Table');
+  await page.keyboard.type('e');
   await page.keyboard.press('Enter');
   await expect(root.locator('table'), 'the slash menu inserts a table').toHaveCount(tables + 1);
   return root.locator('table').nth(tables);

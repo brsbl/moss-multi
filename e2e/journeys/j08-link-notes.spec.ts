@@ -3,7 +3,9 @@
 // moment, not in the address, not in the history; and the linked note gets no sidebar row at any moment. The legs:
 // view, comment and edit links opened signed in; a stranger signing in from an edit link at both Tier A sizes; the
 // wait while the listing is read, in which no note of his own is shown, and a note he then chooses stays; a first
-// listing read that fails; a person with no notes; links the server refuses; and the link revoked while it is open.
+// listing read that fails; a person with no notes; links the server refuses; the link revoked while it is open; and
+// Moss's arrow and the browser's Back and Forward returning to the linked note, also with the listing read that the
+// return starts refused (T9.56).
 import { randomBytes } from 'node:crypto';
 import type { Route } from '@playwright/test';
 import type { Actor, Actors, Viewport } from '../lib/actors.ts';
@@ -402,5 +404,156 @@ test('j08 link notes: the link is revoked while the linked note is open; the pan
   expect(await everPaned(ben), 'the link again: no note was in a pane').toEqual([]);
   expect(await everListed(ben), 'the link again: no note had a sidebar row').toEqual([]);
   expect(await startupHistory(ben, docId), 'the link again: no history entry added, no other note written to the address').toEqual({ added: 0, otherNotes: [] });
+  await actors.requireDistinct(2);
+});
+
+test('j08 link notes: Moss\'s arrow and the browser\'s Forward and Back return to the linked note, also after a reload on a note of his own, and it gets no sidebar row at any moment (T9.56) @p:ppl-2@2', async ({ actors, stack }) => {
+  const { ada, docId } = await adaNote(actors, stack.baseUrl);
+  const token = await linkDoc(ada, docId, 'editor');
+  const benPrincipal = await actors.principal('ben');
+  const { setup, own } = await ownNotes(actors, benPrincipal, stack.baseUrl, ['Ben older', 'Ben newer']);
+  const [older] = own;
+
+  const ben = await actors.session(benPrincipal, { label: 'ben' });
+  await recordWindow(ben);
+  // In the first document the linked note binds at the load, the arrow, Forward and Back, and his older note at the
+  // click, Back, Back again and Forward.
+  ben.expectReconnects(3, docId);
+  ben.expectReconnects(3, older);
+  await ben.goto(`/d/${docId}?share=${token}`);
+  await premise(ben, own, docId, 'the edit link');
+  expect(await onlyTheLinkedNote(ben, docId, 'the edit link'), 'the edit link: the linked note opened, and only it').toBe(true);
+  await ui.waitOpen(ben, docId, 'live');
+
+  /** The rows seen since the last judgement are judged, then forgotten, so each return is judged on its own. */
+  const judgeRows = async (when: string): Promise<void> => {
+    softly(await everListed(ben), `${when}: the linked note had no sidebar row at any moment`).not.toContain(docId);
+  };
+  const forgetRows = async (when: string): Promise<void> => {
+    await judgeRows(when);
+    await ben.page.evaluate(() => { (window as unknown as { __t954: { listed: string[] } }).__t954.listed.length = 0; });
+  };
+  /** His older note is the one pane and the address names it. */
+  const away = async (when: string): Promise<void> => {
+    await ui.waitLive(ben, older);
+    await expect(ben.page, `${when}: the address names his older note`).toHaveURL((at) => at.pathname === `/d/${older}`);
+    await forgetRows(`before ${when}`);
+  };
+  /** The linked note is the one pane again at the link's role, under the link's address, and it had no row on the way. */
+  const returned = async (when: string): Promise<void> => {
+    await ui.waitOpen(ben, docId, 'live');
+    await expect.poll(() => ui.paneIds(ben), { message: `${when}: the linked note is the one pane` }).toEqual([docId]);
+    await expect(ui.pane(ben, docId), `${when}: at the link's role`).toHaveAttribute(ROLE_ATTR, 'editor');
+    await expect(ben.page, `${when}: the address is the link`).toHaveURL((at) => at.pathname === `/d/${docId}` && at.searchParams.get('share') === token);
+    await judgeRows(when);
+  };
+
+  await ben.page.locator(`[${SIDEBAR_ROW_ATTR}][${NAMES.docId}="${older}"]`).click();
+  await away('his older note');
+  // Moss's arrow is a visit: the linked note becomes the newest history entry.
+  await ui.pane(ben, older).getByRole('button', { name: 'Go back' }).click();
+  await returned('Moss\'s arrow');
+  await ben.page.goBack({ waitUntil: 'commit' });
+  await away('Back');
+  await ben.page.goForward({ waitUntil: 'commit' });
+  await returned('Forward');
+  await ben.page.goBack({ waitUntil: 'commit' });
+  await away('Back again');
+  await ben.page.goBack({ waitUntil: 'commit' });
+  await returned('Back');
+  await ben.page.goForward({ waitUntil: 'commit' });
+  await away('Forward');
+
+  // A reload on his own note is a new document that has not met the linked note: Back reads it from the server.
+  await ben.page.reload();
+  await ui.waitLive(ben, older);
+  await ben.page.goBack({ waitUntil: 'commit' });
+  await returned('Back after a reload on his own note');
+
+  // What he types after Back reaches Ada's note and none of his own.
+  const typed = ' and Ben types after Back';
+  await ui.typeBody(ben, docId, typed);
+  await expect.poll(() => contentOf(ada, stack.baseUrl, docId), { message: 'Ada\'s note holds what he typed after Back', timeout: LIVE_TIMEOUT }).toContain(typed.trim());
+  for (const id of own) expect(await contentOf(setup, stack.baseUrl, id), 'none of his own notes took the text').not.toContain('types after Back');
+  expect(await ui.paneIds(ben), 'still the linked note').toEqual([docId]);
+  await judgeRows('after typing');
+  await actors.requireDistinct(2);
+});
+
+test('j08 link notes: when the listing read that Back starts is refused, the linked note still gets no sidebar row (T9.56) @p:ppl-2@2', async ({ actors, stack }) => {
+  const { ada, docId } = await adaNote(actors, stack.baseUrl);
+  const token = await linkDoc(ada, docId, 'editor');
+  const benPrincipal = await actors.principal('ben');
+  const { own } = await ownNotes(actors, benPrincipal, stack.baseUrl, ['Ben older', 'Ben newer']);
+  const [older, newer] = own;
+
+  // The listing read that the return starts is refused once; a 5xx would itself fail invariant 1, so it is a 429. That
+  // read names the note returned to (`doc`); moss's own re-read of the list, which a visit just before can still have
+  // pending, names none, and refusing it would be a different case (moss logs its failed hydrate).
+  const ben = await actors.session(benPrincipal, { label: 'ben-refused-back' });
+  let refuse = 0;
+  let refused = 0;
+  await ben.page.route((url) => url.pathname === '/api/workspace', async (route: Route) => {
+    if (refuse > 0 && new URL(route.request().url()).searchParams.get('doc') === docId) {
+      refuse -= 1;
+      refused += 1;
+      await route.fulfill({ status: 429, contentType: 'text/plain', body: 'Too many requests' });
+    } else await route.continue();
+  });
+  ben.expectHttp(429, '/api/workspace');
+  await recordWindow(ben);
+  // The linked note binds at the load and at Back.
+  ben.expectReconnects(1, docId);
+  await ben.goto(`/d/${docId}?share=${token}`);
+  await premise(ben, own, docId, 'the edit link');
+  expect(await onlyTheLinkedNote(ben, docId, 'the edit link'), 'the edit link: the linked note opened, and only it').toBe(true);
+  await ui.waitOpen(ben, docId, 'live');
+
+  // The visit's listing read ends in a full list change, and moss answers it with its own re-read of the list
+  // (`notes.getAll`, after its debounce). The bridge hands a re-read the listing read in flight, so a re-read still to
+  // come at Back would take the refused read and fail with it (moss logs its failed hydrate). Back waits until moss
+  // has asked for that re-read.
+  const reread = await ben.page.evaluateHandle((visit) => {
+    const { notes } = (window as unknown as { electronAPI: { notes: {
+      getAll: () => Promise<unknown>;
+      onDiskChange: (listener: (ids: string[], content: string[]) => void) => () => void;
+    } } }).electronAPI;
+    const state = { changed: false, asked: false, stop: () => undefined as void };
+    const getAll = notes.getAll;
+    notes.getAll = () => {
+      if (state.changed) state.asked = true;
+      return getAll();
+    };
+    const unsubscribe = notes.onDiskChange((ids) => {
+      if (ids.length === 0 && window.location.pathname === `/d/${visit}`) { state.changed = true; state.asked = false; }
+    });
+    state.stop = () => { unsubscribe(); notes.getAll = getAll; };
+    return state;
+  }, older);
+  await ben.page.locator(`[${SIDEBAR_ROW_ATTR}][${NAMES.docId}="${older}"]`).click();
+  await ui.waitLive(ben, older);
+  await expect.poll(() => reread.evaluate((state) => state.changed && state.asked), { message: 'moss re-read its list after the visit\'s listing read' }).toBe(true);
+  await reread.evaluate((state) => state.stop());
+  await reread.dispose();
+  await expect(ben.page, 'the address names his older note').toHaveURL((at) => at.pathname === `/d/${older}`);
+  softly(await everListed(ben), 'before Back: the linked note had no sidebar row').not.toContain(docId);
+  await ben.page.evaluate(() => { (window as unknown as { __t954: { listed: string[] } }).__t954.listed.length = 0; });
+
+  refuse = 1;
+  await ben.page.goBack({ waitUntil: 'commit' });
+  await ui.waitOpen(ben, docId, 'live');
+  await expect.poll(() => refused, { message: 'Back started a listing read, and it was refused' }).toBe(1);
+  await expect.poll(() => ui.paneIds(ben), { message: 'Back: the linked note is the one pane' }).toEqual([docId]);
+  await expect(ben.page, 'Back: the address is the link').toHaveURL((at) => at.pathname === `/d/${docId}` && at.searchParams.get('share') === token);
+  // Two frames after the refusal was answered, so a row Moss's list holds has been drawn.
+  await ben.page.evaluate(() => new Promise<void>((done) => { requestAnimationFrame(() => requestAnimationFrame(() => done())); }));
+  softly(await rowIds(ben), 'after the refused read: the linked note has no sidebar row').not.toContain(docId);
+  softly(await everListed(ben), 'Back: the linked note had no sidebar row at any moment').not.toContain(docId);
+
+  // The next visit reads the listing again.
+  await ben.page.locator(`[${SIDEBAR_ROW_ATTR}][${NAMES.docId}="${newer}"]`).click();
+  await ui.waitLive(ben, newer);
+  softly(await everListed(ben), 'the next visit: the linked note had no sidebar row at any moment').not.toContain(docId);
+  expect(refused, 'one refusal').toBe(1);
   await actors.requireDistinct(2);
 });

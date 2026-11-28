@@ -114,8 +114,8 @@ export function assertNotInfra(text: string, where: string): void {
  * agents and never resends one. The local Worker ignores a request's `connection: close`, answers without it and
  * closes a connection 5 s after its last answer, so a request written to a pooled socket just then failed with
  * "socket hang up" (runs 45257142311, 45132107814, 45089319305). No Node agent in this process pools a socket: each
- * request opens its own connection and nothing is resent. Call at module scope, before the first request; off
- * loopback each Node-side request costs a TLS handshake.
+ * request opens its own connection and nothing is resent. Called once, by playwright.config.ts, which every worker
+ * loads before its first request; off loopback each Node-side request costs a TLS handshake.
  */
 export function ownConnections(): void {
   http.Agent.prototype.keepSocketAlive = () => false;
