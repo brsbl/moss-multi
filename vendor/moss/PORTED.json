@@ -281,7 +281,7 @@
     {"path":"packages/desktop/src/renderer/state/granted-dirs-atoms.ts","pin":"762abb777","upstreamSha256":"ca71af8016dfc55c049040b8c1830a130b1c0c3379db7359149309d5d992e533","mode":"verbatim"},
     {"path":"packages/desktop/src/renderer/state/settings-warmup-atoms.ts","pin":"762abb777","upstreamSha256":"8496bca2730e0d98c17d6c4b3db183f1ff04377cf0e31bfdefaadf5f0ec5bb83","mode":"verbatim"},
     {"path":"packages/desktop/src/renderer/state/workspace-info-atoms.ts","pin":"762abb777","upstreamSha256":"e9a988aa5cca93d76f6e49057f80424260dd161fcd16d4655b7e0ea2bad066d3","mode":"verbatim"},
-    {"path":"packages/desktop/src/renderer/styles.css","pin":"762abb777","upstreamSha256":"8614d165cbfb1c1997d522569e622433a91aad576f8e09988d35aff028c09cdf","mode":"verbatim"},
+    {"path":"packages/desktop/src/renderer/styles.css","pin":"762abb777","upstreamSha256":"8614d165cbfb1c1997d522569e622433a91aad576f8e09988d35aff028c09cdf","mode":"patched","patch":"patches/moss/packages/desktop/src/renderer/styles.css.patch"},
     {"path":"packages/desktop/src/renderer/utils/action-tab-utils.ts","pin":"762abb777","upstreamSha256":"9225e89d460b68bcb1fe4cef4c0294e76a718e602673a2a246179c8b7427b199","mode":"verbatim"},
     {"path":"packages/desktop/src/renderer/utils/agent-error-message.ts","pin":"762abb777","upstreamSha256":"0e44cf495b448cd64366c072dd647cc2eb20e478f94606a2d7abd56cefec0980","mode":"verbatim"},
     {"path":"packages/desktop/src/renderer/utils/copyForAgent.ts","pin":"762abb777","upstreamSha256":"7841df2ca91ffca28fdfce2348352551ed84c4f63cddfd0487bd4acb291881dc","mode":"verbatim"},
