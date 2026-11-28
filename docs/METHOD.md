@@ -285,6 +285,7 @@ Measured in CI by `e2e/editor/load.spec.ts` (and `e2e/viewer/load.spec.ts`) on t
   | reload to `data-app-state=ready` | 10, 483 ms, 527 ms | 14, 676 ms, 802 ms | none yet |
   | theme switch (click to `data-theme`) | 10, 9 ms, 13 ms | 12, 11 ms, 26 ms | none yet |
   | the slowest j00-shell test's duration | 5, 5.3 s, 5.4 s | 7, 10.9 s, 125.5 s | 120 s test timeout |
+  | j01-large: the 32,000-line note's longest main-thread task while typing (T9.56c; one keystroke since the scroll restyle went) | 30, 114 ms, 177 ms (runs 46020705451, 46020717245, 46020727798) | no long-task API | 1,000 ms, headroom 5.6 |
 
 - WebKit on CI's Linux runner has a heavy tail that Chromium lacks: the same j00-shell legs take 15–66 s now and then (T0.5a's run 37041229592 already showed 16 s), and a second attempt's wrangler slowed to 10 s sign-ups and exited with an empty `[ERROR]` after about 60 WebKit tests. Before calling a WebKit timeout a product failure, read its trace's network timings and the shard's `wrangler.log`.
 - Shard durations (T0.9d). Before the split, WebKit `editing` ran 12.1 min at p50 and 14.9 at p95 over the 14 full lanes 37283389980–37291316246, timing out at 13 more than once; `shell` reached 9.2 and `session` 8.3 on the slowest branch. Recorded p95 minutes per journey file from those lanes (`journey-minutes.json`; fixed cost per shard 2.33 Chromium, 2.63 WebKit):
