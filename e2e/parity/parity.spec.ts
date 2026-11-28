@@ -395,8 +395,9 @@ async function captureCandidate(
     if (target.prepare === 'comment-gutter') await expectCommentPaint(page, theme);
     await mutate?.(page);
     await audit(page, theme, 'candidate', bare(target) ? target.crop : CROP);
-    const masks = await maskRects(page, target.crop ?? CROP, [...target.masks, ...(theme === 'dark' ? (target.darkMasks ?? []) : [])]);
     const png = await capture(page, target);
+    // Measured in the captured state: the docked toolbar's chrome shows only once the editor is focused.
+    const masks = await maskRects(page, target.crop ?? CROP, [...target.masks, ...(theme === 'dark' ? (target.darkMasks ?? []) : [])]);
     const selector = target.webSections?.selector;
     return {
       png,

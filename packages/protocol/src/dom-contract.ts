@@ -42,7 +42,8 @@ export type ConnectionState = (typeof CONNECTION_STATES)[number];
 
 /** On the pane. */
 export const TERMINAL_REASON_ATTR = 'data-terminal-reason';
-export const TERMINAL_REASONS = ['deleted', 'revoked', 'session-ended', 'unavailable', 'conn-limit'] as const;
+/** `suggest-cooldown`: the 60 s suggestion cooldown (a 4429 naming it), which reconnects by itself once it ends. */
+export const TERMINAL_REASONS = ['deleted', 'revoked', 'session-ended', 'unavailable', 'conn-limit', 'suggest-cooldown'] as const;
 export type TerminalReason = (typeof TERMINAL_REASONS)[number];
 
 /** The reserved notice band under each pane's top bar (A§10.5): in flow, empty and zero-height until it has news. */
@@ -50,10 +51,11 @@ export const NOTICE_BAND_ATTR = 'data-notice-band';
 
 /**
  * The banner in the notice band: `retrying` while a first sync is late, `offline` while a synced doc is not
- * delivering, `halted` after a refused write stopped the doc, or the terminal reason.
+ * delivering, `halted` after a refused write stopped the doc, `suggest-busy` while the person's other Suggest windows
+ * hold every lease this one asked for, or the terminal reason.
  */
 export const CONNECTION_BANNER_ATTR = 'data-connection-banner';
-export const CONNECTION_BANNERS = ['retrying', 'offline', 'halted', ...TERMINAL_REASONS] as const;
+export const CONNECTION_BANNERS = ['retrying', 'offline', 'halted', 'suggest-busy', ...TERMINAL_REASONS] as const;
 export type ConnectionBanner = (typeof CONNECTION_BANNERS)[number];
 
 /** On the pane: the effective role. */
@@ -103,6 +105,30 @@ export const TRASH_ROW_ATTR = 'data-trash-row';
 
 /** The retention notice on a note open in the Trash view; its words come from protocol/retention.ts. */
 export const RETENTION_NOTICE_ATTR = 'data-retention-notice';
+
+/** Suggest mode (docs/design/suggestions.md §5, §8): the pane's mode, the role-locked chip, the toolbar toggle, the
+ * band offering back text a closed suggestion could not keep, and painted suggestion markers. */
+export const EDIT_MODE_ATTR = 'data-edit-mode';
+export const EDIT_MODES = ['edit', 'suggest', 'review'] as const;
+export type EditMode = (typeof EDIT_MODES)[number];
+export const SUGGEST_CHIP_ATTR = 'data-suggest-chip';
+export const SUGGEST_TOGGLE_ATTR = 'data-suggest-toggle';
+export const SUGGEST_UNSAVED_ATTR = 'data-suggest-unsaved';
+export const SUGGEST_MARK_ATTR = 'data-suggest-mark';
+/** On the pane: suggest frames sent and refused by this pane's fork (test readouts). */
+export const SUGGEST_SENT_ATTR = 'data-suggest-sent';
+export const SUGGEST_REFUSED_ATTR = 'data-suggest-refused';
+
+/** Review UI (docs/design/suggestions.md §8): the top-bar button with its open count, its panel, and each card with
+ * its record id and status; the active card (opened from a painted suggestion) carries `data-suggestion-active`. */
+export const SUGGESTIONS_BUTTON_ATTR = 'data-suggestions-button';
+export const SUGGESTIONS_PANEL_ATTR = 'data-suggestions-panel';
+export const SUGGESTION_CARD_ATTR = 'data-suggestion-card';
+export const SUGGESTION_ID_ATTR = 'data-suggestion-id';
+export const SUGGESTION_STATUS_ATTR = 'data-suggestion-status';
+export const SUGGESTION_ACTIVE_ATTR = 'data-suggestion-active';
+/** Each row of a card: `insert`, `delete` or `change`. */
+export const SUGGESTION_ROW_ATTR = 'data-suggestion-row';
 
 /** The body editor root Lexical renders. */
 export const LEXICAL_EDITOR_SELECTOR = '[data-lexical-editor="true"]';

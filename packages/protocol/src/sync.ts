@@ -1,6 +1,7 @@
 // The doc socket's wire vocabulary (A§4.1, A§5.1, A§10.5): close codes and what a client does on each, the server's
 // unicast events and the trusted headers the Worker sets on a party request.
 import type { TerminalReason } from './dom-contract.ts';
+import type { SuggestReply } from './suggest.ts';
 
 /** Close codes, defined once. 1001, 1006, 1011-1013, 4408 and 4420 are transient; the 44xx below are designed. */
 export const CLOSE = {
@@ -30,7 +31,10 @@ export type CloseAction =
   /** 4409: the write-refused reason arrived just before; the local doc cannot be delivered. */
   | { kind: 'refused' };
 
-export function closeAction(code: number): CloseAction {
+/** The reason a 4429 carries when it is a suggestion cooldown (A§5.1): it ends by itself, unlike the connection limit. */
+export const SUGGEST_COOLDOWN_REASON = 'suggest-cooldown';
+
+export function closeAction(code: number, reason?: string): CloseAction {
   switch (code) {
     case CLOSE.normal:
       return { kind: 'normal' };
@@ -42,7 +46,7 @@ export function closeAction(code: number): CloseAction {
     case CLOSE.deleted:
       return { kind: 'terminal', reason: 'deleted' };
     case CLOSE.connectionLimit:
-      return { kind: 'terminal', reason: 'conn-limit' };
+      return { kind: 'terminal', reason: reason === SUGGEST_COOLDOWN_REASON ? 'suggest-cooldown' : 'conn-limit' };
     case CLOSE.revoked:
       return { kind: 'reask' };
     case CLOSE.writeRefused:
@@ -55,6 +59,7 @@ export function closeAction(code: number): CloseAction {
 /** Unicast events travel as `__YPS:<json>`, the envelope the provider delivers as `custom-message`. */
 export const CUSTOM_PREFIX = '__YPS:';
 
+/** `protected-type`: the frame writes `comments`, `suggestions` or a leased suggestion client id (A§5.1 steps 2b and 4). */
 export type WriteRefusalReason = 'role' | 'doc-cap' | 'suggest' | 'unresolved' | 'protected-type';
 
 /**
@@ -111,7 +116,8 @@ export type ServerEvent =
    * without `pb` means none.
    */
   | { t: 'usage'; pb: number }
-  | { t: 'doc-deleted' };
+  | { t: 'doc-deleted' }
+  | SuggestReply;
 
 /** The same coverage for one payload doc (A§10.10), keyed by its block id in the ack's `p`. */
 export interface PayloadAck {

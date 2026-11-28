@@ -2,7 +2,7 @@
 // body and of each payload doc it touches (docs/design/registers.md), plus the author's own records, all written under
 // the active lease. Every F transaction, in the body or a payload doc, whose origin is not one of the shim's own is
 // forwarded as `suggest-ops` with the doc it was made in, so the binding, the payload writers (first texts and field
-// edits) and the UndoManager are all recorded without an allowlist. Test-only until T5.1 builds the client on it.
+// edits) and the UndoManager are all recorded without an allowlist. The spike's headless harness; the client's fork is client.ts.
 import { createBinding, syncLexicalUpdateToYjs, syncYjsChangesToLexical, type Binding } from '@lexical/yjs';
 import { registerList } from '@lexical/list';
 import { $normalizeFormatWhitespace } from '@moss-desktop/renderer/editor/markdown/format-whitespace';
@@ -14,9 +14,7 @@ import { excludedPropertiesFor } from '../excluded-properties.ts';
 import { attachPayloadDocs, PAYLOAD_LOADED, PayloadDocs } from '../payload-docs.ts';
 import { bindRegisters } from '../registers.ts';
 import { payloadSourceOf, provider } from '../server-doc.ts';
-
-export const SHIM_BODY_APPLY = 'shim-body-apply';
-export const SHIM_RECORD_APPLY = 'shim-record-apply';
+import { SHIM_BODY_APPLY, SHIM_RECORD_APPLY } from './client.ts';
 
 const noop = () => {};
 /**
@@ -24,12 +22,14 @@ const noop = () => {};
  * attached to `doc`). Payloads bind as the server mirror binds them, so a new block's first text is written in the
  * update that creates it, synchronously, rather than in a microtask; the bytes are the client's.
  */
-export function bindEditor(doc: Y.Doc): { editor: LexicalEditor; binding: Binding; undo: Y.UndoManager; dispose: () => void } {
-  const editor = createConverterEditor();
+export function bindEditor(doc: Y.Doc, editor: LexicalEditor = createConverterEditor()): { editor: LexicalEditor; binding: Binding; undo: Y.UndoManager; dispose: () => void } {
   const stopLists = registerList(editor);
   const stopWhitespace = editor.registerNodeTransform(TextNode, $normalizeFormatWhitespace);
   const binding = createBinding(editor, provider, 'root', doc, new Map([['root', doc]]), excludedPropertiesFor(editor));
   const stopRegisters = bindRegisters(editor, doc, { serializedImports: true });
+  // The client's registers hold every payload its tree names. Here each commit's text walk reads them, which Lexical
+  // runs only for a text-content listener (patches/lexical@0.48.0.patch).
+  const stopText = editor.registerTextContentListener(noop);
   const stopUpdates = editor.registerUpdateListener(({ prevEditorState, editorState, dirtyElements, dirtyLeaves, normalizedNodes, tags }) => {
     syncLexicalUpdateToYjs(binding, provider, prevEditorState, editorState, dirtyElements, dirtyLeaves, normalizedNodes, tags);
   });
@@ -45,6 +45,7 @@ export function bindEditor(doc: Y.Doc): { editor: LexicalEditor; binding: Bindin
     undo,
     dispose: () => {
       undo.destroy();
+      stopText();
       stopUpdates();
       stopRegisters();
       stopWhitespace();
