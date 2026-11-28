@@ -31,12 +31,37 @@ export async function migratedD1(): Promise<TestD1> {
     d1Databases: ['DB'],
     r2Buckets: ['ASSETS'],
   });
-  const db = (await mf.getD1Database('DB')) as unknown as D1Database;
+  const db = keepingBatches((await mf.getD1Database('DB')) as unknown as D1Database);
   const assets = (await mf.getR2Bucket('ASSETS')) as unknown as R2Bucket;
   for (const { sql } of migrations()) {
     for (const statement of statements(sql)) await db.prepare(statement).run();
   }
   return { db, assets, dispose: () => mf.dispose() };
+}
+
+/**
+ * `db` with each batch's statements kept referenced until the batch settles. Miniflare's proxy client sends a
+ * statement's address and then holds no reference to it; when the garbage collector finalizes the statement the client
+ * tells the proxy server to free the address, and a batch still in flight then fails inside Miniflare
+ * (`assert(heapValue !== undefined)`, proxy.worker.ts) before D1 runs anything. A single statement's first `run`,
+ * `all` or `first` is a blocking call, so it cannot be freed mid-call; `batch` on the long-lived handle is the
+ * asynchronous call that takes statements as arguments. Two gaps stay, both unused today: `withSession()` is passed
+ * through raw, so a batch on a session handle is not kept; and a statement used for a second `run`, `all` or `first`
+ * is asynchronous with itself as the target and is not kept either.
+ */
+function keepingBatches(db: D1Database): D1Database {
+  const inFlight = new Set<D1PreparedStatement[]>();
+  return {
+    prepare: (query: string) => db.prepare(query),
+    batch: (list: D1PreparedStatement[]) => {
+      const settled = db.batch(list);
+      inFlight.add(list);
+      return settled.finally(() => inFlight.delete(list));
+    },
+    exec: (query: string) => db.exec(query),
+    dump: () => db.dump(),
+    withSession: (constraint?: string) => db.withSession(constraint as never),
+  } as unknown as D1Database;
 }
 
 /** D1 allows at most this many bound parameters per statement. */
