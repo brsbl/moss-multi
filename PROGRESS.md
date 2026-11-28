@@ -1,6 +1,6 @@
 # moss-multi progress
 
-**Overall: 60% done** (186 of 308 planned tasks verified)
+**Overall: 60% done** (187 of 309 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
@@ -9,7 +9,7 @@
 | M2 Workspace and access | Folders, trash, full sharing, live revocation, stranger on a phone | 13 / 13 | in progress |
 | M3 Rich workspace | Media, HTML/embeds, every node family, search, vaults, agent keys, read-only viewer | 79 / 76 | in progress |
 | M4 Comments | Moss's full comment experience as CRDT data | 22 / 22 | in progress |
-| M5 Suggestions | Suggest mode, vetting, accept/reject | 33 / 32 | in progress |
+| M5 Suggestions | Suggest mode, vetting, accept/reject | 34 / 33 | in progress |
 | M6 History | Versions, view, diff, identity-preserving restore | 0 / 4 | |
 | M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 0 / 5 | |
 | M8 Ship | Everything on a permanent staging URL with demo content | 0 / 5 | |
@@ -216,7 +216,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-11-27 — T5.X verified: suggestions now run on m4 with its reviewed fixes of 2026-11-27 (the cold peer of its own and plain spaces in titles, a share link that opens the shared note for someone with notes of their own, the one-replay GET, the screenshot capture guard, the macos job, the last-edit updated time and the comment shortcut leg), together with this layer's suggester words that survive a dropped connection and wedge click that survives a repaint, with a full run green on the merged commit.
 - 2026-11-27 — T9.56 verified (sections e, a, b and c): the unit tests' D1 handle keeps a batch's statements until the batch settles, so a batch in flight no longer fails inside the test proxy; the undo leg always types its x before it reads; the read-only share leg presses Enter only once the editor has taken its click; and scrolling a long note no longer restyles every block inside it.
 - 2026-11-27 — T4.Y verified: comments now run on m3 with T9.56 sections e, a, b and c (the D1 handle that keeps a batch's statements, the undo leg that types before it reads, the share leg that waits for Lexical's caret, and a long note's scroll that no longer restyles every block); the share leg's retry block is m3's, whole. `j15-comments-drafts` now runs in a group of its own, `commentDrafts`, so that `large` (now `j01-large` only) stays within the shard budget.
-- 2026-11-27 — T5.Y: suggestions now run on m4 with T9.56 sections e, a, b and c (the D1 handle that keeps a batch's statements, the undo leg that types before it reads, the share leg that waits for Lexical's caret, and a long note's scroll that no longer restyles every block) and m4's `commentDrafts` journey group.
+- 2026-11-27 — T5.Y verified: suggestions now run on m4 with T9.56 sections e, a, b and c (the D1 handle that keeps a batch's statements, the undo leg that types before it reads, the share leg that waits for Lexical's caret, and a long note's scroll that no longer restyles every block) and m4's `commentDrafts` journey group.
 
 ### T9.55e — a replayed GET waits until the closing connections have closed
 
