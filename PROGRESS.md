@@ -1,6 +1,6 @@
 # moss-multi progress
 
-**Overall: 96% done** (301 of 311 planned tasks verified)
+**Overall: 96% done** (302 of 312 planned tasks verified)
 
 | Milestone | What a person can newly do | Tasks verified | Status |
 |---|---|---|---|
@@ -13,7 +13,7 @@
 | M6 History | Versions, view, diff, identity-preserving restore | 21 / 21 | in progress |
 | M7 Agents and local sync | CLI pull/push/sync, Bot presence, folder-watch daemon | 27 / 27 | in progress |
 | M8 Ship | Everything on a permanent staging URL with demo content | 19 / 20 | |
-| M9 Polish | Understand every control without help: fixes found by using the whole product | 50 / 45 | |
+| M9 Polish | Understand every control without help: fixes found by using the whole product | 51 / 46 | |
 
 A task counts only after an independent checker passes it on green CI. Each milestone also ends with the cumulative journey suite green in Chromium and WebKit and a naive-user critic pass.
 
@@ -336,6 +336,7 @@ A task counts only after an independent checker passes it on green CI. Each mile
 - 2026-11-27 — T9.55 verified (sections a, c, g): j01-undo's split-and-merge leg no longer fails about 1 full lane in 10, because its click waits until the editor has taken it before the leg types, and a WebKit test that fails after WebKit's failed libsoup check, or after its page process aborts in GLib's main loop, is now reported BLOCKED as an engine fault under a fixed name instead of a product failure, with nothing retried.
 - 2026-11-27 — T9.X verified: the polish milestone now runs on m8 with its reviewed fixes of 2026-11-27 (the cold peer of its own and plain spaces in titles, a share link that opens the shared note for someone with notes of their own, the one-replay GET, the screenshot capture guard, the macos job, the last-edit updated time, the comment shortcut leg, the suggester words that survive a dropped connection, the wedge click that survives a repaint, the outdated-notice Reload that asks about offered-back text and the recording control and rebind fixture), together with this layer's unsaved-text card that works with one press, the suggester words in their m9 form, the two notices and Share name fixes and the test fixes of T9.50, Back that stays on a note opened by its address, and the undo leg's click and the two WebKit engine labels, with a full run green on the merged commit.
 - 2026-11-27 — T9.56 built on m9 (sections g, f, i, k): the parity job no longer fails on "the slash menu inserts a table" (its helper types the last letter once the menu shows Table) or in setup with "socket hang up" (every worker stops pooling sockets); the browser's Back or Forward to a note opened by a share link no longer draws that note as an extra, selected sidebar row; and the two T9.19 Back-and-Forward legs allow the extra socket open to the note the reloaded window opened by itself. Details under T9.56 below.
+- 2026-11-27 — T9.56 verified on m9 (sections g, f, i and k): the parity job no longer fails on the slash-menu table or with "socket hang up" in setup, Back and Forward to a note opened by a share link draw no sidebar row for it, and the two Back-and-Forward legs give their extra socket open to the note the reloaded window opened by itself.
 
 ### T9.55e — a replayed GET waits until the closing connections have closed
 
@@ -747,6 +748,11 @@ All three are faults in the tests or their scripts; none was the product misbeha
 ## Follow-ups (P2)
 
 Parked from the M0 checker and critic passes, each with the task that owns it.
+
+### From T9.56gfik-m9's checker (0528210, 2026-11-27)
+
+- T9.56gfik-m9 (The full test run fails only on a real regression, part 5, sections g, f, i, k) checker P2: the PROGRESS line on k overstates what the counts prove: the Back-and-Forward legs assert an upper bound on socket opens per note, not zero opens per Back or Forward; wording only.
+- T9.56gfik-m9 (The full test run fails only on a real regression, part 5, sections g, f, i, k) checker P2: the full lane first cited on the head ran without slow legs; a full lane with slow legs was then run on exactly 0528210 and is green (117 jobs succeeded, 1 skipped).
 
 ### From T9.X's checker (b79fe0c, 2026-11-27)
 
