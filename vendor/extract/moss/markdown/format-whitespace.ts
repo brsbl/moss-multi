@@ -1,4 +1,4 @@
-// Moss's FormatWhitespaceBoundaryPlugin callback, shared verbatim with server imports.
+// Moss's FormatWhitespaceBoundaryPlugin callback, shared with server imports.
 import { $isRootOrShadowRoot, type TextNode } from 'lexical';
 import { $isCodeNode } from '@lexical/code-core';
 
@@ -48,7 +48,9 @@ export function $normalizeFormatWhitespace(node: TextNode): void {
   }
 
   const leadingMatch = text.match(/^[ \t]+/);
-  const trailingMatch = text.match(/[ \t]+$/);
+  // moss-multi: moss's /[ \t]+$/ restarted at every blank of an inner run, quadratic in it; the run's first blank is
+  // the only start that can match, so the same match.
+  const trailingMatch = text.match(/(?<![ \t])[ \t]+$/);
 
   if (!leadingMatch && !trailingMatch) return;
 

@@ -16,6 +16,7 @@
     "./registers": "./src/registers.ts",
     "./restore-base": "./src/restore-base.ts",
     "./search": "./src/search-core.ts",
+    "./title-line": "./src/title-line.ts",
     "./paste-rollback": "./src/paste-rollback.ts",
     "./suggest/client": "./src/suggest/client.ts",
     "./suggest/forks": "./src/suggest/forks.ts",

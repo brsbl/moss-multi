@@ -98,7 +98,7 @@ export function toBase64(bytes: Uint8Array): string {
 }
 
 export function fromBase64(value: string): Uint8Array {
-  const clean = value.replace(/=+$/, '');
+  const clean = value.replace(/(?<!=)=+$/, '');
   const bytes = new Uint8Array(Math.floor((clean.length * 3) / 4));
   let at = 0;
   for (let i = 0; i < clean.length; i += 4) {
